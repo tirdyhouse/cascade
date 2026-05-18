@@ -1,10 +1,3 @@
-// Command disk-cache starts the disk cache engine as a standalone server.
-//
-// Usage:
-//
-//	disk-cache -cache-path /mnt/nvme/kv-cache -max-size 100GB
-//
-// The server exposes a simple HTTP API for integration with the Python connector.
 package main
 
 import (
@@ -47,6 +40,8 @@ func parseSize(s string) (int64, error) {
 	}
 }
 
+var eng cache.Engine
+
 func main() {
 	flag.Parse()
 
@@ -60,28 +55,77 @@ func main() {
 	cfg.MetadataPath = *metadataPath
 	cfg.MaxSizeBytes = size
 
-	eng, err := cache.New(cfg)
+	eng, err = cache.New(cfg)
 	if err != nil {
-		log.Fatalf("failed to create engine: %v", err)
+		log.Fatalf("engine init: %v", err)
 	}
 	defer eng.Close()
 
 	log.Printf("disk-cache engine started on %s", *listenAddr)
-	log.Printf("  cache path: %s", cfg.CachePath)
-	log.Printf("  max size:   %d bytes", cfg.MaxSizeBytes)
 
-	// HTTP API for Python connector
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/put", handlePut)       // POST hash, file_path, size
+	mux.HandleFunc("/get", handleGet)        // GET ?hash=
+	mux.HandleFunc("/remove", handleRemove)  // POST hash
+	mux.HandleFunc("/exists", handleExists)  // GET ?hash=
+	mux.HandleFunc("/evict", handleEvict)    // POST target_bytes
+	mux.HandleFunc("/stats", handleStats)
 
-	http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(eng.Stats())
-	})
-
-	if err := http.ListenAndServe(*listenAddr, nil); err != nil {
+	if err := http.ListenAndServe(*listenAddr, mux); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+func handlePut(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", 400)
+		return
+	}
+	var req struct {
+		Hash     uint64 `json:"hash"`
+		FilePath string `json:"file_path"`
+		Size     int64  `json:"size"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if err := eng.Put(req.Hash, req.FilePath, req.Size); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.WriteHeader(200)
+}
+
+func handleGet(w http.ResponseWriter, r *http.Request) {
+	hash, _ := strconv.ParseUint(r.URL.Query().Get("hash"), 16, 64)
+	meta, err := eng.Get(hash)
+	if err != nil || meta == nil {
+		http.NotFound(w, r)
+		return
+	}
+	json.NewEncoder(w).Encode(meta)
+}
+
+func handleRemove(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Hash uint64 `json:"hash"` }
+	json.NewDecoder(r.Body).Decode(&req)
+	eng.Remove(req.Hash)
+	w.WriteHeader(200)
+}
+
+func handleExists(w http.ResponseWriter, r *http.Request) {
+	hash, _ := strconv.ParseUint(r.URL.Query().Get("hash"), 16, 64)
+	json.NewEncoder(w).Encode(map[string]bool{"exists": eng.Exists(hash)})
+}
+
+func handleEvict(w http.ResponseWriter, r *http.Request) {
+	var req struct{ TargetBytes int64 `json:"target_bytes"` }
+	json.NewDecoder(r.Body).Decode(&req)
+	metas := eng.Evict(req.TargetBytes)
+	json.NewEncoder(w).Encode(metas)
+}
+
+func handleStats(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(eng.Stats())
 }

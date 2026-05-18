@@ -115,3 +115,10 @@ func (p *LRU) TotalBytes() int64 {
 	defer p.mu.Unlock()
 	return p.total
 }
+
+// TotalBytes returns the total tracked bytes.
+func (p *LRU) TotalBytes() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.total
+}

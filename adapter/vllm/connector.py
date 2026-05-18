@@ -119,6 +119,18 @@ class DiskCacheConnector(KVConnectorBase):
         return 0  # TODO: check disk cache for existing KV
 
     def request_finished(self, request, blocks) -> bool:
+        # 请求结束，触发淘汰检查并更新 Go 引擎状态
+        # save_kv_layer() 已在推理过程中把 KV 落盘
+        if self._connected and blocks:
+            for block in blocks:
+                self._go_put(
+                    block.block_hash,
+                    str(self._file_path(block.block_hash).relative_to(self.cache_root)),
+                    block.tensor.numel() * block.tensor.element_size(),
+                )
+                logger.debug("Block %s saved, GPU memory can be freed", block.block_hash)
+        # 返回 False: 让 vLLM 调度器正常释放 GPU 显存
+        # 数据已落盘，下次需要时从磁盘读回即可
         return False
 
     def take_events(self):

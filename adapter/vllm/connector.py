@@ -99,7 +99,13 @@ class DiskCacheConnector(KVConnectorBase):
                 continue
 
             data = file_path.read_bytes()
-            # TODO: copy data to GPU tensor (block.tensor)
+
+            # 从磁盘读回 GPU tensor
+            import torch
+            cpu_tensor = torch.frombuffer(
+                data, dtype=torch.float16
+            ).reshape(block.tensor.shape)
+            block.tensor.copy_(cpu_tensor.cuda())
 
     def wait_for_layer_load(self, layer_idx: int):
         pass

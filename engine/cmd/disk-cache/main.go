@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/cici/disk-cache/engine/pkg/cache"
+	"predict/engine/pkg/cache"
 )
 
 var (

@@ -7,8 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/cici/disk-cache/engine/pkg/eviction"
-	"github.com/cici/disk-cache/engine/pkg/metadata"
+	"predict/engine/pkg/eviction"
+	"predict/engine/pkg/metadata"
 )
 
 // diskEngine implements Engine with Pebble metadata + LRU eviction.

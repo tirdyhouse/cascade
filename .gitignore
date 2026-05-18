@@ -1,0 +1,43 @@
+# Dependencies
+engine/vendor/
+
+# Binaries
+engine/bin/
+engine/build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reference projects（学习参考，不纳入版本控制）
+others/
+
+# Temp
+/tmp/
+*.tmp
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Go
+*.exe
+*.test
+*.out
+
+# C/C++
+*.o
+*.a
+*.so
+*.dylib

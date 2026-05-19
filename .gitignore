@@ -41,3 +41,6 @@ build/
 *.a
 *.so
 *.dylib
+
+# Test results (environment-specific)
+test/results/

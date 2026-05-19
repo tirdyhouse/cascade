@@ -24,7 +24,11 @@ from pathlib import Path
 from typing import Optional
 
 from vllm.config import VllmConfig
-from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorBase
+from vllm.distributed.kv_transfer.kv_connector.v1.base import (
+    KVConnectorBase_V1 as KVConnectorBase,
+    KVConnectorRole,
+)
+from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -39,8 +43,8 @@ class DiskCacheConnector(KVConnectorBase):
     - Eviction:    Go LRU policy, triggered before file writes
     """
 
-    def __init__(self, vllm_config: VllmConfig, *args, **kwargs):
-        super().__init__(vllm_config, *args, **kwargs)
+    def __init__(self, vllm_config: VllmConfig, role: KVConnectorRole, kv_cache_config: KVCacheConfig):
+        super().__init__(vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config)
 
         extra = vllm_config.kv_transfer_config.kv_connector_extra_config or {}
         self.cache_root = Path(extra.get("disk_cache_path", "/tmp/disk-cache"))

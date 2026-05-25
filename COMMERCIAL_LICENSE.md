@@ -1,10 +1,10 @@
 # Commercial License
 
-Predict DiskCache is available under a **dual-licensing model**:
+Cascade is available under a **dual-licensing model**:
 
 ## 1. Open Source License (Apache 2.0)
 
-For open-source projects, individual developers, and non-commercial use, Predict DiskCache is free to use under the terms of the [Apache License 2.0](./LICENSE).
+For open-source projects, individual developers, and non-commercial use, Cascade is free to use under the terms of the [Apache License 2.0](./LICENSE).
 
 This includes:
 - Personal and academic use
@@ -13,11 +13,11 @@ This includes:
 
 ## 2. Commercial License
 
-If you are **embedding Predict DiskCache into a commercial product, hardware appliance, or proprietary solution** — including but not limited to:
+If you are **embedding Cascade into a commercial product, hardware appliance, or proprietary solution** — including but not limited to:
 
 - Bundling with proprietary inference hardware
 - Embedding in a commercial software distribution
-- Providing Predict DiskCache as part of a paid infrastructure solution
+- Providing Cascade as part of a paid infrastructure solution
 - Using it in a hardware-software integrated product (appliance model)
 
 you must obtain a **Commercial License**.
@@ -45,4 +45,4 @@ This model allows us to:
 - **Sustain development** — commercial licenses fund ongoing engineering and innovation
 - **Support our hardware partners** — special commercial terms for hardware integration
 
-Predict DiskCache is developed by [Your Company]. We also build high-performance NVMe storage solutions designed for LLM inference workloads.
+Cascade is developed by [Your Company]. We also build high-performance NVMe storage solutions designed for LLM inference workloads.

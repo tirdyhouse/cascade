@@ -1,4 +1,4 @@
-# Predict DiskCache
+# Cascade
 
 > **Extend LLM inference context windows beyond GPU memory limits with a high-performance disk-backed KV cache layer.**
 
@@ -13,7 +13,7 @@
 
 LLM inference is fundamentally memory-bound. GPU HBM (~80 GB per H100) constrains how many tokens a model can process, forcing operators to choose between context length and batch size.
 
-**Predict DiskCache** decouples KV cache from GPU memory by adding a high-performance, distributed disk cache layer underneath existing inference engines. The result: longer context windows, higher throughput, and dramatically lower cost per token — without modifying the model or buying more GPUs.
+**Cascade** decouples KV cache from GPU memory by adding a high-performance, distributed disk cache layer underneath existing inference engines. The result: longer context windows, higher throughput, and dramatically lower cost per token — without modifying the model or buying more GPUs.
 
 ### Why disk?
 
@@ -67,7 +67,7 @@ The key insight: **latency and bandwidth of NVMe are viable for KV cache**, and 
 ### Project Structure
 
 ```
-predict/
+cascade/
 ├── adapter/           # Inference engine adapters
 │   └── vllm/          # vLLM KVConnector implementation
 ├── engine/            # Go core engine
@@ -200,7 +200,7 @@ Results are stored in `test/results/`. See `docs/benchmark-plan.md` for detailed
 
 ## Comparison
 
-| Feature | Native vLLM | LMCache | Predict DiskCache |
+| Feature | Native vLLM | LMCache | Cascade |
 |---|---|---|---|
 | Disk cache | ❌ No | ✅ Yes | ✅ Yes |
 | Eviction policy | ❌ APC only | LRU | **LRU + tiered** |
@@ -234,7 +234,7 @@ Please open an issue or pull request. For major changes, start with a discussion
 
 ## License
 
-Predict DiskCache is **dual-licensed**:
+Cascade is **dual-licensed**:
 
 - **Apache 2.0** — Free for open-source projects, individual developers, and non-commercial use.
 - **Commercial License** — Required for embedding in hardware appliances, proprietary products, or commercial solutions.
@@ -247,5 +247,5 @@ See [COMMERCIAL_LICENSE.md](./COMMERCIAL_LICENSE.md) for details.
 
 <p align="center">
   <b>LLM inference shouldn't be memory-bound.</b><br>
-  Predict DiskCache — extending context, one NVMe at a time.
+  Cascade — extending context, one NVMe at a time.
 </p>

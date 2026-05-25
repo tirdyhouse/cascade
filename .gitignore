@@ -44,3 +44,6 @@ build/
 
 # Test results (environment-specific)
 test/results/
+
+# Build output
+bin/

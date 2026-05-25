@@ -1,3 +1,7 @@
+<p align="center">
+  🇬🇧 <a href="README.md">English</a> | 🇨🇳 <a href="README.zh-CN.md">简体中文</a>
+</p>
+
 # Cascade
 
 > **Extend LLM inference context windows beyond GPU memory limits with a high-performance disk-backed KV cache layer.**

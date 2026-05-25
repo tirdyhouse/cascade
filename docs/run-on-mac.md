@@ -259,11 +259,25 @@ models--zai-org--GLM-ASR-Nano-2512
 
 ### 1. 理解 connector 发现机制
 
-vLLM 的 `--kv-transfer-config '{"kv_connector": "disk-cache"}'` 会尝试导入名为 `disk_cache` 的 Python 模块。我们的 connector 在 `adapter/vllm/connector.py` 中，需要让它可被发现。
+vLLM 0.21+ 支持通过 `kv_connector_module_path` 配置字段直接指定 connector 模块路径，无需手动创建符号链接。
 
-有多种方式：
+**方式 A：kv_connector_module_path（推荐，vLLM 0.21+）**
 
-**方式 A：符号链接（推荐测试用）**
+```bash
+vllm serve ... \
+    --kv-transfer-config '{
+        "kv_connector": "DiskCacheConnector",
+        "kv_connector_module_path": "adapter.vllm.connector_v21",
+        "kv_connector_extra_config": {
+            "disk_cache_path": "/tmp/cascade-kv",
+            "disk_cache_engine_addr": "http://localhost:9100"
+        }
+    }'
+```
+
+`kv_connector` 指定 connector 类名，`kv_connector_module_path` 指定 Python 模块路径（相对于 `PYTHONPATH`）。
+
+**方式 B：符号链接（vLLM 0.21 以下版本用）**
 
 ```bash
 # 在 vLLM 的搜索路径中创建链接
@@ -271,20 +285,20 @@ cd .venv-cascade/lib/python3.xx/site-packages/
 ln -s /path/to/cascade/adapter/vllm/connector.py disk_cache.py
 ```
 
-**方式 B：PYTHONPATH 环境变量**
+**方式 C：PYTHONPATH 环境变量**
 
 ```bash
 export PYTHONPATH=/path/to/cascade/adapter/vllm:$PYTHONPATH
 # 然后创建一个 disk_cache.py 的包装模块
 ```
 
-**方式 C：直接复制**
+**方式 D：直接复制**
 
 ```bash
 cp /path/to/cascade/adapter/vllm/connector.py ./disk_cache.py
 ```
 
-推荐方式 A，最简单。
+> 提示：vLLM 0.21+ 建议使用**方式 A**，无需修改 Python 环境。
 
 ### 2. 设备兼容性说明
 
@@ -301,7 +315,8 @@ connector 已内置 `_resolve_device()` 自动检测机制：
 # Mac 上手动指定 MPS
 vllm serve ... \
     --kv-transfer-config '{
-        "kv_connector": "disk-cache",
+        "kv_connector": "DiskCacheConnector",
+        "kv_connector_module_path": "adapter.vllm.connector_v21",
         "kv_connector_extra_config": {
             "target_device": "mps:0",
             ...
@@ -331,7 +346,8 @@ source .venv-cascade/bin/activate
 # Qwen2.5-0.5B 约 1GB，M1/M2 上可运行
 vllm serve Qwen/Qwen2.5-0.5B-Instruct \
     --kv-transfer-config '{
-        "kv_connector": "disk-cache",
+        "kv_connector": "DiskCacheConnector",
+        "kv_connector_module_path": "adapter.vllm.connector_v21",
         "kv_connector_extra_config": {
             "disk_cache_path": "/tmp/cascade-kv",
             "disk_cache_engine_addr": "http://localhost:9100"

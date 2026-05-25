@@ -11,6 +11,11 @@ Usage:
 
     # 2. Start vLLM with connector
     vllm serve model --kv-connector disk-cache
+
+Device support:
+  Auto-detects target device from the incoming tensor (CUDA / MPS / ROCm).
+  Override via ``target_device`` in ``kv_connector_extra_config``,
+  e.g. ``{"target_device": "mps:0"}`` or ``{"target_device": "cuda:0"}``.
 """
 
 import ctypes
@@ -38,9 +43,14 @@ class DiskCacheConnector(KVConnectorBase):
     """
     vLLM connector for disk-backed KV cache.
 
-    - Write path:  save_kv_layer() → file → Go Put()
-    - Read path:   start_load_kv() → Go Get() → read file → GPU
+    - Write path:  save_kv_layer() -> file -> Go Put()
+    - Read path:   start_load_kv() -> Go Get() -> read file -> GPU
     - Eviction:    Go LRU policy, triggered before file writes
+
+    Device support:
+      Auto-detects target device from the incoming tensor (CUDA / MPS / ROCm).
+      Override via ``target_device`` in ``kv_connector_extra_config``,
+      e.g. ``{"target_device": "mps:0"}``.
     """
 
     def __init__(self, vllm_config: VllmConfig, role: KVConnectorRole, kv_cache_config: KVCacheConfig):
@@ -49,6 +59,7 @@ class DiskCacheConnector(KVConnectorBase):
         extra = vllm_config.kv_transfer_config.kv_connector_extra_config or {}
         self.cache_root = Path(extra.get("disk_cache_path", "/tmp/disk-cache"))
         self.go_addr = extra.get("disk_cache_engine_addr", "http://localhost:9100")
+        self.target_device = extra.get("target_device", "auto")
         self.node_id = socket.gethostname()
 
         self.cache_root.mkdir(parents=True, exist_ok=True)
@@ -56,14 +67,26 @@ class DiskCacheConnector(KVConnectorBase):
 
         if self._connected:
             logger.info(
-                "DiskCacheConnector ready: cache=%s engine=%s",
-                self.cache_root, self.go_addr,
+                "DiskCacheConnector ready: cache=%s engine=%s device=%s",
+                self.cache_root, self.go_addr, self.target_device,
             )
         else:
             logger.warning(
                 "DiskCacheConnector: Go engine not reachable at %s. "
                 "Run 'disk-cache' first.", self.go_addr,
             )
+
+    # ── Device resolution ──
+
+    def _resolve_device(self, target_tensor) -> str:
+        """自动检测目标设备，支持手动覆盖。
+
+        Returns:
+            Device string, e.g. ``"cuda:0"``, ``"mps:0"``.
+        """
+        if self.target_device != "auto":
+            return self.target_device
+        return str(target_tensor.device)
 
     # ── Worker-side hooks ──
 
@@ -74,7 +97,7 @@ class DiskCacheConnector(KVConnectorBase):
 
         block_hash = hash(layer_idx, kv_tensor)  # TODO: use real vLLM block hash
 
-        # GPU → CPU (PyTorch async copy, doesn't block inference)
+        # GPU -> CPU (PyTorch async copy, doesn't block inference)
         cpu_tensor = kv_tensor.cpu()
         data = cpu_tensor.numpy().tobytes()
 
@@ -109,7 +132,9 @@ class DiskCacheConnector(KVConnectorBase):
             cpu_tensor = torch.frombuffer(
                 data, dtype=torch.float16
             ).reshape(block.tensor.shape)
-            block.tensor.copy_(cpu_tensor.cuda())
+
+            device = self._resolve_device(block.tensor)
+            block.tensor.copy_(cpu_tensor.to(device, non_blocking=True))
 
     def wait_for_layer_load(self, layer_idx: int):
         pass

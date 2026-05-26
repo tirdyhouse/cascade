@@ -77,12 +77,17 @@ func main() {
 	log.Printf("disk-cache engine started on %s", *listenAddr)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/put", handlePut)         // POST hash, file_path, size
-	mux.HandleFunc("/get", handleGet)          // GET ?hash=
-	mux.HandleFunc("/remove", handleRemove)    // POST hash
-	mux.HandleFunc("/exists", handleExists)    // GET ?hash=
-	mux.HandleFunc("/evict", handleEvict)      // POST target_bytes
+	mux.HandleFunc("/put", handlePut)
+	mux.HandleFunc("/get", handleGet)
+	mux.HandleFunc("/remove", handleRemove)
+	mux.HandleFunc("/exists", handleExists)
+	mux.HandleFunc("/evict", handleEvict)
 	mux.HandleFunc("/stats", handleStats)
+	mux.HandleFunc("/match", handleMatch)
+	mux.HandleFunc("/record", handleRecord)
+	mux.HandleFunc("/record_batch", handleRecordBatch)
+	mux.HandleFunc("/record", handleRecord)    // POST prompt_hash, num_tokens
+	mux.HandleFunc("/record_batch", handleRecordBatch) // POST token_ids, mm_hashes, block_size
 	mux.HandleFunc("/match", handleMatch)      // POST token_ids, mm_hashes, block_size
 	mux.HandleFunc("/record", handleRecord)    // POST prompt_hash, num_tokens
 
@@ -141,6 +146,35 @@ func handleEvict(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(metas)
 }
 
+
+// ── /record_batch: records all sub-block sentinels ──
+
+// RecordBatchReq records sentinels for all block-aligned prefixes.
+// The Go engine computes cumulative hashes incrementally and records
+// sentinel markers for each block boundary (16, 32, 48, ...).
+// Python calls this after writing all layer files.
+type RecordBatchReq struct {
+	TokenIDs  []int64  `json:"token_ids"`
+	MMHashes  []string `json:"mm_hashes"`
+	BlockSize int      `json:"block_size"`
+}
+
+func handleRecordBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", 400)
+		return
+	}
+	var req RecordBatchReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if err := eng.RecordAll(req.TokenIDs, req.MMHashes, req.BlockSize); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.WriteHeader(200)
+}
 func handleStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(eng.Stats())
 }

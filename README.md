@@ -96,7 +96,7 @@ cascade/
 > **Phase 1 — Local Disk Cache MVP** ✅
 
 | Component | Status | Description |
-|---|---|---|---|
+|---|---|---|
 | Go engine core | ✅ **Done** | Pebble-backed metadata store, LRU eviction, HTTP API |
 | vLLM connector | ✅ **Done** | Full KVConnectorBase_V1 implementation (~185 LOC) |
 | Disk I/O benchmarks | ✅ **Done** | Sequential/random read-write, latency profiling |

@@ -207,7 +207,7 @@ python3 test/scripts/gen_report.py
 ### 设计理念
 
 | | LMCache | Mooncake | **Cascade** |
-|---|---|---|---|---|
+|---|---|---|---|
 | **定位** | 分层缓存引擎 | 分布式 KV 传输引擎 | **集群磁盘缓存** |
 | **磁盘角色** | 温数据层（CPU→Disk） | 内存溢出卸载目标 | **🎯 主存储层** |
 | **数据路径** | GPU → CPU → Disk | GPU 内存 ↔ RDMA → 远端 GPU | **GPU → NVMe (GDS) → 集群 (RDMA)** |
@@ -216,7 +216,7 @@ python3 test/scripts/gen_report.py
 ### 当前实现（Phase 1 MVP）
 
 | 特性 | LMCache | Mooncake | **Cascade** |
-|---|---|---|---|---|
+|---|---|---|---|
 | **磁盘缓存** | ✅ LocalDiskBackend | ✅ FileStorage (SSD offload) | **✅ 核心设计** |
 | **KV 数据 I/O** | Python `open/write` | C++ io_uring / POSIX | **Python safetensors*** |
 | **元数据存储** | Python 内存 dict | etcd + Master 服务 | **Pebble (LSM 树)** |
@@ -232,7 +232,7 @@ python3 test/scripts/gen_report.py
 ### 规划架构（设计目标）
 
 | 特性 | LMCache | Mooncake | **Cascade** |
-|---|---|---|---|---|
+|---|---|---|---|
 | **I/O 栈** | Python 原生 | C++ 原生 | **Python connector → Go 引擎 → C 后端** |
 | **GPU↔NVMe** | ✅ GdsBackend (部分) | ❌ 不支持 | **📋 GPUDirect Storage (cufile)** |
 | **跨节点传输** | ❌ 不支持 RDMA | ✅ RDMA (核心能力) | **📋 RDMA (ibverbs)** |

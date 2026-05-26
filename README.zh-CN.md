@@ -302,5 +302,5 @@ Cascade 采用**双授权**模式：
 
 <p align="center">
   <b>LLM 推理不应该被显存限制。</b><br>
-  Cascade — 每次一块 NVMe，扩展无限上下文。
+  Cascade — 池化 NVMe，延伸上下文。
 </p>

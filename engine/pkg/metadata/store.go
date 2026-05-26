@@ -161,6 +161,57 @@ func (s *Store) DeleteSentinel(promptHash string) error {
 	return s.db.Delete(sentinelKey(promptHash), pebble.Sync)
 }
 
+
+// ── Chunk metadata (prefix 0x02) ──
+// Key format: 0x02{prefix_key 32 hex}{layer_name}{chunk_index 8 bytes BE}
+// Value: 8 bytes uint64 = num_tokens in this chunk
+
+func chunkKey(prefixKey, layerName string, chunkIndex int) []byte {
+	// 0x02 + 32 hex (prefix) + layer_name + 8 (index)
+	key := make([]byte, 1+32+len(layerName)+8)
+	key[0] = 0x02
+	copy(key[1:], prefixKey)
+	copy(key[1+32:], layerName)
+	binary.BigEndian.PutUint64(key[1+32+len(layerName):], uint64(chunkIndex))
+	return key
+}
+
+func (s *Store) PutChunk(prefixKey, layerName string, chunkIndex, numTokens int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, uint64(numTokens))
+	return s.db.Set(chunkKey(prefixKey, layerName, chunkIndex), buf, pebble.Sync)
+}
+
+func (s *Store) ListChunks(prefixKey, layerName string) ([]int, error) {
+	// Iterate over all keys matching prefix 0x02{prefix_key}{layer_name}
+	prefix := make([]byte, 1+32+len(layerName))
+	prefix[0] = 0x02
+	copy(prefix[1:], prefixKey)
+	copy(prefix[1+32:], layerName)
+
+	iter, err := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: append(prefix, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+
+	var indices []int
+	for iter.First(); iter.Valid(); iter.Next() {
+		key := iter.Key()
+		// key format: 0x02{32}{layer}{8}=1+32+len+8 bytes
+		if len(key) < 1+32+len(layerName)+8 {
+			continue
+		}
+		idx := int(binary.BigEndian.Uint64(key[1+32+len(layerName):]))
+		indices = append(indices, idx)
+	}
+	return indices, nil
+}
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

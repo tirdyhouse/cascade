@@ -1,8 +1,8 @@
 package cache
 
 import (
-	"context"
 	"crypto/sha256"
+	"encoding"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -142,7 +142,6 @@ func (e *diskEngine) Evict(targetBytes int64) []BlockMeta {
 }
 
 func (e *diskEngine) evictIfNeeded(needed int64) {
-	// Rough check: don't hold lock for eviction
 	if e.pol.TotalBytes()+needed <= e.cfg.MaxSizeBytes {
 		return
 	}
@@ -161,74 +160,148 @@ func (e *diskEngine) Stats() Stats {
 
 // ── Sentinel / Match ──
 
-// RecordSentinel stores a cache-complete marker in Pebble metadata.
-// Python calls this after writing all layer files for a request.
+// RecordSentinel stores a single sentinel marker.
 func (e *diskEngine) RecordSentinel(promptHash string, numTokens int) error {
 	return e.meta.RecordSentinel(promptHash, numTokens)
 }
 
-// Match finds the largest cache hit by trying all block-aligned lengths
-// from largest to smallest. Uses parallel goroutines with context cancellation
-// so the first hit stops all other checks.
+// RecordAll computes all block-aligned cumulative hashes for a prompt
+// and records them as sentinels in a single Pebble batch.
+// numTokens is the actual number of KV tokens cached (aligned to block_size).
+func (e *diskEngine) RecordAll(tokenIDs []int64, mmHashes []string, blockSize int) error {
+	numTokens := len(tokenIDs) - 1
+	numBlocks := numTokens / blockSize
+	if numBlocks < 1 {
+		return nil
+	}
+
+	// Incremental SHA-256: scan tokens once, snapshot at each block boundary.
+	// For each snapshot, add mmHashes to finalize the cumulative hash.
+	hashes := make([]string, numBlocks)
+	h := sha256.New()
+	buf := make([]byte, 4)
+
+	for i := 0; i < numBlocks; i++ {
+		start := i * blockSize
+		end := start + blockSize
+		if end > len(tokenIDs) {
+			end = len(tokenIDs)
+		}
+		for _, tid := range tokenIDs[start:end] {
+			binary.BigEndian.PutUint32(buf, uint32(tid))
+			h.Write(buf)
+		}
+		// Clone state, add mmHashes, finalize
+		clone := cloneHash(h)
+		for _, mh := range mmHashes {
+			clone.Write([]byte(mh))
+		}
+		hashes[i] = fmt.Sprintf("%x", clone.Sum(nil))[:32]
+	}
+
+	// Record all in batch (incremental: skip already-existing)
+	for i, hash := range hashes {
+		n := (i + 1) * blockSize
+		if _, ok := e.meta.GetSentinel(hash); !ok {
+			if err := e.meta.RecordSentinel(hash, n); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Match finds the largest cache hit:
+//   1. Incremental SHA-256: scan token_ids once, collect cumulative hashes.
+//   2. Binary search (since sentinels are monotonic: if hash[k] exists, hash[0..k-1] also exist).
+// Returns matched token count and the corresponding prompt hash.
 func (e *diskEngine) Match(tokenIDs []int64, mmHashes []string, blockSize int) MatchResult {
 	if len(tokenIDs) < 2 || blockSize < 1 {
 		return MatchResult{}
 	}
 
-	// Align to block boundary: (len-1) // blockSize * blockSize
 	numTokens := len(tokenIDs) - 1
-	maxCheck := (numTokens / blockSize) * blockSize
-	if maxCheck < blockSize {
+	numBlocks := numTokens / blockSize
+	if numBlocks < 1 {
 		return MatchResult{}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// 1. Incremental SHA-256: scan once, collect cumulative hashes
+	hashes := make([]string, numBlocks)
+	h := sha256.New()
+	buf := make([]byte, 4)
 
-	type hit struct {
-		tokens int
-		hash   string
+	for i := 0; i < numBlocks; i++ {
+		start := i * blockSize
+		end := start + blockSize
+		if end > len(tokenIDs) {
+			end = len(tokenIDs)
+		}
+		for _, tid := range tokenIDs[start:end] {
+			binary.BigEndian.PutUint32(buf, uint32(tid))
+			h.Write(buf)
+		}
+		// Clone state, add mmHashes, finalize cumulative hash
+		clone := cloneHash(h)
+		for _, mh := range mmHashes {
+			clone.Write([]byte(mh))
+		}
+		hashes[i] = fmt.Sprintf("%x", clone.Sum(nil))[:32]
 	}
-	hitCh := make(chan hit, 1)
 
-	// Concurrently check from largest to smallest.
-	// Goroutines send to hitCh; first to send wins, cancel stops the rest.
-	for check := maxCheck; check >= blockSize; check -= blockSize {
-		go func(n int) {
-			h := computePromptHash(tokenIDs[:n], mmHashes)
-			if _, ok := e.meta.GetSentinel(h); ok {
-				select {
-				case hitCh <- hit{tokens: n, hash: h}:
-				case <-ctx.Done():
-				}
-			}
-		}(check)
+	// 2. Binary search: find the largest index where sentinel exists.
+	// Because RecordAll stores all prefixes, sentinel existence is monotonic:
+	// if hashes[k] exists, then hashes[0..k-1] also exist.
+	lo, hi := 0, numBlocks-1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if _, ok := e.meta.GetSentinel(hashes[mid]); ok {
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
 	}
 
-	select {
-	case h := <-hitCh:
-		cancel()
-		return MatchResult{MatchedTokens: h.tokens, PromptHash: h.hash}
-	case <-ctx.Done():
+	if hi < 0 {
 		return MatchResult{}
 	}
+	matched := (hi + 1) * blockSize
+	return MatchResult{MatchedTokens: matched, PromptHash: hashes[hi]}
 }
 
 // ── Hash helpers ──
+
+// cloneHash clones a sha256 hash state by marshalling/unmarshalling.
+func cloneHash(h interface{}) hashHash {
+	// sha256.digest implements encoding.BinaryMarshaler/BinaryUnmarshaler
+	marshaler, ok := h.(encoding.BinaryMarshaler)
+	if !ok {
+		// Fallback: can't clone, return new hash (wrong but safe at boundaries)
+		return sha256.New()
+	}
+	state, err := marshaler.MarshalBinary()
+	if err != nil {
+		return sha256.New()
+	}
+	cl := sha256.New()
+	unmarshaler := cl.(encoding.BinaryUnmarshaler)
+	if err := unmarshaler.UnmarshalBinary(state); err != nil {
+		return sha256.New()
+	}
+	return cl
+}
+
+// hashHash is the interface shared by sha256.digest.
+type hashHash interface {
+	Write(p []byte) (int, error)
+	Sum(b []byte) []byte
+}
 
 func alignToBlockSize(numTokens, blockSize int) int {
 	if numTokens < 1 {
 		return 0
 	}
 	return (numTokens - 1) / blockSize * blockSize
-}
-
-func hashTokenCount(numTokens, blockSize int) int {
-	aligned := alignToBlockSize(numTokens, blockSize)
-	if aligned < 1 {
-		return 1
-	}
-	return aligned
 }
 
 func computePromptHash(tokenIDs []int64, mmHashes []string) string {

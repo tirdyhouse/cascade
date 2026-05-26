@@ -190,11 +190,13 @@ class DiskCacheConnector(KVConnectorBase_V1):
             self._go_put(go_hash, str(file_path.relative_to(self.cache_root)), file_size)
 
     def wait_for_save(self):
+        """Called after all layers are written. Records all sub-block sentinels
+        via /record_batch for prefix caching across different prompt lengths."""
         meta = self._get_connector_metadata()
         if isinstance(meta, DiskCacheMeta):
             for req in meta.requests:
                 if req.is_store:
-                    self._go_record(req.prompt_hash, req.num_tokens)
+                    self._go_record_batch(req.token_ids, req.mm_hashes, req.num_tokens)
 
     def get_num_new_matched_tokens(self, request, num_computed_tokens):
         token_ids = request.prompt_token_ids or []
@@ -298,6 +300,23 @@ class DiskCacheConnector(KVConnectorBase_V1):
             urllib.request.urlopen(req, timeout=5)
         except Exception as e:
             logger.debug("Go Record failed: %s", e)
+
+    def _go_record_batch(self, token_ids, mm_hashes, num_tokens):
+        """Record all sub-block sentinels via /record_batch.
+        Go engine computes incremental cumulative hashes and stores all prefix lengths."""
+        try:
+            req = urllib.request.Request(
+                f"{self.go_addr}/record_batch",
+                data=json.dumps({
+                    "token_ids": token_ids[:num_tokens],
+                    "mm_hashes": mm_hashes,
+                    "block_size": self._block_size,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            logger.debug("Go RecordBatch failed: %s", e)
 
     def _go_put(self, hash_val, file_path, size):
         try:

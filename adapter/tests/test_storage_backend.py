@@ -214,11 +214,10 @@ class TestNvFileBackendMocked:
                 pass
 
             def write(self, gpu_addr_ptr, nbytes, file_offset=0, dev_offset=0):
-                # The "GPU address" is actually a CPU tensor data_ptr
-                # in test mode.  Use ctypes to read the bytes.
+                # gpu_addr_ptr is already a ctypes.c_void_p from _CuFileHandle
                 import ctypes
                 buf = (ctypes.c_byte * nbytes).from_address(
-                    ctypes.c_void_p(gpu_addr_ptr).value
+                    gpu_addr_ptr.value
                 )
                 with open(self.path, "r+b") as f:
                     f.seek(file_offset)
@@ -231,7 +230,7 @@ class TestNvFileBackendMocked:
                     f.seek(file_offset)
                     data = f.read(nbytes)
                 buf = (ctypes.c_byte * nbytes).from_address(
-                    ctypes.c_void_p(gpu_addr_ptr).value
+                    gpu_addr_ptr.value
                 )
                 buf[:] = data
                 return nbytes
@@ -249,36 +248,23 @@ class TestNvFileBackendMocked:
     def backend(self, mock_cufile):
         with (
             mock.patch.dict("sys.modules", {"cufile": mock_cufile}),
-            mock.patch("adapter.storage.nvfile_backend._probe_library",
+            mock.patch("adapter.storage.nvfile_backend._probe_module",
                        return_value="cufile"),
         ):
             from adapter.storage.nvfile_backend import NvFileBackend
             backend = NvFileBackend()
-            # Make the backend use CPU "GPU" pointers so tests work
             backend._lib_name = "cufile"
-            return backend
+            yield backend
 
     def test_save_and_load_cpu_as_gpu(self, backend, tmp_path, mock_cufile):
-        """Simulate saving/loading a "GPU" tensor (actually CPU since no real GPU).
-
-        The mock CuFile treats data_ptr() as a byte buffer address.
-        For a CPU tensor, data_ptr() points to the actual data.
-        """
+        """Simulate save/load with CPU tensors (GDS-addressable via mock)."""
         with mock.patch.dict("sys.modules", {"cufile": mock_cufile}):
             path = tmp_path / "test.kvcache"
             tensor = torch.randn(2, 256, 8, 128, dtype=torch.bfloat16)
-
-            # Simulate GPU tensor by patching is_cuda
-            with mock.patch.object(tensor, "is_cuda", True):
-                backend.save(path, tensor)
-
+            backend.save(path, tensor)
             assert path.exists()
             assert path.stat().st_size > _HEADER_SIZE
-
-            # Load back
-            with mock.patch.object(tensor, "is_cuda", True):
-                loaded = backend.load(path, device="cpu")
-
+            loaded = backend.load(path, device="cpu")
             assert torch.equal(loaded, tensor)
 
     def test_save_file_format(self, backend, tmp_path, mock_cufile):
@@ -286,9 +272,7 @@ class TestNvFileBackendMocked:
         with mock.patch.dict("sys.modules", {"cufile": mock_cufile}):
             path = tmp_path / "test.kvcache"
             tensor = torch.arange(16, dtype=torch.int32).reshape(4, 4)
-
-            with mock.patch.object(tensor, "is_cuda", True):
-                backend.save(path, tensor)
+            backend.save(path, tensor)
 
             # Read header
             with open(path, "rb") as f:
@@ -305,6 +289,7 @@ class TestNvFileBackendMocked:
             assert raw == expected
 
     def test_is_available_true(self, backend):
+        # is_available returns True because _probe_library is mocked in fixture
         assert backend.is_available() is True
 
     def test_save_load_small_tensor(self, backend, tmp_path, mock_cufile):
@@ -312,12 +297,8 @@ class TestNvFileBackendMocked:
         with mock.patch.dict("sys.modules", {"cufile": mock_cufile}):
             path = tmp_path / "small.kvcache"
             tensor = torch.tensor([1, 2, 3], dtype=torch.float32)
-
-            with mock.patch.object(tensor, "is_cuda", True):
-                backend.save(path, tensor)
-
-            with mock.patch.object(tensor, "is_cuda", True):
-                loaded = backend.load(path, device="cpu")
+            backend.save(path, tensor)
+            loaded = backend.load(path, device="cpu")
             assert torch.equal(loaded, tensor)
 
     def test_save_failure_cleans_up_temp(self, backend, tmp_path, mock_cufile):
@@ -331,17 +312,12 @@ class TestNvFileBackendMocked:
 
             path = tmp_path / "fail.kvcache"
             tensor = torch.randn(2, 8, dtype=torch.float32)
-
-            with (
-                mock.patch.object(tensor, "is_cuda", True),
-                pytest.raises(RuntimeError, match="GDS write failed"),
-            ):
+            with pytest.raises(RuntimeError, match="GDS write failed"):
                 backend.save(path, tensor)
 
             # No temp files should remain
             tmp_files = list(tmp_path.glob("*.tmp*"))
             assert len(tmp_files) == 0
-            # Target file should not exist
             assert not path.exists()
 
             # Restore original

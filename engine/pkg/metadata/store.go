@@ -11,11 +11,16 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
+// Store manages block metadata and sentinel markers using Pebble.
+// Key layout:
+//   - Block meta:  0x00 + 8-byte uint64 hash (big-endian), total 9 bytes
+//   - Sentinel:    0x01 + string prompt_hash
 type Store struct {
 	db *pebble.DB
 	mu sync.RWMutex
 }
 
+// BlockMeta stores metadata for a cached block on disk.
 type BlockMeta struct {
 	Hash       uint64
 	FilePath   string
@@ -40,10 +45,13 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-func hashKey(hash uint64) []byte {
-	b := make([]byte, 8)
-	binary.BigEndian.PutUint64(b, hash)
-	return b
+// ── Block meta keys (prefix 0x00) ──
+
+func blockKey(hash uint64) []byte {
+	key := make([]byte, 9)
+	key[0] = 0x00
+	binary.BigEndian.PutUint64(key[1:], hash)
+	return key
 }
 
 func (s *Store) Put(meta *BlockMeta) error {
@@ -53,11 +61,11 @@ func (s *Store) Put(meta *BlockMeta) error {
 	if err := gob.NewEncoder(&buf).Encode(meta); err != nil {
 		return err
 	}
-	return s.db.Set(hashKey(meta.Hash), buf.Bytes(), pebble.Sync)
+	return s.db.Set(blockKey(meta.Hash), buf.Bytes(), pebble.Sync)
 }
 
 func (s *Store) Get(hash uint64) (*BlockMeta, error) {
-	val, closer, err := s.db.Get(hashKey(hash))
+	val, closer, err := s.db.Get(blockKey(hash))
 	if err == pebble.ErrNotFound {
 		return nil, nil
 	}
@@ -73,9 +81,26 @@ func (s *Store) Get(hash uint64) (*BlockMeta, error) {
 }
 
 func (s *Store) Delete(hash uint64) error {
-	return s.db.Delete(hashKey(hash), pebble.Sync)
+	return s.db.Delete(blockKey(hash), pebble.Sync)
 }
 
+func (s *Store) Count() (int, error) {
+	iter, err := s.db.NewIter(nil)
+	if err != nil {
+		return 0, err
+	}
+	defer iter.Close()
+	count := 0
+	for iter.First(); iter.Valid(); iter.Next() {
+		key := iter.Key()
+		if len(key) == 9 && key[0] == 0x00 {
+			count++
+		}
+	}
+	return count, iter.Error()
+}
+
+// IterateAll calls fn for each block metadata entry (skips sentinel keys).
 func (s *Store) IterateAll(fn func(*BlockMeta) error) error {
 	iter, err := s.db.NewIter(nil)
 	if err != nil {
@@ -83,6 +108,10 @@ func (s *Store) IterateAll(fn func(*BlockMeta) error) error {
 	}
 	defer iter.Close()
 	for iter.First(); iter.Valid(); iter.Next() {
+		key := iter.Key()
+		if len(key) != 9 || key[0] != 0x00 {
+			continue
+		}
 		var meta BlockMeta
 		if err := gob.NewDecoder(bytes.NewReader(iter.Value())).Decode(&meta); err != nil {
 			continue
@@ -94,17 +123,42 @@ func (s *Store) IterateAll(fn func(*BlockMeta) error) error {
 	return iter.Error()
 }
 
-func (s *Store) Count() (int, error) {
-	iter, err := s.db.NewIter(nil)
+// ── Sentinel keys (prefix 0x01) ──
+
+func sentinelKey(hash string) []byte {
+	key := make([]byte, 1+len(hash))
+	key[0] = 0x01
+	copy(key[1:], hash)
+	return key
+}
+
+// RecordSentinel stores a cache-complete marker for a prompt hash.
+// numTokens is the number of KV tokens cached (aligned to block_size).
+func (s *Store) RecordSentinel(promptHash string, numTokens int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, uint64(numTokens))
+	return s.db.Set(sentinelKey(promptHash), buf, pebble.Sync)
+}
+
+// GetSentinel returns the cached token count for a prompt hash, if recorded.
+func (s *Store) GetSentinel(promptHash string) (int, bool) {
+	val, closer, err := s.db.Get(sentinelKey(promptHash))
+	if err == pebble.ErrNotFound {
+		return 0, false
+	}
 	if err != nil {
-		return 0, err
+		return 0, false
 	}
-	defer iter.Close()
-	count := 0
-	for iter.First(); iter.Valid(); iter.Next() {
-		count++
-	}
-	return count, iter.Error()
+	defer closer.Close()
+	numTokens := int(binary.BigEndian.Uint64(val))
+	return numTokens, true
+}
+
+// DeleteSentinel removes a sentinel marker.
+func (s *Store) DeleteSentinel(promptHash string) error {
+	return s.db.Delete(sentinelKey(promptHash), pebble.Sync)
 }
 
 func (s *Store) Close() error {

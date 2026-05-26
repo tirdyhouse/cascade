@@ -194,7 +194,7 @@ class DiskCacheConnector(KVConnectorBase_V1):
         if isinstance(meta, DiskCacheMeta):
             for req in meta.requests:
                 if req.is_store:
-                    self._write_sentinel(req.prompt_hash)
+                    self._go_record(req.prompt_hash, req.num_tokens)
 
     def get_num_new_matched_tokens(self, request, num_computed_tokens):
         token_ids = request.prompt_token_ids or []
@@ -204,12 +204,11 @@ class DiskCacheConnector(KVConnectorBase_V1):
         if num_to_check <= num_computed_tokens:
             return 0, False
         mm_hashes = [f.identifier for f in request.mm_features]
-        hash_n = hash_token_count(len(token_ids) - 1, self._block_size)
-        prompt_hash = compute_prompt_hash(token_ids, hash_n, mm_hashes)
-        sentinel = self._sentinel_path(prompt_hash)
-        if sentinel.exists():
-            logger.info("Disk cache HIT for request %s (%d tokens)", request.request_id, num_to_check)
-            return num_to_check - num_computed_tokens, False
+        result = self._go_match(token_ids, mm_hashes)
+        if result and result.get("matched_tokens", 0) > 0:
+            matched = result["matched_tokens"]
+            logger.info("Disk cache HIT for request %s (%d tokens)", request.request_id, matched)
+            return matched - num_computed_tokens, False
         return 0, False
 
     def update_state_after_alloc(self, request, blocks, num_external_tokens):
@@ -267,13 +266,38 @@ class DiskCacheConnector(KVConnectorBase_V1):
     def _cached_file_path(self, layer_hash):
         return self.cache_root / layer_hash[:2] / layer_hash[2:4] / f"{layer_hash}.safetensors"
 
-    def _sentinel_path(self, prompt_hash):
-        return self.cache_root / "__sentinel__" / f"{prompt_hash}.cached"
+    def _go_match(self, token_ids, mm_hashes):
+        """Send token IDs to Go engine for cache hit detection (parallel)."""
+        try:
+            req = urllib.request.Request(
+                f"{self.go_addr}/match",
+                data=json.dumps({
+                    "token_ids": token_ids,
+                    "mm_hashes": mm_hashes,
+                    "block_size": self._block_size,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            resp = urllib.request.urlopen(req, timeout=5)
+            return json.loads(resp.read())
+        except Exception as e:
+            logger.debug("Go Match failed: %s", e)
+            return None
 
-    def _write_sentinel(self, prompt_hash):
-        sentinel = self._sentinel_path(prompt_hash)
-        sentinel.parent.mkdir(parents=True, exist_ok=True)
-        sentinel.touch()
+    def _go_record(self, prompt_hash, num_tokens):
+        """Record a cache-complete sentinel in Go engine metadata."""
+        try:
+            req = urllib.request.Request(
+                f"{self.go_addr}/record",
+                data=json.dumps({
+                    "prompt_hash": prompt_hash,
+                    "num_tokens": num_tokens,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            logger.debug("Go Record failed: %s", e)
 
     def _go_put(self, hash_val, file_path, size):
         try:

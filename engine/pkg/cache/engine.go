@@ -165,6 +165,18 @@ func (e *diskEngine) RecordSentinel(promptHash string, numTokens int) error {
 	return e.meta.RecordSentinel(promptHash, numTokens)
 }
 
+// ── Chunk storage ──
+
+// PutChunk records a chunk file for a layer.
+func (e *diskEngine) PutChunk(prefixKey, layerName string, chunkIndex, numTokens int) error {
+	return e.meta.PutChunk(prefixKey, layerName, chunkIndex, numTokens)
+}
+
+// ListChunks returns chunk indices for a layer under a prefix key.
+func (e *diskEngine) ListChunks(prefixKey, layerName string) ([]int, error) {
+	return e.meta.ListChunks(prefixKey, layerName)
+}
+
 // RecordAll computes all block-aligned cumulative hashes for a prompt
 // and records them as sentinels in a single Pebble batch.
 // numTokens is the actual number of KV tokens cached (aligned to block_size).

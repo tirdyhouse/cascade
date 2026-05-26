@@ -25,7 +25,7 @@ LLM inference is fundamentally memory-bound. GPU HBM (~80 GB per H100) constrain
 |---|---|---|---|
 | Capacity | 80 GB | 2–30 TB | ∞ (cluster) |
 | Latency | ~1 µs | ~10 µs | ~100 µs |
-| Bandwidth | 2000 GB/s | 7 GB/s | 25 GB/s |
+| Bandwidth | 2000 GB/s | 7 GB/s | 100–500 GB/s |
 | Cost/GB | ~$100 | ~$0.10 | ~$0.05 |
 
 The key insight: **latency and bandwidth of NVMe are viable for KV cache**, and the cost advantage is overwhelming. By keeping hot data on GPU and seamlessly tiering cold data to disk, we enable practical 1M+ token contexts without rebuilding infrastructure.

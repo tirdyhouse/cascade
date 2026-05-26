@@ -19,8 +19,9 @@ type diskEngine struct {
 
 	mu            sync.Mutex
 	totalBytes    int64 // tracked by eviction policy
-	blocksStored  atomic.Int64
-	blocksEvicted atomic.Int64
+	blocksStored    atomic.Int64
+	blocksEvicted   atomic.Int64
+	blocksRetrieved atomic.Int64
 }
 
 // New creates a new disk cache engine.
@@ -91,6 +92,7 @@ func (e *diskEngine) Get(hash uint64) (*BlockMeta, error) {
 	m.AccessTime = now()
 	e.meta.Put(m)
 	e.pol.Record(hexKey(hash), m.Size)
+	e.blocksRetrieved.Add(1)
 
 	return &BlockMeta{
 		Hash:       m.Hash,
@@ -147,9 +149,10 @@ func (e *diskEngine) evictIfNeeded(needed int64) {
 // Stats returns engine statistics.
 func (e *diskEngine) Stats() Stats {
 	return Stats{
-		BlocksStored:  e.blocksStored.Load(),
-		BlocksEvicted: e.blocksEvicted.Load(),
-		DiskUsedBytes: e.pol.TotalBytes(),
+		BlocksStored:    e.blocksStored.Load(),
+		BlocksRetrieved: e.blocksRetrieved.Load(),
+		BlocksEvicted:   e.blocksEvicted.Load(),
+		DiskUsedBytes:   e.pol.TotalBytes(),
 	}
 }
 

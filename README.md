@@ -61,9 +61,10 @@ The key insight: **latency and bandwidth of NVMe are viable for KV cache**, and 
 │                                                              │
 │  ┌─────────────────────────────────────────────────────┐    │
 │  │              Cluster Manager (future)                 │    │
-│  │  • etcd-based node discovery                         │    │
+│  │  • GPU resource monitoring (VRAM, task count, load)  │    │
+│  │  • GPU-aware request dispatching                     │    │
+│  │  • Pooled SSD: RDMA shared NVMe across all nodes     │    │
 │  │  • Dynamic role assignment (prefill/decode/storage)  │    │
-│  │  • RDMA data transfer                                │    │
 │  └─────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -95,14 +96,15 @@ cascade/
 > **Phase 1 — Local Disk Cache MVP** ✅
 
 | Component | Status | Description |
-|---|---|---|
+|---|---|---|---|
 | Go engine core | ✅ **Done** | Pebble-backed metadata store, LRU eviction, HTTP API |
 | vLLM connector | ✅ **Done** | Full KVConnectorBase_V1 implementation (~185 LOC) |
 | Disk I/O benchmarks | ✅ **Done** | Sequential/random read-write, latency profiling |
 | Benchmark suite | ✅ **Done** | Compare native vLLM vs LMCache vs DiskCache |
 | GDS / RDMA | 📋 **Planned** | C storage primitives scaffolded |
+| GPU-aware scheduler | 📋 **Planned** | Per-GPU VRAM/task monitoring + smart dispatching |
+| Pooled SSD cluster | 📋 **Planned** | Cross-node RDMA shared storage pool |
 | SGLang adapter | 📋 **Planned** | Directory structure ready |
-| Cluster manager | 📋 **Planned** | Architecture designed in DESIGN.md |
 | Helm deployment | 📋 **Planned** | Chart scaffolded |
 
 ---
@@ -167,12 +169,16 @@ python3 test/scripts/run_bench.py --mode diskcache
 - [ ] Automatic fallback: GDS → POSIX
 - [ ] Throughput target: 3–5× vs CPU bounce buffer
 
-### Phase 3: Distributed Cluster 📋
-- [ ] Cluster manager: etcd-based node registration & discovery
-- [ ] Dynamic role assignment (prefill / decode / storage)
-- [ ] RDMA data transfer between nodes
-- [ ] SGLang adapter
-- [ ] Fault tolerance & data migration
+### Phase 3: GPU-Aware Cluster Scheduling 📋
+- [ ] **GPU resource monitoring**: per-GPU VRAM usage, running task count, utilization
+- [ ] **GPU-aware request dispatching**: route requests based on VRAM capacity and GPU load, not blind round-robin
+- [ ] **Pooled SSD storage**: RDMA-accessible shared NVMe pool across all nodes
+- [ ] **VRAM admission control**: if no GPU has enough VRAM, evict cold KV blocks to pooled SSD to make room
+- [ ] **Dynamic role assignment**: nodes auto-switch between prefill/decode/storage based on real-time load
+- [ ] **Multi-GPU gang scheduling**: reserve N GPUs simultaneously for tensor-parallel models
+- [ ] **etcd-based node registry & discovery**
+- [ ] **SGLang adapter**
+- [ ] **Fault tolerance & data migration**
 
 ### Phase 4: Production Hardening 📋
 - [ ] Helm chart (Kubernetes deployment)
@@ -238,7 +244,9 @@ Results are stored in `test/results/`. See `docs/benchmark-plan.md` for detailed
 | **GPU↔NVMe** | ✅ GdsBackend (partial) | ❌ Not supported | **📋 GPUDirect Storage (cufile)** |
 | **Cross-node transfer** | ❌ No RDMA | ✅ RDMA (core competency) | **📋 RDMA (ibverbs)** |
 | **Async disk I/O** | ❌ Not supported | ✅ io_uring | **📋 io_uring** |
+| **GPU resource scheduling** | ❌ None | ❌ Manual role only | **📋 GPU-aware: VRAM/task monitoring + smart dispatching** |
 | **Cluster manager** | ❌ P2P only (ZMQ) | ✅ Master + etcd + HA | **📋 ClusterManager + etcd** |
+| **Pooled SSD storage** | ❌ No | ❌ Local offload only | **📋 RDMA shared NVMe pool** |
 | **Pure storage node** | ❌ No such concept | ❌ GPU required | **📋 GPU-free storage node** |
 | **SGLang adapter** | ❌ Not available | ✅ Supported | **📋 Scaffolded** |
 
@@ -252,8 +260,10 @@ Phase 2 (next)      Go engine takes over all storage I/O
                     C backends: GPUDirect Storage (GPU↔NVMe zero-copy)
                                 io_uring (async disk I/O)
                     
-Phase 3 (planned)   Cluster mode: etcd node discovery + ClusterManager
-                    RDMA cross-node transfer + pure disk storage nodes
+Phase 3 (planned)   GPU-aware cluster: per-GPU VRAM/task monitoring
+                    Smart dispatching replacing nginx round-robin
+                    Pooled SSD: RDMA shared NVMe across all nodes
+                    VRAM admission control with SSD swap
 ```
 
 ---

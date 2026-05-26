@@ -61,9 +61,10 @@ LLM 推理本质上是显存受限的。GPU HBM（每张 H100 约 80 GB）限制
 │                                                              │
 │  ┌─────────────────────────────────────────────────────┐    │
 │  │              集群管理器 (未来)                        │    │
-│  │  • 基于 etcd 的节点发现                              │    │
+│  │  • GPU 资源监控（显存、任务数、负载）                 │    │
+│  │  • GPU 感知请求分发                                  │    │
+│  │  • 池化 SSD: 跨节点 RDMA 共享 NVMe                   │    │
 │  │  • 动态角色分配 (prefill/decode/storage)             │    │
-│  │  • RDMA 数据传输                                    │    │
 │  └─────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -95,14 +96,15 @@ cascade/
 > **阶段 1 — 本地磁盘缓存 MVP** ✅
 
 | 组件 | 状态 | 说明 |
-|---|---|---|
+|---|---|---|---|
 | Go 引擎核心 | ✅ **完成** | Pebble 元数据存储、LRU 淘汰、HTTP API |
 | vLLM 连接器 | ✅ **完成** | 完整 KVConnectorBase_V1 实现 (~185 行) |
 | 磁盘 I/O 基准测试 | ✅ **完成** | 顺序/随机读写、延迟分析 |
 | 基准测试套件 | ✅ **完成** | 对比原生 vLLM vs LMCache vs Cascade |
 | GDS / RDMA | 📋 **计划中** | C 存储原语已建目录 |
+| GPU 感知调度 | 📋 **计划中** | 每卡显存/任务监控 + 智能分发 |
+| 池化 SSD 集群 | 📋 **计划中** | 跨节点 RDMA 共享存储池 |
 | SGLang 适配器 | 📋 **计划中** | 目录结构已就绪 |
-| 集群管理器 | 📋 **计划中** | 架构已在 DESIGN.md 中设计 |
 | Helm 部署 | 📋 **计划中** | Chart 脚手架已就绪 |
 
 ---
@@ -154,7 +156,6 @@ python3 test/scripts/run_bench.py --mode diskcache
 ---
 
 ## 路线图
-
 ### 阶段 1: 本地磁盘缓存 MVP ✅ *(当前)*
 - [x] Go 引擎: Pebble 元数据 + LRU 淘汰 + HTTP API
 - [x] vLLM KVConnector: KV tensor 的磁盘读写
@@ -167,18 +168,23 @@ python3 test/scripts/run_bench.py --mode diskcache
 - [ ] 自动回退: GDS → POSIX
 - [ ] 吞吐目标: 比 CPU bounce buffer 快 3–5 倍
 
-### 阶段 3: 分布式集群 📋
-- [ ] 集群管理器: 基于 etcd 的节点注册与发现
-- [ ] 动态角色分配 (prefill / decode / storage)
-- [ ] 节点间 RDMA 数据传输
-- [ ] SGLang 适配器
-- [ ] 故障转移与数据迁移
+### 阶段 3: GPU 感知集群调度 📋
+- [ ] **GPU 资源监控**: 每卡显存占用、运行任务数、利用率
+- [ ] **GPU 感知请求分发**: 根据显存容量和 GPU 负载路由请求，替代 nginx 轮询
+- [ ] **池化 SSD 存储**: 全节点 RDMA 共享 NVMe 池
+- [ ] **显存准入控制**: 无 GPU 有足够显存时，淘汰冷 KV block 到池化 SSD 腾出空间
+- [ ] **动态角色分配**: 节点根据实时负载自动切换 prefill/decode/storage 角色
+- [ ] **多卡协同调度**: 为张量并行模型同时预留 N 块 GPU
+- [ ] **基于 etcd 的节点注册与发现**
+- [ ] **SGLang 适配器**
+- [ ] **故障转移与数据迁移**
 
 ### 阶段 4: 产品化 📋
 - [ ] Helm Chart (Kubernetes 部署)
 - [ ] Prometheus / Grafana 监控
 - [ ] 管理面板
 - [ ] 多租户
+- [ ] 完整文档和示例
 - [ ] 完整文档和示例
 
 ---
@@ -237,7 +243,9 @@ python3 test/scripts/gen_report.py
 | **GPU↔NVMe** | ✅ GdsBackend (部分) | ❌ 不支持 | **📋 GPUDirect Storage (cufile)** |
 | **跨节点传输** | ❌ 不支持 RDMA | ✅ RDMA (核心能力) | **📋 RDMA (ibverbs)** |
 | **异步磁盘 I/O** | ❌ 不支持 | ✅ io_uring | **📋 io_uring** |
+| **GPU 资源调度** | ❌ 无 | ❌ 仅手动角色分配 | **📋 GPU 感知: 显存/任务监控 + 智能分发** |
 | **集群管理** | ❌ 仅 P2P (ZMQ) | ✅ Master + etcd + HA | **📋 ClusterManager + etcd** |
+| **池化 SSD 存储** | ❌ 无 | ❌ 仅本地 offload | **📋 RDMA 共享 NVMe 池** |
 | **纯存储节点** | ❌ 无此概念 | ❌ 必须有 GPU | **📋 支持无 GPU 节点** |
 | **SGLang 适配** | ❌ 不支持 | ✅ 已支持 | **📋 脚手架就绪** |
 
@@ -251,8 +259,10 @@ Phase 2 (下一阶段) Go 引擎接管全部存储 I/O
                  C 后端: GPUDirect Storage (GPU↔NVMe 零拷贝)
                          io_uring (异步磁盘 I/O)
 
-Phase 3 (规划中)   集群模式: etcd 节点发现 + ClusterManager
-                 RDMA 跨节点传输 + 纯磁盘存储节点
+Phase 3 (规划中)   GPU 感知集群: 每卡显存/任务监控
+                 智能分发替代 nginx 轮询
+                 池化 SSD: 全节点 RDMA 共享 NVMe
+                 显存准入控制 + SSD swap
 ```
 
 ---

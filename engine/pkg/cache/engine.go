@@ -1,6 +1,9 @@
 package cache
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -154,6 +157,91 @@ func (e *diskEngine) Stats() Stats {
 		BlocksEvicted:   e.blocksEvicted.Load(),
 		DiskUsedBytes:   e.pol.TotalBytes(),
 	}
+}
+
+// ── Sentinel / Match ──
+
+// RecordSentinel stores a cache-complete marker in Pebble metadata.
+// Python calls this after writing all layer files for a request.
+func (e *diskEngine) RecordSentinel(promptHash string, numTokens int) error {
+	return e.meta.RecordSentinel(promptHash, numTokens)
+}
+
+// Match finds the largest cache hit by trying all block-aligned lengths
+// from largest to smallest. Uses parallel goroutines with context cancellation
+// so the first hit stops all other checks.
+func (e *diskEngine) Match(tokenIDs []int64, mmHashes []string, blockSize int) MatchResult {
+	if len(tokenIDs) < 2 || blockSize < 1 {
+		return MatchResult{}
+	}
+
+	// Align to block boundary: (len-1) // blockSize * blockSize
+	numTokens := len(tokenIDs) - 1
+	maxCheck := (numTokens / blockSize) * blockSize
+	if maxCheck < blockSize {
+		return MatchResult{}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type hit struct {
+		tokens int
+		hash   string
+	}
+	hitCh := make(chan hit, 1)
+
+	// Concurrently check from largest to smallest.
+	// Goroutines send to hitCh; first to send wins, cancel stops the rest.
+	for check := maxCheck; check >= blockSize; check -= blockSize {
+		go func(n int) {
+			h := computePromptHash(tokenIDs[:n], mmHashes)
+			if _, ok := e.meta.GetSentinel(h); ok {
+				select {
+				case hitCh <- hit{tokens: n, hash: h}:
+				case <-ctx.Done():
+				}
+			}
+		}(check)
+	}
+
+	select {
+	case h := <-hitCh:
+		cancel()
+		return MatchResult{MatchedTokens: h.tokens, PromptHash: h.hash}
+	case <-ctx.Done():
+		return MatchResult{}
+	}
+}
+
+// ── Hash helpers ──
+
+func alignToBlockSize(numTokens, blockSize int) int {
+	if numTokens < 1 {
+		return 0
+	}
+	return (numTokens - 1) / blockSize * blockSize
+}
+
+func hashTokenCount(numTokens, blockSize int) int {
+	aligned := alignToBlockSize(numTokens, blockSize)
+	if aligned < 1 {
+		return 1
+	}
+	return aligned
+}
+
+func computePromptHash(tokenIDs []int64, mmHashes []string) string {
+	h := sha256.New()
+	buf := make([]byte, 4)
+	for _, tid := range tokenIDs {
+		binary.BigEndian.PutUint32(buf, uint32(tid))
+		h.Write(buf)
+	}
+	for _, mh := range mmHashes {
+		h.Write([]byte(mh))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))[:32]
 }
 
 // Close shuts down the engine.

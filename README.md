@@ -163,11 +163,12 @@ python3 test/scripts/run_bench.py --mode diskcache
 - [x] Benchmark suite: compare native / LMCache / DiskCache
 - [x] Disk I/O profiling tools
 
-### Phase 2: GPUDirect Storage Acceleration 📋 *(next)*
-- [ ] C GDS backend (NVIDIA cuFile)
-- [ ] Go CGo bindings for GPU↔NVMe zero-copy
-- [ ] Automatic fallback: GDS → POSIX
-- [ ] Throughput target: 3–5× vs CPU bounce buffer
+### Phase 2: GPUDirect Storage Acceleration 🚀 *(done)*
+- [x] Python storage backend abstraction (GDS + POSIX fallback)
+- [x] NvFileBackend: GPU↔NVMe zero-copy via cuFile/nvfile/hipfile API
+- [x] PosixBackend: automatic fallback (cudaMemcpy + safetensors)
+- [x] Auto-select: GDS → POSIX fallback (configurable via `storage_backend`)
+- [x] Level 1+2 tests: mock / GPU fallback (17 tests, pass without GDS hardware)
 
 ### Phase 3: GPU-Aware Cluster Scheduling 📋
 - [ ] **GPU resource monitoring**: per-GPU VRAM usage, running task count, utilization
@@ -223,7 +224,7 @@ Results are stored in `test/results/`. See `docs/benchmark-plan.md` for detailed
 | Feature | LMCache | Mooncake | **Cascade** |
 |---|---|---|---|
 | **Disk cache** | ✅ LocalDiskBackend | ✅ FileStorage (SSD offload) | **✅ Core design** |
-| **KV data I/O** | Python `open/write` | C++ io_uring / POSIX | **Python safetensors*** |
+| **KV data I/O** | Python `open/write` | C++ io_uring / POSIX | **Python StorageBackend: GDS (cuFile) / POSIX fallback** |
 | **Metadata store** | In-memory Python dict | etcd + Master Service | **Pebble (LSM tree)** |
 | **Metadata persistent** | ❌ Lost on restart | ✅ etcd | **✅ Pebble** |
 | **Eviction policy** | ✅ LRU / LFU / FIFO / MRU | ✅ LRU / FIFO | **✅ LRU** |
@@ -231,16 +232,15 @@ Results are stored in `test/results/`. See `docs/benchmark-plan.md` for detailed
 | **vLLM integration** | ✅ Deep integration | ✅ mooncake-integration | **✅ KVConnectorBase_V1** |
 | **Codebase (core engine)** | ~79K lines Python | ~220K lines C++ | **~400 lines Go** |
 
-> *Phase 1 uses Python safetensors via CPU bounce buffer as a temporary path
-> (hardware limitation). The Go engine manages metadata + eviction over HTTP.
-> Future phases will move all storage I/O to the Go/C layer.
+> *Phase 1: Python safetensors via CPU bounce buffer (temporary path).
+> Phase 2: Python StorageBackend abstraction with GPU↔NVMe zero-copy (GDS) and automatic fallback.
 
 ### Planned Architecture (Design Target)
 
 | Feature | LMCache | Mooncake | **Cascade** |
 |---|---|---|---|
 | **I/O stack** | Python native | C++ native | **Python connector → Go engine → C backend** |
-| **GPU↔NVMe** | ✅ GdsBackend (partial) | ❌ Not supported | **📋 GPUDirect Storage (cufile)** |
+| **GPU↔NVMe** | ✅ GdsBackend (partial) | ❌ Not supported | **✅ GPUDirect Storage (cuFile/nvfile)** |
 | **Cross-node transfer** | ❌ No RDMA | ✅ RDMA (core competency) | **📋 RDMA (ibverbs)** |
 | **Async disk I/O** | ❌ Not supported | ✅ io_uring | **📋 io_uring** |
 | **GPU resource scheduling** | ❌ None | ❌ Manual role only | **📋 GPU-aware: VRAM/task monitoring + smart dispatching** |
@@ -252,17 +252,18 @@ Results are stored in `test/results/`. See `docs/benchmark-plan.md` for detailed
 ### Architecture Evolution
 
 ```
-Phase 1 (current)   Python safetensors writes/reads disk directly
+Phase 1 (done)      Python safetensors writes/reads disk via CPU bounce buffer
                     Go engine manages metadata (Pebble) + eviction (LRU) via HTTP
-                    
-Phase 2 (next)      Go engine takes over all storage I/O
-                    C backends: GPUDirect Storage (GPU↔NVMe zero-copy)
-                                io_uring (async disk I/O)
-                    
+
+Phase 2 (done)      Python StorageBackend abstraction
+                      ├── NvFileBackend: GPU↔NVMe zero-copy (cuFile/nvfile)
+                      └── PosixBackend: CPU bounce buffer fallback (safetensors)
+                    Auto-select: GDS → POSIX, no code changes needed
+
 Phase 3 (planned)   GPU-aware cluster: per-GPU VRAM/task monitoring
-                    Smart dispatching replacing nginx round-robin
                     Pooled SSD: RDMA shared NVMe across all nodes
-                    VRAM admission control with SSD swap
+                    io_uring async disk I/O
+                    SGLang adapter
 ```
 
 ---

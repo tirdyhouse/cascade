@@ -162,11 +162,12 @@ python3 test/scripts/run_bench.py --mode diskcache
 - [x] 基准测试套件: 对比原生 / LMCache / Cascade
 - [x] 磁盘 I/O 分析工具
 
-### 阶段 2: GPUDirect Storage 加速 📋 *(下一步)*
-- [ ] C GDS 后端 (NVIDIA cuFile)
-- [ ] Go CGo 绑定，实现 GPU↔NVMe 零拷贝
-- [ ] 自动回退: GDS → POSIX
-- [ ] 吞吐目标: 比 CPU bounce buffer 快 3–5 倍
+### 阶段 2: GPUDirect Storage 加速 🚀 *(已完成)*
+- [x] Python StorageBackend 抽象层 (GDS + POSIX 自动降级)
+- [x] NvFileBackend: GPU↔NVMe 零拷贝 (cuFile/nvfile/hipfile API)
+- [x] PosixBackend: 自动降级 (cudaMemcpy + safetensors)
+- [x] 自动选择: GDS → POSIX 回退 (可通过 `storage_backend` 配置)
+- [x] Level 1+2 测试: mock / GPU 降级路径 (17 个测试，无 GDS 硬件也能跑)
 
 ### 阶段 3: GPU 感知集群调度 📋
 - [ ] **GPU 资源监控**: 每卡显存占用、运行任务数、利用率
@@ -232,15 +233,15 @@ python3 test/scripts/gen_report.py
 | **vLLM 集成** | ✅ 深度集成 | ✅ mooncake-integration | **✅ KVConnectorBase_V1** |
 | **核心引擎代码量** | ~79K 行 Python | ~220K 行 C++ | **~400 行 Go** |
 
-> *Phase 1 由于硬件限制，暂用 Python safetensors 经 CPU bounce buffer 直接读写磁盘。
-> Go 引擎通过 HTTP 管理元数据和淘汰策略。后续版本将把存储 I/O 下沉到 Go/C 层。
+> *Phase 1: Python safetensors 经 CPU bounce buffer 直接读写磁盘。
+> Phase 2: 新增 Python StorageBackend 抽象层，支持 GPU↔NVMe 零拷贝 (GDS) 和自动降级。
 
 ### 规划架构（设计目标）
 
 | 特性 | LMCache | Mooncake | **Cascade** |
 |---|---|---|---|
 | **I/O 栈** | Python 原生 | C++ 原生 | **Python connector → Go 引擎 → C 后端** |
-| **GPU↔NVMe** | ✅ GdsBackend (部分) | ❌ 不支持 | **📋 GPUDirect Storage (cufile)** |
+| **GPU↔NVMe** | ✅ GdsBackend (部分) | ❌ 不支持 | **✅ GPUDirect Storage (cuFile/nvfile)** |
 | **跨节点传输** | ❌ 不支持 RDMA | ✅ RDMA (核心能力) | **📋 RDMA (ibverbs)** |
 | **异步磁盘 I/O** | ❌ 不支持 | ✅ io_uring | **📋 io_uring** |
 | **GPU 资源调度** | ❌ 无 | ❌ 仅手动角色分配 | **📋 GPU 感知: 显存/任务监控 + 智能分发** |
@@ -252,17 +253,18 @@ python3 test/scripts/gen_report.py
 ### 架构演进
 
 ```
-Phase 1 (当前)   Python safetensors 直接读写磁盘
+Phase 1 (已完成) Python safetensors 经 CPU bounce buffer 直接读写磁盘
                  Go 引擎管理元数据 (Pebble) + 淘汰策略 (LRU) — 通过 HTTP
 
-Phase 2 (下一阶段) Go 引擎接管全部存储 I/O
-                 C 后端: GPUDirect Storage (GPU↔NVMe 零拷贝)
-                         io_uring (异步磁盘 I/O)
+Phase 2 (已完成) Python StorageBackend 抽象层
+                   ├── NvFileBackend: GPU↔NVMe 零拷贝 (cuFile/nvfile)
+                   └── PosixBackend: CPU bounce buffer 降级 (safetensors)
+                 自动选择: GDS → POSIX，无需改代码
 
 Phase 3 (规划中)   GPU 感知集群: 每卡显存/任务监控
-                 智能分发替代 nginx 轮询
                  池化 SSD: 全节点 RDMA 共享 NVMe
-                 显存准入控制 + SSD swap
+                 io_uring 异步磁盘 I/O
+                 SGLang 适配器
 ```
 
 ---

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>KV Cache Cluster - Node Detail</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body x-data="nodeDetail()" x-init="init()">
+  <main class="container">
+    <nav>
+      <ul><li><strong>⚡ KV Cache Cluster Manager</strong></li></ul>
+      <ul>
+        <li><a href="/">Dashboard</a></li>
+        <li><a href="/nodes.html" class="active">Nodes</a></li>
+        <li><a href="/cache.html">Cache</a></li>
+        <li><a href="/commands.html">Commands</a></li>
+      </ul>
+    </nav>
+
+    <a href="/nodes.html">← Back to Nodes</a>
+
+    <template x-if="node">
+      <div>
+        <hgroup>
+          <h2 x-text="node.info.node_id"></h2>
+          <p x-text="node.info.ip + ':' + node.info.rpc_port + ' · ' + node.info.gpu_type + ' ×' + node.info.gpu_count"></p>
+        </hgroup>
+
+        <!-- Hardware -->
+        <div class="grid">
+          <article>
+            <small>GPU Type</small>
+            <h3 x-text="node.info.gpu_type || '—'"></h3>
+          </article>
+          <article>
+            <small>GPU Memory</small>
+            <h3 x-text="(node.info.gpu_mem_mb/1024).toFixed(0) + 'GB'"></h3>
+          </article>
+          <article>
+            <small>Cache Mode</small>
+            <h3 x-text="node.info.cache_mode"></h3>
+          </article>
+          <article>
+            <small>Status</small>
+            <h3><span :class="'tag ' + (node.status ? node.status.vllm_status : 'unknown')" x-text="node.status ? node.status.vllm_status : 'unknown'"></span></h3>
+          </article>
+        </div>
+
+        <!-- Per-disk detail -->
+        <article>
+          <header><strong>💾 Disks</strong></header>
+          <template x-for="d in (node.info.disks || [])">
+            <div class="disk-bar">
+              <div class="disk-label"><span x-text="d.path"></span> <span x-text="`${d.total_gb}GB total, ${d.free_gb}GB free`"></span></div>
+              <progress :value="d.total_gb - d.free_gb" :max="d.total_gb"></progress>
+            </div>
+          </template>
+        </article>
+
+        <!-- KV Cache Stats -->
+        <template x-if="node.status">
+          <article>
+            <header><strong>📊 KV Cache</strong></header>
+            <div class="grid">
+              <div><small>Blocks</small><h3 x-text="(node.status.cache_blocks || 0).toLocaleString()"></h3></div>
+              <div><small>Size</small><h3 x-text="formatBytes(node.status.cache_bytes || 0)"></h3></div>
+              <div><small>Hit Rate</small><h3 x-text="(node.status.cache_hit_rate || 0).toFixed(1) + '%'"></h3></div>
+              <div><small>Queue</small><h3 x-text="node.status.queue_len || 0"></h3></div>
+            </div>
+          </article>
+        </template>
+
+        <!-- Recent Commands -->
+        <article>
+          <header><strong>📜 Recent Commands</strong></header>
+          <table>
+            <thead><tr><th>Cmd ID</th><th>Status</th><th>Output</th></tr></thead>
+            <tbody>
+              <template x-for="cmd in (node.recent || [])">
+                <tr>
+                  <td x-text="cmd.cmd_id"></td>
+                  <td><span :class="'tag ' + cmd.status" x-text="cmd.status"></span></td>
+                  <td x-text="(cmd.output || '').slice(0, 80)"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </article>
+      </div>
+    </template>
+
+    <div x-show="!node" class="empty">Loading...</div>
+  </main>
+
+  <script>
+    function nodeDetail() {
+      return {
+        node: null,
+        async init() {
+          const params = new URLSearchParams(location.search);
+          const id = params.get('id');
+          if (!id) return;
+          const r = await fetch('/api/v1/nodes/' + id);
+          this.node = await r.json();
+        },
+        formatBytes(b) {
+          if (!b) return '0';
+          const units = ['B','KB','MB','GB','TB'];
+          let i = 0;
+          let val = b;
+          while (val >= 1024 && i < units.length-1) { val /= 1024; i++; }
+          return val.toFixed(1) + units[i];
+        }
+      }
+    }
+  </script>
+</body>
+</html>

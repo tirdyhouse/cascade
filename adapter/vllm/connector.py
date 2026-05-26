@@ -145,6 +145,8 @@ class DiskCacheConnector(KVConnectorBase_V1):
                 file_path = self._cached_file_path(layer_hash)
                 if not file_path.exists():
                     continue
+                # Notify Go engine of block retrieval for stats tracking
+                self._go_get(int(layer_hash[:16], 16))
                 try:
                     loaded = safetensors.torch.load_file(str(file_path))
                     kv_cache = loaded["kv_cache"]

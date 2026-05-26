@@ -119,12 +119,9 @@ class TestFactory:
         assert isinstance(backend, PosixBackend)
 
     def test_gds_unavailable_falls_back_to_posix(self):
-        """When GDS is not installed, auto returns PosixBackend."""
-        backend = create_storage_backend()
-        # On machines without cufile/nvfile, this should be PosixBackend
-        if hasattr(backend, "_lib_name"):
-            assert "File" in type(backend).__name__
-        else:
+        """When GDS is forced unavailable (mock), returns PosixBackend."""
+        with mock.patch("adapter.storage.backend._try_gds", return_value=None):
+            backend = create_storage_backend()
             assert isinstance(backend, PosixBackend)
 
 
@@ -245,83 +242,101 @@ class TestNvFileBackendMocked:
         return mock_module
 
     @pytest.fixture
-    def backend(self, mock_cufile):
-        with (
-            mock.patch.dict("sys.modules", {"cufile": mock_cufile}),
-            mock.patch("adapter.storage.nvfile_backend._probe_module",
-                       return_value="cufile"),
-        ):
+    def backend(self):
+        class _MockCuFile:
+            def __init__(self, path, mode, use_direct_io=False):
+                self.path = path
+                self.mode = mode
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self.close()
+            def close(self):
+                pass
+            def write(self, ptr, nbytes, file_offset=0, dev_offset=0):
+                import ctypes
+                addr = int(ptr) if not isinstance(ptr, int) else ptr
+                buf = (ctypes.c_byte * nbytes).from_address(addr)
+                with open(self.path, "r+b") as f:
+                    f.seek(file_offset)
+                    f.write(bytes(buf))
+                return nbytes
+            def read(self, ptr, nbytes, file_offset=0, dev_offset=0):
+                import ctypes
+                addr = int(ptr) if not isinstance(ptr, int) else ptr
+                with open(self.path, "rb") as f:
+                    f.seek(file_offset)
+                    data = f.read(nbytes)
+                buf = (ctypes.c_byte * nbytes).from_address(addr)
+                buf[:] = data
+                return nbytes
+        class _MockBinding:
+            name = "cufile (mock)"
+            _mod = mock.MagicMock()
+            _mod.CuFile = _MockCuFile
+            def driver_open(self): pass
+            def driver_close(self): pass
+
+        with mock.patch("adapter.storage.nvfile_backend._detect_binding",
+                        return_value=_MockBinding()):
             from adapter.storage.nvfile_backend import NvFileBackend
             backend = NvFileBackend()
-            backend._lib_name = "cufile"
             yield backend
 
-    def test_save_and_load_cpu_as_gpu(self, backend, tmp_path, mock_cufile):
-        """Simulate save/load with CPU tensors (GDS-addressable via mock)."""
-        with mock.patch.dict("sys.modules", {"cufile": mock_cufile}):
-            path = tmp_path / "test.kvcache"
-            tensor = torch.randn(2, 256, 8, 128, dtype=torch.bfloat16)
-            backend.save(path, tensor)
-            assert path.exists()
-            assert path.stat().st_size > _HEADER_SIZE
-            loaded = backend.load(path, device="cpu")
-            assert torch.equal(loaded, tensor)
+    def test_save_and_load_cpu_as_gpu(self, backend, tmp_path):
+        """Simulate save/load with CPU tensors."""
+        path = tmp_path / "test.kvcache"
+        tensor = torch.randn(2, 256, 8, 128, dtype=torch.bfloat16)
+        backend.save(path, tensor)
+        assert path.exists()
+        assert path.stat().st_size > _HEADER_SIZE
+        loaded = backend.load(path, device="cpu")
+        assert torch.equal(loaded, tensor)
 
-    def test_save_file_format(self, backend, tmp_path, mock_cufile):
+    def test_save_file_format(self, backend, tmp_path):
         """Verify the on-disk format: JSON header + raw tensor data."""
-        with mock.patch.dict("sys.modules", {"cufile": mock_cufile}):
-            path = tmp_path / "test.kvcache"
-            tensor = torch.arange(16, dtype=torch.int32).reshape(4, 4)
-            backend.save(path, tensor)
-
-            # Read header
-            with open(path, "rb") as f:
-                header_blob = f.read(_HEADER_SIZE)
-            meta = _unpack_header(header_blob)
-            assert meta["shape"] == [4, 4]
-            assert meta["dtype"] == "torch.int32"
-
-            # Read raw data after header
-            with open(path, "rb") as f:
-                f.seek(_HEADER_SIZE)
-                raw = f.read(meta["nbytes"])
-            expected = tensor.numpy().tobytes()
-            assert raw == expected
+        path = tmp_path / "test.kvcache"
+        tensor = torch.arange(16, dtype=torch.int32).reshape(4, 4)
+        backend.save(path, tensor)
+        with open(path, "rb") as f:
+            header_blob = f.read(_HEADER_SIZE)
+        meta = _unpack_header(header_blob)
+        assert meta["shape"] == [4, 4]
+        assert meta["dtype"] == "torch.int32"
+        with open(path, "rb") as f:
+            f.seek(_HEADER_SIZE)
+            raw = f.read(meta["nbytes"])
+        expected = tensor.numpy().tobytes()
+        assert raw == expected
 
     def test_is_available_true(self, backend):
-        # is_available returns True because _probe_library is mocked in fixture
         assert backend.is_available() is True
 
-    def test_save_load_small_tensor(self, backend, tmp_path, mock_cufile):
-        """Small tensors should round-trip correctly."""
-        with mock.patch.dict("sys.modules", {"cufile": mock_cufile}):
-            path = tmp_path / "small.kvcache"
-            tensor = torch.tensor([1, 2, 3], dtype=torch.float32)
-            backend.save(path, tensor)
-            loaded = backend.load(path, device="cpu")
-            assert torch.equal(loaded, tensor)
+    def test_save_load_small_tensor(self, backend, tmp_path):
+        """Small tensors round-trip correctly."""
+        path = tmp_path / "small.kvcache"
+        tensor = torch.tensor([1, 2, 3], dtype=torch.float32)
+        backend.save(path, tensor)
+        loaded = backend.load(path, device="cpu")
+        assert torch.equal(loaded, tensor)
 
-    def test_save_failure_cleans_up_temp(self, backend, tmp_path, mock_cufile):
+    def test_save_failure_cleans_up_temp(self, backend, tmp_path):
         """If GDS write fails, the temp file should be cleaned up."""
-        with mock.patch.dict("sys.modules", {"cufile": mock_cufile}):
-            # Mock CuFile.write to fail
-            original_write = mock_cufile.CuFile.write
-            mock_cufile.CuFile.write = mock.MagicMock(
-                side_effect=RuntimeError("GDS write failed")
-            )
-
+        from adapter.storage.nvfile_backend import _CuFileHandle
+        original_write = _CuFileHandle.write
+        def failing_write(self, *args, **kwargs):
+            raise RuntimeError("GDS write failed")
+        _CuFileHandle.write = failing_write
+        try:
             path = tmp_path / "fail.kvcache"
             tensor = torch.randn(2, 8, dtype=torch.float32)
             with pytest.raises(RuntimeError, match="GDS write failed"):
                 backend.save(path, tensor)
-
-            # No temp files should remain
             tmp_files = list(tmp_path.glob("*.tmp*"))
             assert len(tmp_files) == 0
             assert not path.exists()
-
-            # Restore original
-            mock_cufile.CuFile.write = original_write
+        finally:
+            _CuFileHandle.write = original_write
 
 
 # ═══════════════════════════════════════════════════════════════════

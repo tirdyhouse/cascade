@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>KV Cache Cluster - Cache</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body x-data="cachePage()" x-init="init()">
+  <main class="container">
+    <nav>
+      <ul><li><strong>⚡ KV Cache Cluster Manager</strong></li></ul>
+      <ul>
+        <li><a href="/">Dashboard</a></li>
+        <li><a href="/nodes.html">Nodes</a></li>
+        <li><a href="/cache.html" class="active">Cache</a></li>
+        <li><a href="/commands.html">Commands</a></li>
+      </ul>
+    </nav>
+
+    <hgroup>
+      <h2>📊 KV Cache Analytics</h2>
+      <p>Cluster-wide cache statistics</p>
+    </hgroup>
+
+    <div class="grid">
+      <article>
+        <small>Total Blocks</small>
+        <h2 x-text="(summary.total_blocks || 0).toLocaleString()"></h2>
+      </article>
+      <article>
+        <small>Total Size</small>
+        <h2 x-text="formatBytes(summary.total_bytes || 0)"></h2>
+      </article>
+      <article>
+        <small>Cache Mode</small>
+        <h2 x-text="summary.cache_mode || '—'"></h2>
+      </article>
+      <article>
+        <small>Cluster Hit Rate</small>
+        <h2 x-text="(summary.hit_rate || 0).toFixed(1) + '%'"></h2>
+      </article>
+    </div>
+
+    <article>
+      <header><strong>Cache per Node</strong></header>
+      <table>
+        <thead><tr><th>Node</th><th>Blocks</th><th>Size</th><th>Hit Rate</th><th>Disks</th></tr></thead>
+        <tbody>
+          <template x-for="node in summary.nodes || []">
+            <tr>
+              <td x-text="node.node_id"></td>
+              <td x-text="(node.cache_blocks || 0).toLocaleString()"></td>
+              <td x-text="'—'"></td>
+              <td x-text="(node.hit_rate || 0).toFixed(1) + '%'"></td>
+              <td>
+                <template x-for="d in (node.disks || [])">
+                  <div class="disk-mini" x-text="`${d.path}: ${(d.free_gb/1024).toFixed(1)}TB free`"></div>
+                </template>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </article>
+  </main>
+
+  <script>
+    function cachePage() {
+      return {
+        summary: {},
+        async init() {
+          const r = await fetch('/api/v1/cluster/status');
+          this.summary = await r.json();
+        },
+        formatBytes(b) {
+          if (!b) return '0';
+          const units = ['B','KB','MB','GB','TB'];
+          let i = 0;
+          let val = b;
+          while (val >= 1024 && i < units.length-1) { val /= 1024; i++; }
+          return val.toFixed(1) + units[i];
+        }
+      }
+    }
+  </script>
+</body>
+</html>

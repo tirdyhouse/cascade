@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>KV Cache Cluster - Nodes</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body x-data="nodesPage()" x-init="init()">
+  <main class="container">
+    <nav>
+      <ul><li><strong>⚡ KV Cache Cluster Manager</strong></li></ul>
+      <ul>
+        <li><a href="/">Dashboard</a></li>
+        <li><a href="/nodes.html" class="active">Nodes</a></li>
+        <li><a href="/cache.html">Cache</a></li>
+        <li><a href="/commands.html">Commands</a></li>
+      </ul>
+    </nav>
+
+    <hgroup>
+      <h2>📋 All Nodes</h2>
+      <p>Registered C端 agents in the cluster</p>
+    </hgroup>
+
+    <article>
+      <table>
+        <thead>
+          <tr>
+            <th>Node ID</th><th>IP</th><th>GPU</th><th>GPU Mem</th>
+            <th>Model</th><th>vLLM</th><th>Queue</th>
+            <th>Cache Blocks</th><th>Hit Rate</th><th>Disks</th>
+            <th>Last Seen</th><th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="node in nodes" :key="node.node_id">
+            <tr>
+              <td><a :href="`/node.html?id=${node.node_id}`" x-text="node.node_id"></a></td>
+              <td x-text="node.ip"></td>
+              <td x-text="(node.gpu_util*100).toFixed(0) + '%'"></td>
+              <td x-text="node.gpu_mem_used ? (node.gpu_mem_used/1024).toFixed(1) + 'GB' : '—'"></td>
+              <td x-text="node.model_name || '—'"></td>
+              <td><span :class="'tag ' + node.status" x-text="node.status"></span></td>
+              <td x-text="'—'"></td>
+              <td x-text="(node.cache_blocks || 0).toLocaleString()"></td>
+              <td x-text="(node.hit_rate || 0).toFixed(1) + '%'"></td>
+              <td>
+                <template x-for="d in (node.disks || [])">
+                  <div class="disk-mini" x-text="`${d.path}: free ${(d.free_gb/1024).toFixed(1)}TB`"></div>
+                </template>
+              </td>
+              <td x-text="lastSeen(node.last_seen)"></td>
+              <td><span :class="'tag ' + node.status" x-text="node.status"></span></td>
+            </tr>
+          </template>
+          <tr x-show="nodes.length === 0">
+            <td colspan="12" class="empty">No nodes registered.</td>
+          </tr>
+        </tbody>
+      </table>
+    </article>
+  </main>
+
+  <script>
+    function nodesPage() {
+      return {
+        nodes: [],
+        async init() {
+          const r = await fetch('/api/v1/nodes');
+          this.nodes = await r.json();
+        },
+        lastSeen(ns) {
+          if (!ns) return '—';
+          const secs = Math.floor((Date.now() - ns/1e6) / 1000);
+          if (secs < 10) return 'just now';
+          if (secs < 60) return secs + 's ago';
+          return Math.floor(secs/60) + 'm ago';
+        }
+      }
+    }
+  </script>
+</body>
+</html>

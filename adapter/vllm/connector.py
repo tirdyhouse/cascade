@@ -248,13 +248,15 @@ class DiskCacheConnector(KVConnectorBase_V1):
             num_to_check = align_to_block_size(len(token_ids) - 1, self._block_size) if len(token_ids) > 1 else 0
             hash_n = hash_token_count(len(token_ids) - 1, self._block_size) if len(token_ids) > 1 else 0
             prompt_hash = compute_prompt_hash(token_ids, hash_n, mm_hashes) if hash_n > 0 else ""
+            # Always store for disk cache, regardless of vLLM internal prefix hits
+            if num_to_check > 0:
+                meta.add(token_ids=token_ids, block_ids=new_req.block_ids[0],
+                         block_size=self._block_size, is_store=True,
+                         mm_hashes=mm_hashes, num_tokens=num_to_check, prompt_hash=prompt_hash)
+            # Also add load if needed (from disk cache)
             if new_req.req_id in self._requests_need_load:
                 meta.add(token_ids=token_ids, block_ids=new_req.block_ids[0],
                          block_size=self._block_size, is_store=False,
-                         mm_hashes=mm_hashes, num_tokens=num_to_check, prompt_hash=prompt_hash)
-            elif num_to_check > 0:
-                meta.add(token_ids=token_ids, block_ids=new_req.block_ids[0],
-                         block_size=self._block_size, is_store=True,
                          mm_hashes=mm_hashes, num_tokens=num_to_check, prompt_hash=prompt_hash)
         cached_reqs = scheduler_output.scheduled_cached_reqs
         for i, req_id in enumerate(cached_reqs.req_ids):

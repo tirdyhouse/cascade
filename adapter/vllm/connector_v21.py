@@ -116,6 +116,7 @@ class DiskCacheConnector(KVConnectorBase_V1):
         # ── Storage backend (GDS / POSIX fallback) ────────────
         storage_prefer = extra.get("storage_backend", "auto")
         self._storage = create_storage_backend(prefer=storage_prefer)
+        logger.info("DiskCacheConnector using %s", repr(self._storage))
 
         self._vllm_config = vllm_config
         # Chunk storage: large blocks for I/O efficiency
@@ -124,9 +125,9 @@ class DiskCacheConnector(KVConnectorBase_V1):
         # tokens per chunk = chunk_bytes / (2 * num_heads * head_dim * 2 bytes bf16)
         self._tokens_per_chunk = max(1, self._chunk_size_bytes // self._kv_tokensize())
         if self._connected:
-            logger.info("DiskCacheConnector ready: cache=%s engine=%s bs=%d chunk=%dMB ~%dtok",
+            logger.info("DiskCacheConnector ready: cache=%s engine=%s bs=%d chunk=%dMB ~%dtok backend=%s",
                         self.cache_root, self.go_addr, self._block_size,
-                        extra_cs, self._tokens_per_chunk)
+                        extra_cs, self._tokens_per_chunk, type(self._storage).__name__)
 
     def _resolve_device(self, target_tensor):
         if self.target_device != "auto":

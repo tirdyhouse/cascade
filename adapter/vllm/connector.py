@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Optional
 import safetensors.torch
 import torch
 
+from adapter.storage import StorageBackend, create_storage_backend
+
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
@@ -110,6 +112,11 @@ class DiskCacheConnector(KVConnectorBase_V1):
         self.cache_root.mkdir(parents=True, exist_ok=True)
         self._connected = self._health_check()
         self._requests_need_load = {}
+
+        # ── Storage backend (GDS / POSIX fallback) ────────────
+        storage_prefer = extra.get("storage_backend", "auto")
+        self._storage = create_storage_backend(prefer=storage_prefer)
+
         self._vllm_config = vllm_config
         # Chunk storage: large blocks for I/O efficiency
         extra_cs = extra.get("disk_cache_chunk_size_mb", 64)
@@ -152,15 +159,16 @@ class DiskCacheConnector(KVConnectorBase_V1):
                 if not chunks:
                     continue
                 try:
-                    # Load all chunks and concatenate
+                    # Load all chunks directly to target device via storage backend
                     kv_parts = []
+                    target_device = self._resolve_device(kv_cache_layer)
                     for chunk_idx in chunks:
                         fp = self._chunk_file_path(prefix_key, layer_name, chunk_idx)
                         if not fp.exists():
                             logger.warning("Chunk %d missing for %s/%s", chunk_idx, prefix_key, layer_name)
                             continue
-                        loaded = safetensors.torch.load_file(str(fp))
-                        kv_parts.append(loaded["kv_cache"])
+                        loaded = self._storage.load(fp, device=target_device)
+                        kv_parts.append(loaded)
                         self._go_get(int(prefix_key[:16], 16))
                     if not kv_parts:
                         continue
@@ -169,18 +177,15 @@ class DiskCacheConnector(KVConnectorBase_V1):
                     target_dtype = kv_cache_layer.dtype
                     if kv_cache.dtype != target_dtype:
                         kv_cache = kv_cache.to(target_dtype)
-                    device = self._resolve_device(kv_cache_layer)
-                    kv_cache = kv_cache.to(device, non_blocking=True)
                     layer_attn = attn_metadata.get(layer_name, attn_metadata) if isinstance(attn_metadata, dict) else attn_metadata
                     inject_kv_into_layer(kv_cache_layer, kv_cache, slot_mapping, layer_attn, self._block_size)
                 except Exception as e:
                     logger.warning("Failed to load KV for %s: %s", layer_name, e)
+
     def wait_for_layer_load(self, layer_name):
         pass
 
     def save_kv_layer(self, layer_name, kv_layer, attn_metadata, **kwargs):
-        if not self._connected:
-            return
         meta = self._get_connector_metadata()
         if not isinstance(meta, DiskCacheMeta):
             return
@@ -194,7 +199,6 @@ class DiskCacheConnector(KVConnectorBase_V1):
                 + torch.tensor(req.block_ids).view(num_blocks, 1) * req.block_size
             ).flatten()[:req.num_tokens]
             kv_cache = extract_kv_from_layer(kv_layer, slot_mapping, attn_metadata, self._block_size)
-            cpu_kv = kv_cache.detach().cpu()
             num_tokens = req.num_tokens
             prefix_key = self._prefix_key(req.token_ids)
             existing_chunks = set(self._go_chunk_list(prefix_key, layer_name))
@@ -203,10 +207,10 @@ class DiskCacheConnector(KVConnectorBase_V1):
                 is_full = (end - start) >= self._tokens_per_chunk
                 if is_full and chunk_idx in existing_chunks:
                     continue  # immutable full chunk, skip
-                chunk_kv = cpu_kv[:, start:end, :]
+                chunk_kv = kv_cache[:, start:end, :]  # still on GPU
                 file_path = self._chunk_file_path(prefix_key, layer_name, chunk_idx)
                 file_path.parent.mkdir(parents=True, exist_ok=True)
-                safetensors.torch.save_file({"kv_cache": chunk_kv}, str(file_path))
+                self._storage.save(file_path, chunk_kv)
                 chunk_tokens = end - start
                 self._go_chunk_put(prefix_key, layer_name, chunk_idx, chunk_tokens)
                 go_hash = int(prefix_key[:16], 16)

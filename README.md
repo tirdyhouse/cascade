@@ -211,9 +211,8 @@ Results are stored in `test/results/`. See `docs/benchmark-plan.md` for detailed
 ## Comparison
 
 ### Design Philosophy
-
 | | LMCache | Mooncake | **Cascade** |
-|---|---|---|---|---|
+|---|---|---|---|
 | **Role** | Tiered cache engine | Distributed KV transport engine | **Cluster disk cache** |
 | **Disk role** | Warm data tier (CPU→Disk) | Eviction overflow target | **🎯 Primary storage layer** |
 | **Data path** | GPU → CPU → Disk | GPU memory ↔ RDMA → peer GPU | **GPU → NVMe (GDS) → cluster (RDMA)** |

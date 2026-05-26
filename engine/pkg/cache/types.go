@@ -41,6 +41,8 @@ type Engine interface {
 	Match(tokenIDs []int64, mmHashes []string, blockSize int) MatchResult
 	RecordSentinel(promptHash string, numTokens int) error
 	RecordAll(tokenIDs []int64, mmHashes []string, blockSize int) error
+	PutChunk(prefixKey, layerName string, chunkIndex, numTokens int) error
+	ListChunks(prefixKey, layerName string) ([]int, error)
 	Close() error
 }
 

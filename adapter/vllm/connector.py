@@ -1,6 +1,7 @@
 import hashlib
 import json
 import socket
+import struct
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -109,11 +110,16 @@ class DiskCacheConnector(KVConnectorBase_V1):
         self.cache_root.mkdir(parents=True, exist_ok=True)
         self._connected = self._health_check()
         self._requests_need_load = {}
+        self._vllm_config = vllm_config
+        # Chunk storage: large blocks for I/O efficiency
+        extra_cs = extra.get("disk_cache_chunk_size_mb", 64)
+        self._chunk_size_bytes = int(extra_cs) * 1024 * 1024
+        # tokens per chunk = chunk_bytes / (2 * num_heads * head_dim * 2 bytes bf16)
+        self._tokens_per_chunk = max(1, self._chunk_size_bytes // self._kv_tokensize())
         if self._connected:
-            logger.info("DiskCacheConnector ready: cache=%s engine=%s bs=%d",
-                        self.cache_root, self.go_addr, self._block_size)
-        else:
-            logger.warning("DiskCacheConnector: Go engine not reachable at %s", self.go_addr)
+            logger.info("DiskCacheConnector ready: cache=%s engine=%s bs=%d chunk=%dMB ~%dtok",
+                        self.cache_root, self.go_addr, self._block_size,
+                        extra_cs, self._tokens_per_chunk)
 
     def _resolve_device(self, target_tensor):
         if self.target_device != "auto":
@@ -130,27 +136,36 @@ class DiskCacheConnector(KVConnectorBase_V1):
         for req in meta.requests:
             if req.is_store:
                 continue
-            num_blocks = len(req.block_ids)
+            num_tokens = req.num_tokens
             block_offsets = torch.arange(0, req.block_size)
             slot_mapping = (
                 block_offsets.view(1, req.block_size)
-                + torch.tensor(req.block_ids).view(num_blocks, 1) * req.block_size
-            ).flatten()[:req.num_tokens]
+                + torch.tensor(req.block_ids).view(len(req.block_ids), 1) * req.block_size
+            ).flatten()[:num_tokens]
+            prefix_key = self._prefix_key(req.token_ids)
             for layer_name in forward_context.no_compile_layers:
                 layer = forward_context.no_compile_layers[layer_name]
                 kv_cache_layer = getattr(layer, "kv_cache", None)
                 if kv_cache_layer is None:
                     continue
-                layer_hash = self._layer_hash(req.prompt_hash, layer_name)
-                file_path = self._cached_file_path(layer_hash)
-                if not file_path.exists():
+                chunks = sorted(self._go_chunk_list(prefix_key, layer_name))
+                if not chunks:
                     continue
-                # Notify Go engine of block retrieval for stats tracking
-                self._go_get(int(layer_hash[:16], 16))
                 try:
-                    loaded = safetensors.torch.load_file(str(file_path))
-                    kv_cache = loaded["kv_cache"]
-                    # Match the target layer's dtype (bfloat16 vs float16)
+                    # Load all chunks and concatenate
+                    kv_parts = []
+                    for chunk_idx in chunks:
+                        fp = self._chunk_file_path(prefix_key, layer_name, chunk_idx)
+                        if not fp.exists():
+                            logger.warning("Chunk %d missing for %s/%s", chunk_idx, prefix_key, layer_name)
+                            continue
+                        loaded = safetensors.torch.load_file(str(fp))
+                        kv_parts.append(loaded["kv_cache"])
+                        self._go_get(int(prefix_key[:16], 16))
+                    if not kv_parts:
+                        continue
+                    kv_cache = torch.cat(kv_parts, dim=1)  # concat along token dim
+                    kv_cache = kv_cache[:, :num_tokens, :]  # take only needed tokens
                     target_dtype = kv_cache_layer.dtype
                     if kv_cache.dtype != target_dtype:
                         kv_cache = kv_cache.to(target_dtype)
@@ -160,7 +175,6 @@ class DiskCacheConnector(KVConnectorBase_V1):
                     inject_kv_into_layer(kv_cache_layer, kv_cache, slot_mapping, layer_attn, self._block_size)
                 except Exception as e:
                     logger.warning("Failed to load KV for %s: %s", layer_name, e)
-
     def wait_for_layer_load(self, layer_name):
         pass
 
@@ -180,14 +194,23 @@ class DiskCacheConnector(KVConnectorBase_V1):
                 + torch.tensor(req.block_ids).view(num_blocks, 1) * req.block_size
             ).flatten()[:req.num_tokens]
             kv_cache = extract_kv_from_layer(kv_layer, slot_mapping, attn_metadata, self._block_size)
-            layer_hash = self._layer_hash(req.prompt_hash, layer_name)
-            file_path = self._cached_file_path(layer_hash)
-            file_path.parent.mkdir(parents=True, exist_ok=True)
             cpu_kv = kv_cache.detach().cpu()
-            safetensors.torch.save_file({"kv_cache": cpu_kv}, str(file_path))
-            file_size = file_path.stat().st_size
-            go_hash = int(layer_hash[:16], 16)
-            self._go_put(go_hash, str(file_path.relative_to(self.cache_root)), file_size)
+            num_tokens = req.num_tokens
+            prefix_key = self._prefix_key(req.token_ids)
+            existing_chunks = set(self._go_chunk_list(prefix_key, layer_name))
+
+            for chunk_idx, start, end in self._chunk_ranges(num_tokens):
+                is_full = (end - start) >= self._tokens_per_chunk
+                if is_full and chunk_idx in existing_chunks:
+                    continue  # immutable full chunk, skip
+                chunk_kv = cpu_kv[:, start:end, :]
+                file_path = self._chunk_file_path(prefix_key, layer_name, chunk_idx)
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                safetensors.torch.save_file({"kv_cache": chunk_kv}, str(file_path))
+                chunk_tokens = end - start
+                self._go_chunk_put(prefix_key, layer_name, chunk_idx, chunk_tokens)
+                go_hash = int(prefix_key[:16], 16)
+                self._go_put(go_hash, str(file_path.relative_to(self.cache_root)), file_path.stat().st_size)
 
     def wait_for_save(self):
         """Called after all layers are written. Records all sub-block sentinels
@@ -259,6 +282,69 @@ class DiskCacheConnector(KVConnectorBase_V1):
     def get_finished(self, finished_req_ids):
         return None, None
 
+
+    # ── Chunk storage ──
+
+    def _kv_tokensize(self):
+        """Bytes per KV token: 2(K+V) × num_heads × head_dim × 2(bf16)."""
+        num_heads = self._vllm_config.model_config.get_num_attention_heads(
+            self._vllm_config.parallel_config
+        )
+        head_dim = self._vllm_config.model_config.get_head_size()
+        return max(1, 2 * num_heads * head_dim * 2)
+
+    def _chunk_ranges(self, num_tokens):
+        """Generate (chunk_idx, start, end) for chunk splitting."""
+        tpc = self._tokens_per_chunk
+        chunk_idx = 0
+        while chunk_idx * tpc < num_tokens:
+            start = chunk_idx * tpc
+            end = min(start + tpc, num_tokens)
+            yield chunk_idx, start, end
+            chunk_idx += 1
+
+    def _prefix_key(self, token_ids):
+        """Prefix shared across same-prefix requests. SHA-256 of first block_size tokens."""
+        n = min(self._block_size, len(token_ids))
+        h = hashlib.sha256()
+        for tid in token_ids[:n]:
+            h.update(struct.pack(">I", tid))
+        return h.hexdigest()[:32]
+
+    def _chunk_file_path(self, prefix_key, layer_name, chunk_idx):
+        """{root}/{pk[0:2]}/{pk[2:4]}/{pk}/{layer}/{idx}.safetensors"""
+        pk = prefix_key
+        return self.cache_root / pk[:2] / pk[2:4] / pk / layer_name / f"{chunk_idx}.safetensors"
+
+    def _go_chunk_put(self, prefix_key, layer_name, chunk_idx, num_tokens):
+        """Register a chunk file with Go engine."""
+        if not self._connected:
+            return
+        try:
+            req = urllib.request.Request(
+                f"{self.go_addr}/chunk_put",
+                data=json.dumps({
+                    "prefix_key": prefix_key,
+                    "layer_name": layer_name,
+                    "chunk_index": chunk_idx,
+                    "num_tokens": num_tokens,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            logger.debug("Go ChunkPut failed: %s", e)
+
+    def _go_chunk_list(self, prefix_key, layer_name):
+        """Get sorted list of existing chunk indices for a prefix+layer."""
+        try:
+            resp = urllib.request.urlopen(
+                f"{self.go_addr}/chunk_list?prefix_key={prefix_key}&layer_name={layer_name}",
+                timeout=5,
+            )
+            return json.loads(resp.read()).get("chunks", [])
+        except Exception:
+            return []
     def _layer_hash(self, prompt_hash, layer_name):
         h = hashlib.sha256()
         h.update(prompt_hash.encode())

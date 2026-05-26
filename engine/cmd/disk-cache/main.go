@@ -86,6 +86,8 @@ func main() {
 	mux.HandleFunc("/match", handleMatch)
 	mux.HandleFunc("/record", handleRecord)
 	mux.HandleFunc("/record_batch", handleRecordBatch)
+	mux.HandleFunc("/chunk_put", handleChunkPut)
+	mux.HandleFunc("/chunk_list", handleChunkList)
 
 	if err := http.ListenAndServe(*listenAddr, mux); err != nil {
 		log.Fatalf("server error: %v", err)
@@ -208,4 +210,49 @@ func handleRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(200)
+}
+// ── Chunk handlers ──
+
+type ChunkPutReq struct {
+	PrefixKey  string `json:"prefix_key"`
+	LayerName  string `json:"layer_name"`
+	ChunkIndex int    `json:"chunk_index"`
+	NumTokens  int    `json:"num_tokens"`
+}
+
+func handleChunkPut(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", 400)
+		return
+	}
+	var req ChunkPutReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if err := eng.PutChunk(req.PrefixKey, req.LayerName, req.ChunkIndex, req.NumTokens); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.WriteHeader(200)
+}
+
+func handleChunkList(w http.ResponseWriter, r *http.Request) {
+	prefix := r.URL.Query().Get("prefix_key")
+	layer := r.URL.Query().Get("layer_name")
+	if prefix == "" || layer == "" {
+		http.Error(w, "prefix_key and layer_name required", 400)
+		return
+	}
+	indices, err := eng.ListChunks(prefix, layer)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if indices == nil {
+		indices = []int{}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"chunks": indices,
+	})
 }

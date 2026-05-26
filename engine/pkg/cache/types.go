@@ -23,6 +23,12 @@ type Stats struct {
 	DiskUsedBytes   int64
 }
 
+// MatchResult is the result of a cache match query.
+type MatchResult struct {
+	MatchedTokens int    `json:"matched_tokens"`
+	PromptHash    string `json:"prompt_hash"`
+}
+
 // Engine is the metadata + eviction engine.
 // Python calls these after/before file I/O.
 type Engine interface {
@@ -32,6 +38,8 @@ type Engine interface {
 	Exists(hash uint64) bool
 	Evict(targetBytes int64) []BlockMeta
 	Stats() Stats
+	Match(tokenIDs []int64, mmHashes []string, blockSize int) MatchResult
+	RecordSentinel(promptHash string, numTokens int) error
 	Close() error
 }
 

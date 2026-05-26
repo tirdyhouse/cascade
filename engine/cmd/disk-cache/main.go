@@ -18,6 +18,19 @@ var (
 	listenAddr   = flag.String("listen", ":9100", "HTTP API listen address")
 )
 
+// MatchReq is the JSON body for POST /match.
+type MatchReq struct {
+	TokenIDs  []int64  `json:"token_ids"`
+	MMHashes  []string `json:"mm_hashes"`
+	BlockSize int      `json:"block_size"`
+}
+
+// RecordReq is the JSON body for POST /record.
+type RecordReq struct {
+	PromptHash string `json:"prompt_hash"`
+	NumTokens  int    `json:"num_tokens"`
+}
+
 func parseSize(s string) (int64, error) {
 	if len(s) < 3 {
 		return strconv.ParseInt(s, 10, 64)
@@ -64,12 +77,14 @@ func main() {
 	log.Printf("disk-cache engine started on %s", *listenAddr)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/put", handlePut)       // POST hash, file_path, size
-	mux.HandleFunc("/get", handleGet)        // GET ?hash=
-	mux.HandleFunc("/remove", handleRemove)  // POST hash
-	mux.HandleFunc("/exists", handleExists)  // GET ?hash=
-	mux.HandleFunc("/evict", handleEvict)    // POST target_bytes
+	mux.HandleFunc("/put", handlePut)         // POST hash, file_path, size
+	mux.HandleFunc("/get", handleGet)          // GET ?hash=
+	mux.HandleFunc("/remove", handleRemove)    // POST hash
+	mux.HandleFunc("/exists", handleExists)    // GET ?hash=
+	mux.HandleFunc("/evict", handleEvict)      // POST target_bytes
 	mux.HandleFunc("/stats", handleStats)
+	mux.HandleFunc("/match", handleMatch)      // POST token_ids, mm_hashes, block_size
+	mux.HandleFunc("/record", handleRecord)    // POST prompt_hash, num_tokens
 
 	if err := http.ListenAndServe(*listenAddr, mux); err != nil {
 		log.Fatalf("server error: %v", err)
@@ -128,4 +143,39 @@ func handleEvict(w http.ResponseWriter, r *http.Request) {
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(eng.Stats())
+}
+
+// handleMatch receives token IDs and returns the best cache hit.
+// The Go engine computes hashes for all block-aligned lengths in parallel
+// and returns the largest match.
+func handleMatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", 400)
+		return
+	}
+	var req MatchReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	result := eng.Match(req.TokenIDs, req.MMHashes, req.BlockSize)
+	json.NewEncoder(w).Encode(result)
+}
+
+// handleRecord stores a sentinel marker for a completed cache entry.
+func handleRecord(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", 400)
+		return
+	}
+	var req RecordReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if err := eng.RecordSentinel(req.PromptHash, req.NumTokens); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.WriteHeader(200)
 }

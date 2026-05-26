@@ -169,7 +169,7 @@ func (e *diskEngine) RecordSentinel(promptHash string, numTokens int) error {
 // and records them as sentinels in a single Pebble batch.
 // numTokens is the actual number of KV tokens cached (aligned to block_size).
 func (e *diskEngine) RecordAll(tokenIDs []int64, mmHashes []string, blockSize int) error {
-	numTokens := len(tokenIDs) - 1
+	numTokens := len(tokenIDs)
 	numBlocks := numTokens / blockSize
 	if numBlocks < 1 {
 		return nil
@@ -220,7 +220,7 @@ func (e *diskEngine) Match(tokenIDs []int64, mmHashes []string, blockSize int) M
 		return MatchResult{}
 	}
 
-	numTokens := len(tokenIDs) - 1
+	numTokens := len(tokenIDs)
 	numBlocks := numTokens / blockSize
 	if numBlocks < 1 {
 		return MatchResult{}
@@ -241,7 +241,6 @@ func (e *diskEngine) Match(tokenIDs []int64, mmHashes []string, blockSize int) M
 			binary.BigEndian.PutUint32(buf, uint32(tid))
 			h.Write(buf)
 		}
-		// Clone state, add mmHashes, finalize cumulative hash
 		clone := cloneHash(h)
 		for _, mh := range mmHashes {
 			clone.Write([]byte(mh))
@@ -249,9 +248,7 @@ func (e *diskEngine) Match(tokenIDs []int64, mmHashes []string, blockSize int) M
 		hashes[i] = fmt.Sprintf("%x", clone.Sum(nil))[:32]
 	}
 
-	// 2. Binary search: find the largest index where sentinel exists.
-	// Because RecordAll stores all prefixes, sentinel existence is monotonic:
-	// if hashes[k] exists, then hashes[0..k-1] also exist.
+	// 2. Binary search
 	lo, hi := 0, numBlocks-1
 	for lo <= hi {
 		mid := (lo + hi) / 2
@@ -269,9 +266,6 @@ func (e *diskEngine) Match(tokenIDs []int64, mmHashes []string, blockSize int) M
 	return MatchResult{MatchedTokens: matched, PromptHash: hashes[hi]}
 }
 
-// ── Hash helpers ──
-
-// cloneHash clones a sha256 hash state by marshalling/unmarshalling.
 func cloneHash(h interface{}) hashHash {
 	// sha256.digest implements encoding.BinaryMarshaler/BinaryUnmarshaler
 	marshaler, ok := h.(encoding.BinaryMarshaler)

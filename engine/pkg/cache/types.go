@@ -40,6 +40,7 @@ type Engine interface {
 	Stats() Stats
 	Match(tokenIDs []int64, mmHashes []string, blockSize int) MatchResult
 	RecordSentinel(promptHash string, numTokens int) error
+	RecordAll(tokenIDs []int64, mmHashes []string, blockSize int) error
 	Close() error
 }
 

@@ -794,7 +794,459 @@ disk-cache cluster status
 
 ---
 
-## 十一、开源策略（讨论）
+## 十一、C/S 架构设计（v0.3）
+
+### 11.1 为什么要 C/S
+
+现有架构中，disk-cache engine 是"单机"的——每台机器跑一个独立进程，通过 HTTP API 被 Python connector 调用。没有统一的集群管理入口。
+
+**需要 C/S 架构解决的问题：**
+
+| 问题 | 现有方案 | C/S 方案 |
+|------|---------|---------|
+| 集群有多少节点在线？ | 不知道 | S端 统一点表 |
+| 某台机器 vLLM 挂了？ | 得 SSH 上去看 | S端 心跳超时自动标记 offline |
+| 加载新模型？ | 每台机器手动 exec | S端 一键下发指令 |
+| KV cache 命中在哪台机器？ | 不知道 | S端 元数据中心返回精确位置 |
+| 集群 cache 命中率？ | 没有 | S端 聚合统计 |
+
+### 11.2 整体架构
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                         S端 (Server / 一个集群一个)                     │
+│                                                                      │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────────┐ │
+│  │ 节点注册中心      │  │ 指令调度器       │  │ KV Cache 元数据中心   │ │
+│  │ (Registry)      │  │ (Dispatcher)    │  │ (MetaCenter)         │ │
+│  │                  │  │                 │  │                      │ │
+│  │ • 心跳/保活      │  │ • exec 指令下发  │  │ • 现有 disk-cache    │ │
+│  │ • 状态聚合       │  │ • 模型加载/卸载  │  │   Go 引擎 (Pebble)   │ │
+│  │ • 集群拓扑       │  │ • 配置热更新     │  │                      │ │
+│  │ • 超时/离线标记  │  │ • 广播执行      │  │ • hash → location   │ │
+│  │ • 磁盘容量追踪   │  │ • 进度追踪      │  │ • 两种模式路由决策   │ │
+│  └────────┬─────────┘  └───────┬─────────┘  └──────────┬───────────┘ │
+│           │                    │                        │            │
+│           └────────────────────┼────────────────────────┘            │
+│                                ▼                                     │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  rpcx Server (:9000)                                        │    │
+│  │  ┌─ ClusterService ─┬─ CommandService ─┬─ QueryService ──┐ │    │
+│  │  │ Register          │ FetchCommands    │ CacheLookup     │ │    │
+│  │  │ Heartbeat         │ ReportResult     │ ClusterStatus   │ │    │
+│  │  │ ReportCacheStatus │                  │ NodeDetail      │ │    │
+│  │  └──────────────────┴─────────────────┴─────────────────┘ │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  REST API (:8080) + Embedded Web UI                          │    │
+│  │  GET  /api/v1/cluster/status  → Dashboard                     │    │
+│  │  GET  /api/v1/nodes/:id      → Node Detail                    │    │
+│  │  POST /api/v1/command        → Dispatch                       │    │
+│  │  GET  /api/v1/cache/stats    → Cache Analytics                │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────────┘
+         ▲ rpcx TCP                    ▲ rpcx TCP
+         │                             │
+         ▼                             ▼
+┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
+│  C端 Agent node-1 │    │  C端 Agent node-2 │    │  C端 Agent node-3 │
+│                    │    │                    │    │                    │
+│  ┌──────────────┐ │    │  ┌──────────────┐ │    │  ┌──────────────┐ │
+│  │ vLLM 进程管理  │ │    │  │ vLLM 进程管理  │ │    │  │ vLLM 进程管理  │ │
+│  │ • exec 拉起   │ │    │  │ • exec 拉起   │ │    │  │ • exec 拉起   │ │
+│  │ • 健康探活    │ │    │  │ • 健康探活    │ │    │  │ • 健康探活    │ │
+│  │ • stdout 监控 │ │    │  │ • stdout 监控 │ │    │  │ • stdout 监控 │ │
+│  └──────────────┘ │    │  └──────────────┘ │    │  └──────────────┘ │
+│  ┌──────────────┐ │    │  ┌──────────────┐ │    │  ┌──────────────┐ │
+│  │ 状态采集      │ │    │  │ 状态采集      │ │    │  │ 状态采集      │ │
+│  │ • GPU 显存   │ │    │  │ • GPU 显存   │ │    │  │ • GPU 显存   │ │
+│  │ • 磁盘(多盘) │ │    │  │ • 磁盘(多盘) │ │    │  │ • 磁盘(多盘) │ │
+│  │ • vLLM 状态  │ │    │  │ • vLLM 状态  │ │    │  │ • vLLM 状态  │ │
+│  │ • Cache 统计 │ │    │  │ • Cache 统计 │ │    │  │ • Cache 统计 │ │
+│  └──────────────┘ │    │  └──────────────┘ │    │  └──────────────┘ │
+│  ┌──────────────┐ │    │  ┌──────────────┐ │    │  ┌──────────────┐ │
+│  │ rpcx Client  │ │    │  │ rpcx Client  │ │    │  │ rpcx Client  │ │
+│  │ → S端 :9000  │ │    │  │ → S端 :9000  │ │    │  │ → S端 :9000  │ │
+│  └──────────────┘ │    │  └──────────────┘ │    │  └──────────────┘ │
+└──────────────────┘    └──────────────────┘    └──────────────────┘
+         │                        │                        │
+         ▼                        ▼                        ▼
+  ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+  │ 本地 NVMe    │         │ 本地 NVMe    │         │ 共享存储     │
+  │ /mnt/nvme0  │         │ /mnt/nvme0  │         │ /mnt/shared/ │
+  │ /mnt/nvme1  │         │ /mnt/nvme1  │         │   kv-cache/  │
+  └──────────────┘         └──────────────┘         └──────────────┘
+```
+
+### 11.3 通信协议（rpcx）
+
+选用 rpcx 而非 gRPC 的理由：
+
+| 对比维度 | gRPC | rpcx |
+|---------|------|------|
+| 服务定义 | protobuf 编译 | Go interface 原生 |
+| 全 Go 项目 | 多一层代码生成 | 零代码生成 |
+| 双向通信 | 需要 stream | rpcx 原生支持双向注册 |
+| 部署体积 | 带 protobuf 运行时 | 纯 Go 零依赖 |
+| 学习成本 | protobuf + 代码生成 | 就是写 Go 函数 |
+
+**服务定义：**
+
+```go
+// ── S端 提供的服务（C端 调用）──
+
+// ClusterService - 节点管理 + 心跳
+type ClusterService interface {
+    Register(ctx context.Context, info *NodeInfo, reply *RegisterReply) error
+    Heartbeat(ctx context.Context, status *MachineStatus, reply *HeartbeatReply) error
+}
+
+// CommandService - 指令拉取 + 结果上报
+type CommandService interface {
+    FetchCommands(ctx context.Context, nodeID string, reply *[]*Command) error
+    ReportResult(ctx context.Context, result *CmdResult, reply *OK) error
+}
+
+// QueryService - 缓存查询 + 集群查询
+type QueryService interface {
+    CacheLookup(ctx context.Context, hash uint64, reply *CacheLocation) error
+    ClusterStatus(ctx context.Context, _ *Empty, reply *ClusterSummary) error
+    NodeDetail(ctx context.Context, nodeID string, reply *NodeDetail) error
+}
+
+// ── C端 提供的服务（S端 主动推送，双向注册模式）──
+
+// AgentService - S端 主动下发指令
+type AgentService interface {
+    ExecCommand(ctx context.Context, cmd *Command, reply *CmdResult) error
+}
+```
+
+**心跳融合指令拉取：**
+
+```
+C端                      S端
+ │                        │
+ ├── Heartbeat(status) ──►│  ← 每 5s 发送
+ │                        │  ├── 更新心跳时间戳
+ │                        │  ├── 检查 pending commands
+ │                        │  └── 打包 reply
+ │◄── HeartbeatReply ─────┤
+ │    ├── commands[]      │  ← 待执行指令（如果有）
+ │    ├── role_change     │  ← 角色变更（如果有）
+ │    └── config_update   │  ← 配置更新
+ │                        │
+ │  [有 pending cmd]      │
+ │  └── ReportResult ────►│  ← 异步上报执行结果
+ │                        │
+ │  [长时间命令]           │
+ │  └── Heartbeat(进度) ──►│  ← 下个心跳带 progress
+```
+
+### 11.4 核心数据结构
+
+```go
+// engine/pkg/cluster/types.go
+
+// ── 磁盘信息（关键：多盘支持，ip + disk_path 路由）──
+
+type DiskInfo struct {
+    Path    string  // "/mnt/nvme0"
+    TotalGB int64   // 总量
+    UsedGB  int64   // 已用
+    FreeGB  int64   // 剩余
+}
+
+type DiskUsage struct {
+    Path   string
+    FreeGB int64
+    UsedGB int64
+}
+
+// ── 节点 ──
+
+type NodeInfo struct {
+    NodeID      string      // "node-1"
+    Hostname    string
+    IP          string      // 管理 IP
+    RPCPort     int         // C端 rpcx 监听端口
+    CacheMode   string      // "local_nvme" | "shared_pool"
+
+    GPUType     string      // "H100"
+    GPUMemMB    int64
+    GPUCount    int
+
+    Disks       []DiskInfo  // 多块盘
+}
+
+type NodeStatus string
+const (
+    NodeOnline  NodeStatus = "online"
+    NodeOffline NodeStatus = "offline"
+    NodeLoading NodeStatus = "loading"
+    NodeError   NodeStatus = "error"
+)
+
+type MachineStatus struct {
+    NodeID      string
+    Timestamp   int64
+    Seq         int64       // 单调递增，去重
+
+    // 机器指标
+    GPUUtil     float64     // 0.0-1.0
+    GPUMemUsedMB int64
+    MemUsedMB   int64
+    CPULoad     float64
+
+    // 磁盘
+    Disks       []DiskUsage
+
+    // vLLM 进程
+    VLLMStatus  string     // "running"|"loading"|"stopped"|"error"
+    ModelName   string
+    QueueLen    int32
+    LoadingPct  int32      // 0-100
+
+    // KV Cache
+    CacheBlocks int64
+    CacheBytes  int64
+    CacheHitRate float64
+}
+
+// ── 指令 ──
+
+type CommandAction string
+const (
+    CmdStartVLLM   CommandAction = "start_vllm"
+    CmdStopVLLM    CommandAction = "stop_vllm"
+    CmdRestartVLLM CommandAction = "restart_vllm"
+    CmdLoadModel   CommandAction = "load_model"
+    CmdUnloadModel CommandAction = "unload_model"
+    CmdUpdateConfig CommandAction = "update_config"
+    CmdExecShell   CommandAction = "exec_shell"
+)
+
+type Command struct {
+    CmdID     string
+    Action    CommandAction
+    Params    map[string]string
+    Target    string           // 目标 node_id, "" = 广播
+    CreatedAt int64
+    Timeout   int              // 超时秒数
+}
+
+type CmdResult struct {
+    CmdID    string
+    NodeID   string
+    Status   string   // "running"|"success"|"failed"|"timeout"
+    Output   string
+    Error    string
+    Progress int32    // 0-100
+}
+
+// ── Cache 路由 ──
+
+type CacheLocation struct {
+    Hash     uint64
+    Size     int64
+
+    // 模式1 (local_nvme)：IP + 精确到盘
+    NodeID   string
+    IP       string
+    DiskPath string  // "/mnt/nvme0"  ← 精确到哪块盘
+    FilePath string  // "kv/blk_a1b2"
+
+    // 模式2 (shared_pool)
+    SharedPath string
+}
+
+// ── 集群查询 ──
+
+type NodeSummary struct {
+    NodeID      string
+    IP          string
+    Status      NodeStatus
+    GPUUtil     float64
+    GPUMemUsed  int64
+    ModelName   string
+    CacheBlocks int64
+    HitRate     float64
+    LastSeen    int64
+    Disks       []DiskUsage
+}
+
+type ClusterSummary struct {
+    Nodes       []NodeSummary
+    CacheMode   string
+    OnlineNodes int
+    TotalNodes  int
+    TotalBlocks int64
+    TotalBytes  int64
+    HitRate     float64
+}
+
+type NodeDetail struct {
+    Info   *NodeInfo
+    Status *MachineStatus
+    Recent []*CmdResult  // 最近指令
+}
+```
+
+### 11.5 两种 KV Cache 模式的路由决策
+
+```
+                       ┌──────────────────────────────┐
+                       │  KV Cache 元数据中心            │
+                       │  (现有 Go disk-cache engine)    │
+                       │                                │
+                       │  sentinel: hash → 存在?         │
+                       │  block: hash → location         │
+                       └──────────────┬───────────────┘
+                                      │
+                  ┌───────────────────┼────────────────────┐
+                  │ cache_mode        │                    │
+                  ▼                   ▼                    │
+    ┌────────────────────────┐  ┌────────────────────┐    │
+    │ 模式1: local_nvme       │  │ 模式2: shared_pool │    │
+    │                        │  │                    │    │
+    │ block 存在 node-X 的    │  │ block 存在共享存储   │    │
+    │ /mnt/nvme1 上           │  │ /mnt/shared/...    │    │
+    │                        │  │                    │    │
+    │ 路由决策:               │  │ 路由决策:           │    │
+    │ CacheLocation{         │  │ CacheLocation{     │    │
+    │   NodeID: "node-3",   │  │   SharedPath: "...",│    │
+    │   IP: "10.0.0.3",     │  │ }                  │    │
+    │   DiskPath: "/nvme1", │  │                    │    │
+    │ }                     │  │ → 任意节点可读       │    │
+    │                        │  │                    │    │
+    │ → 请求路由到 node-3    │  │ → 本地读共享存储     │    │
+    │   的 /nvme1 读数据     │  │                     │    │
+    └────────────────────────┘  └────────────────────┘    │
+```
+
+**关于 ip + disk_path 为什么要精确到盘：**
+
+```
+同一台机器的多盘场景:
+
+┌─ node-3 (10.0.0.3) ─────────────────────────┐
+│                                              │
+│  /mnt/nvme0  (3.5TB NVMe)                   │
+│    ├── 当前已用: 3.1TB  ██████████░░ 88%     │
+│    └── 剩余: 0.4TB                           │
+│                                              │
+│  /mnt/nvme1  (3.5TB NVMe)                   │
+│    ├── 当前已用: 0.5TB  █░░░░░░░░░ 14%       │
+│    └── 剩余: 3.0TB             ← 新 block 写这里! │
+│                                              │
+│  /mnt/nvme2  (7.0TB NVMe)                   │
+│    ├── 系统盘, 不参与 cache                    │
+│    └── 剩余: 4.5TB                           │
+└──────────────────────────────────────────────┘
+```
+
+S端 的 `disk_tracker` 模块负责：
+- 维护每节点每盘 `(node_id, disk_path) → (total, used, free)`
+- 新 cache block 写入时推荐剩余空间最大的盘
+- 心跳上报中同步每盘最新状态
+
+### 11.6 嵌入式 Web 管理后台
+
+**技术选型：**
+
+| 层 | 技术 | 理由 |
+|----|------|------|
+| 静态文件嵌入 | Go `embed` | 一个二进制部署 |
+| 前端框架 | Alpine.js (CDN) | 15KB，声明式绑定 |
+| 图表 | Chart.js (CDN) | 轻量图表 |
+| 样式 | Pico CSS (CDN) | 语义化 HTML 自带美观 |
+| REST 路由 | Go net/http 标准 mux | 简单够用 |
+
+**页面规划：**
+
+```
+/                    → Dashboard（概览 + 节点列表）
+/nodes.html          → 节点列表（表格 + 状态标签）
+/node.html?id=xxx    → 单机详情（指标 + 磁盘 + 操作按钮）
+/cache.html          → Cache 统计（命中率趋势 + block 分布）
+/commands.html       → 指令管理（历史 + 下发表单）
+```
+
+**文件结构：**
+
+```
+pkg/server/web/
+├── embed.go         //go:embed static/*
+├── api.go           # REST API handlers
+└── static/
+    ├── index.html   # Dashboard
+    ├── nodes.html   # 节点列表
+    ├── node.html    # 单机详情
+    ├── cache.html   # Cache 统计
+    ├── commands.html# 指令管理
+    ├── app.js       # Alpine.js 通用组件
+    └── style.css    # 自定义样式
+```
+
+### 11.7 实施路线
+
+| Phase | 内容 | 输出 |
+|-------|------|------|
+| **1** | 共享类型 + rpcx 服务接口 | `pkg/cluster/types.go`, `pkg/cluster/rpc_service.go` |
+| **2** | S端 Server 核心 | `pkg/server/` (registry, dispatcher, rest api, web ui) |
+| **3** | S端 入口命令 | `cmd/cluster-server/main.go` |
+| **4** | C端 Agent | `pkg/agent/` + `cmd/c-agent/main.go` |
+| **5** | 集成 disk-cache 作为元数据中心 | `pkg/server/router.go` + disk_tracker |
+| **6** | Makefile + 端到端验证 | `make build-cs`, 本地双进程联调 |
+
+---
+
+## 十二、目录结构总览
+
+```
+engine/
+├── cmd/
+│   ├── disk-cache/          # [现有] 单机 HTTP 引擎
+│   │   └── main.go
+│   ├── cluster-server/      # [新增] S端
+│   │   └── main.go
+│   └── c-agent/             # [新增] C端
+│       └── main.go
+│
+├── pkg/
+│   ├── cache/               # [现有] 核心 cache 引擎
+│   ├── metadata/            # [现有] Pebble 元数据存储
+│   ├── eviction/            # [现有] LRU 淘汰
+│   │
+│   ├── cluster/             # [新增] C/S 共享
+│   │   ├── types.go         #   数据结构
+│   │   └── rpc_service.go   #   rpcx 服务接口
+│   │
+│   ├── server/              # [新增] S端
+│   │   ├── server.go        #   主服务
+│   │   ├── registry.go      #   节点注册
+│   │   ├── dispatcher.go    #   指令调度
+│   │   ├── router.go        #   Cache 路由
+│   │   ├── disk_tracker.go  #   磁盘追踪
+│   │   └── web/             #   REST API + Web UI
+│   │       ├── embed.go
+│   │       ├── api.go
+│   │       └── static/*
+│   │
+│   └── agent/               # [新增] C端
+│       ├── agent.go         #   主循环
+│       ├── process.go       #   进程管理
+│       ├── collector.go     #   状态采集
+│       └── cache_proxy.go   #   本地 cache 代理
+│
+├── go.mod
+└── go.sum
+```
+
+---
+
+
 
 | 层 | 是否开源 | 理由 |
 |---|---------|------|

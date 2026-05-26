@@ -169,7 +169,7 @@ func (e *diskEngine) RecordSentinel(promptHash string, numTokens int) error {
 // and records them as sentinels in a single Pebble batch.
 // numTokens is the actual number of KV tokens cached (aligned to block_size).
 func (e *diskEngine) RecordAll(tokenIDs []int64, mmHashes []string, blockSize int) error {
-	numTokens := len(tokenIDs) - 1
+	numTokens := len(tokenIDs)
 	numBlocks := numTokens / blockSize
 	if numBlocks < 1 {
 		return nil

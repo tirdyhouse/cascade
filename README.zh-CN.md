@@ -204,15 +204,56 @@ python3 test/scripts/gen_report.py
 
 ## 方案对比
 
-| 特性 | 原生 vLLM | LMCache | Cascade |
-|---|---|---|---|
-| 磁盘缓存 | ❌ 无 | ✅ 有 | ✅ 有 |
-| 淘汰策略 | ❌ 仅 APC | LRU | **LRU + 分层** |
-| 元数据引擎 | 内存 | SQLite | **Pebble (LSM 树)** |
-| GDS 支持 | ❌ 无 | 部分 | **计划中** |
-| 集群感知 | ❌ 无 | ❌ 无 | **计划中** |
-| 可观测性 | 极少 | 基本 | **Stats API** |
-| 纯存储节点 | ❌ 无 | ❌ 无 | **计划中** |
+### 设计理念
+
+| | LMCache | Mooncake | **Cascade** |
+|---|---|---|---|---|
+| **定位** | 分层缓存引擎 | 分布式 KV 传输引擎 | **集群磁盘缓存** |
+| **磁盘角色** | 温数据层（CPU→Disk） | 内存溢出卸载目标 | **🎯 主存储层** |
+| **数据路径** | GPU → CPU → Disk | GPU 内存 ↔ RDMA → 远端 GPU | **GPU → NVMe (GDS) → 集群 (RDMA)** |
+| **存储节点** | ❌ 必须有 GPU | ❌ 必须有 GPU | **✅ 支持纯磁盘节点** |
+
+### 当前实现（Phase 1 MVP）
+
+| 特性 | LMCache | Mooncake | **Cascade** |
+|---|---|---|---|---|
+| **磁盘缓存** | ✅ LocalDiskBackend | ✅ FileStorage (SSD offload) | **✅ 核心设计** |
+| **KV 数据 I/O** | Python `open/write` | C++ io_uring / POSIX | **Python safetensors*** |
+| **元数据存储** | Python 内存 dict | etcd + Master 服务 | **Pebble (LSM 树)** |
+| **元数据持久化** | ❌ 重启丢失 | ✅ etcd | **✅ Pebble** |
+| **淘汰策略** | ✅ LRU / LFU / FIFO / MRU | ✅ LRU / FIFO | **✅ LRU** |
+| **前缀匹配** | ✅ TokenDatabase | ❌ 不透明 key | **✅ SHA-256 增量哈希 + 哨兵** |
+| **vLLM 集成** | ✅ 深度集成 | ✅ mooncake-integration | **✅ KVConnectorBase_V1** |
+| **核心引擎代码量** | ~79K 行 Python | ~220K 行 C++ | **~400 行 Go** |
+
+> *Phase 1 由于硬件限制，暂用 Python safetensors 经 CPU bounce buffer 直接读写磁盘。
+> Go 引擎通过 HTTP 管理元数据和淘汰策略。后续版本将把存储 I/O 下沉到 Go/C 层。
+
+### 规划架构（设计目标）
+
+| 特性 | LMCache | Mooncake | **Cascade** |
+|---|---|---|---|---|
+| **I/O 栈** | Python 原生 | C++ 原生 | **Python connector → Go 引擎 → C 后端** |
+| **GPU↔NVMe** | ✅ GdsBackend (部分) | ❌ 不支持 | **📋 GPUDirect Storage (cufile)** |
+| **跨节点传输** | ❌ 不支持 RDMA | ✅ RDMA (核心能力) | **📋 RDMA (ibverbs)** |
+| **异步磁盘 I/O** | ❌ 不支持 | ✅ io_uring | **📋 io_uring** |
+| **集群管理** | ❌ 仅 P2P (ZMQ) | ✅ Master + etcd + HA | **📋 ClusterManager + etcd** |
+| **纯存储节点** | ❌ 无此概念 | ❌ 必须有 GPU | **📋 支持无 GPU 节点** |
+| **SGLang 适配** | ❌ 不支持 | ✅ 已支持 | **📋 脚手架就绪** |
+
+### 架构演进
+
+```
+Phase 1 (当前)   Python safetensors 直接读写磁盘
+                 Go 引擎管理元数据 (Pebble) + 淘汰策略 (LRU) — 通过 HTTP
+
+Phase 2 (下一阶段) Go 引擎接管全部存储 I/O
+                 C 后端: GPUDirect Storage (GPU↔NVMe 零拷贝)
+                         io_uring (异步磁盘 I/O)
+
+Phase 3 (规划中)   集群模式: etcd 节点发现 + ClusterManager
+                 RDMA 跨节点传输 + 纯磁盘存储节点
+```
 
 ---
 

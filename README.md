@@ -204,15 +204,57 @@ Results are stored in `test/results/`. See `docs/benchmark-plan.md` for detailed
 
 ## Comparison
 
-| Feature | Native vLLM | LMCache | Cascade |
+### Design Philosophy
+
+| | LMCache | Mooncake | **Cascade** |
+|---|---|---|---|---|
+| **Role** | Tiered cache engine | Distributed KV transport engine | **Cluster disk cache** |
+| **Disk role** | Warm data tier (CPU→Disk) | Eviction overflow target | **🎯 Primary storage layer** |
+| **Data path** | GPU → CPU → Disk | GPU memory ↔ RDMA → peer GPU | **GPU → NVMe (GDS) → cluster (RDMA)** |
+| **Storage node** | ❌ Must have GPU | ❌ Must have GPU | **✅ Pure disk node planned** |
+
+### Current Implementation (Phase 1 MVP)
+
+| Feature | LMCache | Mooncake | **Cascade** |
 |---|---|---|---|
-| Disk cache | ❌ No | ✅ Yes | ✅ Yes |
-| Eviction policy | ❌ APC only | LRU | **LRU + tiered** |
-| Metadata engine | In-memory | SQLite | **Pebble (LSM tree)** |
-| GDS support | ❌ No | Partial | **Planned** |
-| Cluster-aware | ❌ No | ❌ No | **Planned** |
-| Observability | Minimal | Basic | **Stats API** |
-| Storage-only node | ❌ No | ❌ No | **Planned** |
+| **Disk cache** | ✅ LocalDiskBackend | ✅ FileStorage (SSD offload) | **✅ Core design** |
+| **KV data I/O** | Python `open/write` | C++ io_uring / POSIX | **Python safetensors*** |
+| **Metadata store** | In-memory Python dict | etcd + Master Service | **Pebble (LSM tree)** |
+| **Metadata persistent** | ❌ Lost on restart | ✅ etcd | **✅ Pebble** |
+| **Eviction policy** | ✅ LRU / LFU / FIFO / MRU | ✅ LRU / FIFO | **✅ LRU** |
+| **Prefix matching** | ✅ TokenDatabase | ❌ Opaque key only | **✅ SHA-256 incremental + sentinel** |
+| **vLLM integration** | ✅ Deep integration | ✅ mooncake-integration | **✅ KVConnectorBase_V1** |
+| **Codebase (core engine)** | ~79K lines Python | ~220K lines C++ | **~400 lines Go** |
+
+> *Phase 1 uses Python safetensors via CPU bounce buffer as a temporary path
+> (hardware limitation). The Go engine manages metadata + eviction over HTTP.
+> Future phases will move all storage I/O to the Go/C layer.
+
+### Planned Architecture (Design Target)
+
+| Feature | LMCache | Mooncake | **Cascade** |
+|---|---|---|---|
+| **I/O stack** | Python native | C++ native | **Python connector → Go engine → C backend** |
+| **GPU↔NVMe** | ✅ GdsBackend (partial) | ❌ Not supported | **📋 GPUDirect Storage (cufile)** |
+| **Cross-node transfer** | ❌ No RDMA | ✅ RDMA (core competency) | **📋 RDMA (ibverbs)** |
+| **Async disk I/O** | ❌ Not supported | ✅ io_uring | **📋 io_uring** |
+| **Cluster manager** | ❌ P2P only (ZMQ) | ✅ Master + etcd + HA | **📋 ClusterManager + etcd** |
+| **Pure storage node** | ❌ No such concept | ❌ GPU required | **📋 GPU-free storage node** |
+| **SGLang adapter** | ❌ Not available | ✅ Supported | **📋 Scaffolded** |
+
+### Architecture Evolution
+
+```
+Phase 1 (current)   Python safetensors writes/reads disk directly
+                    Go engine manages metadata (Pebble) + eviction (LRU) via HTTP
+                    
+Phase 2 (next)      Go engine takes over all storage I/O
+                    C backends: GPUDirect Storage (GPU↔NVMe zero-copy)
+                                io_uring (async disk I/O)
+                    
+Phase 3 (planned)   Cluster mode: etcd node discovery + ClusterManager
+                    RDMA cross-node transfer + pure disk storage nodes
+```
 
 ---
 

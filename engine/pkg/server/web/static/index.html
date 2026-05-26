@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>KV Cache Cluster - Dashboard</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body x-data="dashboard()" x-init="init()">
+  <main class="container">
+    <!-- Nav -->
+    <nav>
+      <ul><li><strong>⚡ KV Cache Cluster Manager</strong></li></ul>
+      <ul>
+        <li><a href="/" class="active">Dashboard</a></li>
+        <li><a href="/nodes.html">Nodes</a></li>
+        <li><a href="/cache.html">Cache</a></li>
+        <li><a href="/commands.html">Commands</a></li>
+      </ul>
+    </nav>
+
+    <!-- Status cards -->
+    <div class="grid status-cards">
+      <article class="card">
+        <small>🟢 Online Nodes</small>
+        <h2 x-text="`${data.online_nodes}/${data.total_nodes}`"></h2>
+      </article>
+      <article class="card">
+        <small>🎯 Avg Hit Rate</small>
+        <h2 x-text="(data.hit_rate || 0).toFixed(1) + '%'"></h2>
+      </article>
+      <article class="card">
+        <small>📦 Cache Blocks</small>
+        <h2 x-text="(data.total_blocks || 0).toLocaleString()"></h2>
+      </article>
+      <article class="card">
+        <small>🎮 Cache Mode</small>
+        <h2 x-text="data.cache_mode || '—'"></h2>
+      </article>
+    </div>
+
+    <!-- Node table -->
+    <article>
+      <header><strong>📋 Nodes</strong></header>
+      <div class="overflow-auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Node</th><th>IP</th><th>GPU Util</th><th>Model</th>
+              <th>vLLM</th><th>Cache Blocks</th><th>Hit Rate</th><th>Disks</th><th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="node in data.nodes" :key="node.node_id">
+              <tr>
+                <td x-text="node.node_id"></td>
+                <td x-text="node.ip"></td>
+                <td x-text="(node.gpu_util*100).toFixed(0) + '%'"></td>
+                <td x-text="node.model_name || '—'"></td>
+                <td>
+                  <span :class="'tag ' + (vllmStatus(node) || 'stopped')" x-text="vllmStatus(node) || 'stopped'"></span>
+                </td>
+                <td x-text="(node.cache_blocks || 0).toLocaleString()"></td>
+                <td x-text="(node.hit_rate || 0).toFixed(1) + '%'"></td>
+                <td>
+                  <template x-for="d in (node.disks || [])">
+                    <div class="disk-mini" x-text="`${d.path}: ${(d.free_gb/1024).toFixed(1)}TB free`"></div>
+                  </template>
+                </td>
+                <td><span :class="'tag ' + node.status" x-text="node.status"></span></td>
+                <td><a :href="`/node.html?id=${node.node_id}`" class="outline">detail</a></td>
+              </tr>
+            </template>
+            <tr x-show="!data.nodes || data.nodes.length === 0">
+              <td colspan="10" class="empty">No nodes registered yet. Waiting for C端 agents to connect...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <footer class="footer">
+      <small>Auto-refreshes every 10s. Last update: <span x-text="lastUpdate"></span></small>
+    </footer>
+  </main>
+
+  <script>
+    function dashboard() {
+      return {
+        data: { nodes: [] },
+        lastUpdate: '—',
+        async init() {
+          await this.refresh();
+          setInterval(() => this.refresh(), 10000);
+        },
+        async refresh() {
+          try {
+            const r = await fetch('/api/v1/cluster/status');
+            this.data = await r.json();
+            this.lastUpdate = new Date().toLocaleTimeString();
+          } catch(e) {
+            console.error('refresh failed', e);
+          }
+        },
+        vllmStatus(node) {
+          return 'online'; // simplified; will show actual vllm status when available
+        }
+      }
+    }
+  </script>
+</body>
+</html>

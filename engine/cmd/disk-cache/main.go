@@ -86,10 +86,6 @@ func main() {
 	mux.HandleFunc("/match", handleMatch)
 	mux.HandleFunc("/record", handleRecord)
 	mux.HandleFunc("/record_batch", handleRecordBatch)
-	mux.HandleFunc("/record", handleRecord)    // POST prompt_hash, num_tokens
-	mux.HandleFunc("/record_batch", handleRecordBatch) // POST token_ids, mm_hashes, block_size
-	mux.HandleFunc("/match", handleMatch)      // POST token_ids, mm_hashes, block_size
-	mux.HandleFunc("/record", handleRecord)    // POST prompt_hash, num_tokens
 
 	if err := http.ListenAndServe(*listenAddr, mux); err != nil {
 		log.Fatalf("server error: %v", err)

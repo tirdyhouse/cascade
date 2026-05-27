@@ -295,19 +295,27 @@ func (a *Agent) executeDownloadModel(cmd *cluster.Command) {
 		return
 	}
 	log.Printf("[agent] downloading model %s from %s", model, url)
-	output, err := a.process.DownloadModel(model, url, a.config.WorkDir)
-	result := &cluster.CmdResult{CmdID: cmd.CmdID, NodeID: a.config.NodeID}
-	if err != nil {
-		result.Status = "failed"
-		result.Error = err.Error()
-		result.Output = output
-	} else {
-		result.Status = "success"
-		result.Output = output
-	}
-	a.reportResult(result)
-}
 
+	// Acknowledge immediately, run download in background
+	a.reportResult(&cluster.CmdResult{
+		CmdID: cmd.CmdID, NodeID: a.config.NodeID,
+		Status: "running", Output: "downloading " + model,
+	})
+
+	go func() {
+		output, err := a.process.DownloadModel(model, url, a.config.WorkDir)
+		result := &cluster.CmdResult{CmdID: cmd.CmdID, NodeID: a.config.NodeID}
+		if err != nil {
+			result.Status = "failed"
+			result.Error = err.Error()
+			result.Output = output
+		} else {
+			result.Status = "success"
+			result.Output = output
+		}
+		a.reportResult(result)
+	}()
+}
 
 func (a *Agent) executeStopVLLM(cmd *cluster.Command) {
 	output, err := a.process.Stop()

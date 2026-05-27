@@ -132,12 +132,6 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	// Static file server
 	cwd, _ := os.Getwd()
 	staticDir := cwd + "/engine/pkg/server/web/static"
-	log.Printf("[debug] staticDir=%s", staticDir)
-	if f, err := os.Stat(staticDir + "/index.html"); err == nil {
-		log.Printf("[debug] index.html exists, size=%d", f.Size())
-	} else {
-		log.Printf("[debug] index.html not found: %v", err)
-	}
 
 	// Single entry point: API routes → apiMux, everything else → static files
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -155,7 +149,6 @@ func (s *Server) startHTTP(ctx context.Context) error {
 		if path != "/" && path != "" {
 			fullPath = staticDir + path
 		}
-		log.Printf("[debug] serving: path=%s fullPath=%s", path, fullPath)
 		http.ServeFile(w, r, fullPath)
 	})
 

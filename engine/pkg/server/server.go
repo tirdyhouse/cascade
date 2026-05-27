@@ -48,6 +48,8 @@ type Config struct {
 	HTTPPort    int    // REST API + Web UI port
 	MetadataDir string // metadata directory for existing disk-cache engine
 	ModelsFile  string // path to models.json (optional)
+	ModelsDir   string // directory to auto-scan for models (optional)
+	PublicURL   string // public URL for model download links (optional)
 }
 
 // DefaultConfig returns sensible defaults.
@@ -72,20 +74,24 @@ func New(cfg *Config) *Server {
 
 	// Router with nil meta backend for now — will be connected to disk-cache engine later
 	srv.router = NewRouter(reg, dt, nil)
-	// Initialize model registry
-	srv.models = NewModelRegistry()
+	// Initialize model registry with directory scanning
+	baseURL := cfg.PublicURL
+	if baseURL == "" && cfg.HTTPPort > 0 {
+		baseURL = fmt.Sprintf("http://localhost:%d/models/", cfg.HTTPPort)
+	}
+	srv.models = NewModelRegistry(cfg.ModelsDir, baseURL)
 	if cfg.ModelsFile != "" {
 		if err := srv.models.LoadFromFile(cfg.ModelsFile); err != nil {
 			log.Printf("[server] warn: load models from %s: %v", cfg.ModelsFile, err)
 		}
 	}
-	// Models are loaded from --models-file. If no file specified, the model list
-	// is empty and must be configured before distributing/starting vLLM.
-	// Example models.json:
-	// [
-	//   {"name":"Qwen2.5-7B-Instruct","download_url":"https://huggingface.co/Qwen/Qwen2.5-7B-Instruct","default_gpu_mem":"0.9","supports_prefix":true,"supports_disk_cache":true}
-	// ]
+	srv.models.Scan()
 
+	// Periodic rescan (every 30s) — will be stopped when Start's context cancels
+	// Scan is called here; Start() adds the periodic goroutine with its context
+
+	log.Printf("[server] models: %d available (dir=%s file=%s)",
+		len(srv.models.List()), cfg.ModelsDir, cfg.ModelsFile)
 	return srv
 }
 
@@ -104,6 +110,20 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// 2. Start GC loop
 	go s.registry.GC(ctx)
+
+	// 2b. Start periodic model scan
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				s.models.Scan()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	// 3. Start REST API + Web UI
 	if err := s.startHTTP(ctx); err != nil {

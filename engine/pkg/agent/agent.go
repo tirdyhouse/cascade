@@ -81,7 +81,7 @@ func (a *Agent) Start() error {
 	if err := a.client.Connect(); err != nil {
 		return err
 	}
-	defer a.client.Close()
+	defer a.client.Stop()
 
 	// 2. Register with S端
 	if err := a.register(); err != nil {

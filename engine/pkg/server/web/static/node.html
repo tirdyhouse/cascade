@@ -102,7 +102,7 @@ function render(id,d,models){
 
   // Simple test - just show node ID and GPU mem
   const modelRows=models.map(m=>{
-    const size=m.size_gb>0?' ('+m.size_gb.toFixed(1)+'GB)':'';
+    const size=' ('+m.size_gb.toFixed(1)+'GB)';
     return '<tr><td>'+esc(m.name)+size+'</td><td><span class="tag missing">⬇ need download</span></td><td><button class="btn btn-sm btn-outline" onclick="alert(\'distribute\')">📦 Distribute</button></td></tr>';
   }).join('');
   const online=st.vllm_status;
@@ -123,7 +123,7 @@ function render(id,d,models){
     '<div class="panel"><div class="panel-header">🚀 Launch vLLM</div><div class="panel-body">'+
       '<div class="grid-2">'+
         '<label>Model<select id="launch-model">'+
-          models.map(m=>'<option value="'+esc(m.name)+'" '+(m.name===currentModel?'selected':'')+'>'+esc(m.name)+(m.size_gb>0?' ('+m.size_gb.toFixed(1)+'GB)':'')+'</option>').join('')+
+          models.map(m=>'<option value="'+esc(m.name)+'" '+(m.name===currentModel?'selected':'')+'>'+esc(m.name)+' ('+m.size_gb.toFixed(1)+'GB)'+'</option>').join('')+
         '</select></label>'+
         '<label>GPU Utilization: <span id="gpu-val">0.90</span><input type="range" min="0.5" max="0.99" step="0.01" value="0.90" oninput="document.getElementById(\'gpu-val\').textContent=this.value;if(!cmdCustom)updateCmdPreview()"></label>'+
       '</div>'+

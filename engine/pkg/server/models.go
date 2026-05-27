@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"predict/engine/pkg/cluster"
@@ -62,8 +63,12 @@ func (r *ModelRegistry) Scan() {
 				if !e.IsDir() {
 					continue
 				}
+				if strings.HasPrefix(e.Name(), ".") {
+					continue
+				}
 				name := e.Name()
 				sizeGB := dirSizeGB(filepath.Join(r.modelsDir, name))
+
 				downloadURL := ""
 				if r.baseURL != "" {
 					downloadURL = r.baseURL + name + "/"

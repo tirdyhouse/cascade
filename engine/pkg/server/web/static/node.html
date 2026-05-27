@@ -126,7 +126,7 @@ function render(id,d,models){
         '<label>Model<select id="launch-model">'+
           models.map(m=>'<option value="'+esc(m.name)+'" '+(m.name===currentModel?'selected':'')+'>'+esc(m.name)+'</option>').join('')+
         '</select></label>'+
-        '<label>GPU Utilization: <span id="gpu-val">0.90</span><input type="range" min="0.5" max="0.99" step="0.01" value="0.90" oninput="gpuVal.textContent=this.value"></label>'+
+        '<label>GPU Utilization: <span id="gpu-val">0.90</span><input type="range" min="0.5" max="0.99" step="0.01" value="0.90" oninput="document.getElementById(\'gpu-val\').textContent=this.value;if(!cmdCustom)updateCmdPreview()"></label>'+
       '</div>'+
       '<div class="toggle-group">'+
         '<label><input type="checkbox" id="chk-prefix" checked onchange="updateCmdPreview()"> 🧠 Prefix Caching</label>'+
@@ -134,7 +134,7 @@ function render(id,d,models){
       '</div>'+
       // Command preview (editable for advanced users)
       '<label style="margin-top:16px">vLLM Command <span class="muted">(edit directly for custom args)</span></label>'+
-      '<textarea id="cmd-preview" rows="2" style="width:100%;margin-top:4px;font-family:monospace;font-size:0.85rem;background:#050a14;color:#a0b0c0" onchange="cmdCustom=true">'+esc(buildCmd(models[0]&&models[0].name||''))+'</textarea>'+
+      '<textarea id="cmd-preview" rows="2" style="width:100%;margin-top:4px;font-family:monospace;font-size:0.85rem;background:#050a14;color:#a0b0c0" onchange="cmdCustom=true">'+esc(buildCmd(models[0]&&models[0].name||'','0.90',true,true))+'</textarea>'+
       '<div class="flex" style="margin-top:12px">'+
         '<button class="btn" onclick="doStart()">▶ Start</button>'+
         (online==='running'||online==='loading'?'<button class="btn btn-danger" onclick="doStop()">⏹ Stop</button>':'')+
@@ -168,10 +168,11 @@ function render(id,d,models){
 
 let cmdCustom=false;
 
-function buildCmd(model){
-  const gpu=document.getElementById('gpu-val').textContent;
-  const prefix=document.getElementById('chk-prefix').checked;
-  const disk=document.getElementById('chk-disk').checked;
+function buildCmd(model,gpu,prefix,disk){
+  if(model===undefined){const e=document.getElementById('gpu-val');if(!e)return model||'';gpu=e.textContent}
+  if(gpu===undefined)gpu=document.getElementById('gpu-val').textContent;
+  if(prefix===undefined)prefix=document.getElementById('chk-prefix').checked;
+  if(disk===undefined)disk=document.getElementById('chk-disk').checked;
   let cmd=model+' --gpu-memory-utilization '+gpu;
   if(prefix)cmd+=' --enable-prefix-caching';
   if(disk)cmd+=' --kv-connector disk-cache --disk-cache-path /root/cascade/agent/cache';

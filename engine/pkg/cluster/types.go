@@ -97,7 +97,7 @@ type MachineStatus struct {
 	CacheHitRate float64 `json:"cache_hit_rate"`
 
 	// Models available locally (from scanning <work-dir>/models/)
-	AvailableModels []string `json:"available_models,omitempty"`
+	AvailableModels []LocalModel `json:"available_models,omitempty"`
 }
 
 func NewMachineStatus(nodeID string, seq int64) *MachineStatus {
@@ -137,6 +137,13 @@ type Command struct {
 
 // ============================================================================
 // Models
+
+// LocalModel represents a model found on a C端 node's disk.
+type LocalModel struct {
+	Name   string  `json:"name"`
+	SizeGB float64 `json:"size_gb"` // directory size in GB, 0 if unknown
+}
+
 // ============================================================================
 
 // ModelInfo describes a model available on S端 for distribution.
@@ -210,7 +217,7 @@ type NodeSummary struct {
 	LoadingPct  int32       `json:"loading_pct"`
 	LastSeen    int64       `json:"last_seen"`
 	Disks       []DiskUsage `json:"disks"`
-	AvailableModels []string `json:"available_models,omitempty"`
+	AvailableModels []LocalModel `json:"available_models,omitempty"`
 }
 
 // ClusterSummary is the aggregated cluster view.

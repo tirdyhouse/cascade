@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -103,27 +104,38 @@ func (c *Collector) getDiskFree(path string) diskFreeResult {
 	return diskFreeResult{}
 }
 
-// ── Utility functions ────────────────────────────────────────────────
-// GetAvailableModels scans the models directory and returns model names.
-func (c *Collector) GetAvailableModels() []string {
+// GetAvailableModels scans the models directory and returns models with sizes.
+func (c *Collector) GetAvailableModels() []cluster.LocalModel {
 	modelsDir := c.cfg.WorkDir + "/models"
 	entries, err := os.ReadDir(modelsDir)
 	if err != nil {
 		return nil
 	}
-	var models []string
+	var models []cluster.LocalModel
 	for _, e := range entries {
 		if e.IsDir() {
-			// Check for download marker
 			marker := modelsDir + "/" + e.Name() + "/.downloaded"
 			if _, err := os.Stat(marker); err == nil {
-				models = append(models, e.Name())
+				sizeGB := dirSizeGB(modelsDir + "/" + e.Name())
+				models = append(models, cluster.LocalModel{
+					Name:   e.Name(),
+					SizeGB: sizeGB,
+				})
 			}
 		}
 	}
 	return models
 }
 
+func dirSizeGB(path string) float64 {
+	var total int64
+	filepath.Walk(path, func(_ string, fi os.FileInfo, err error) error {
+		if err != nil { return nil }
+		if !fi.IsDir() { total += fi.Size() }
+		return nil
+	})
+	return float64(total) / (1024 * 1024 * 1024)
+}
 
 func getOutboundIP() string {
 	// Try environment first

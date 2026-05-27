@@ -172,6 +172,12 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	// Single entry point: API routes → apiMux, everything else → static files
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
+		// Serve model files for distribution (e.g. /models/Qwen2.5-7B-Instruct/)
+		if len(path) >= 8 && path[:8] == "/models/" && s.config.ModelsDir != "" {
+			http.StripPrefix("/models/", http.FileServer(http.Dir(s.config.ModelsDir))).ServeHTTP(w, r)
+			return
+		}
+
 		if r.Method == "POST" && path == "/api/v1/command" {
 			apiMux.ServeHTTP(w, r)
 			return

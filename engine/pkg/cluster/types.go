@@ -153,6 +153,8 @@ type ModelInfo struct {
 	DefaultGPUMem   string `json:"default_gpu_mem"`
 	SupportsPrefix  bool   `json:"supports_prefix"`
 	SupportsDiskCache bool `json:"supports_disk_cache"`
+	Quantization string `json:"quantization,omitempty"` // awq, gptq, fp8, etc. (auto-detected from model files)
+
 	SizeGB float64 `json:"size_gb"` // directory size in GB, 0 if unknown
 
 }

@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 
 	"predict/engine/pkg/cluster"
 )
@@ -36,14 +39,27 @@ func (c *Collector) Collect(seq int64) *cluster.MachineStatus {
 }
 
 func (c *Collector) getGPUUtil() float64 {
-	// Stub: real implementation would exec nvidia-smi or use NVML bindings.
-	// For now return a default value.
-	return 0.0
+	out, err := exec.Command("nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits").Output()
+	if err != nil {
+		return 0.0
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil {
+		return 0.0
+	}
+	return v / 100.0
 }
 
 func (c *Collector) getGPUMemUsed() int64 {
-	// Stub: real implementation would query nvidia-smi.
-	return 0
+	out, err := exec.Command("nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits").Output()
+	if err != nil {
+		return 0
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 func (c *Collector) getMemUsed() int64 {

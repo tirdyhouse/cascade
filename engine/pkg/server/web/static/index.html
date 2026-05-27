@@ -3,87 +3,997 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>KV Cache Cluster Dashboard</title>
+<title>Cascade · KV Cache Cluster</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0e17;color:#e0e0e0;padding:20px}
-.container{max-width:1400px;margin:0 auto}
-nav{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid #1e2a3a;margin-bottom:24px}
-nav .logo{font-size:1.2rem;font-weight:700;color:#58a6ff}
-nav a{color:#8b949e;text-decoration:none;padding:6px 14px;border-radius:6px;font-size:0.9rem}
-nav a.active,nav a:hover{color:#fff;background:#1e2a3a}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
-.card{background:#111b2e;border:1px solid #1e2a3a;border-radius:10px;padding:20px;text-align:center}
-.card small{color:#8b949e;font-size:0.8rem}
-.card h2{margin:8px 0 0;font-size:1.8rem;color:#f0f6fc}
-.panel{background:#111b2e;border:1px solid #1e2a3a;border-radius:10px;overflow:hidden;margin-bottom:24px}
-.panel-header{padding:14px 20px;border-bottom:1px solid #1e2a3a;font-weight:600;color:#f0f6fc}
-table{width:100%;border-collapse:collapse;font-size:0.9rem}
-th,td{padding:10px 14px;text-align:left;border-bottom:1px solid #1a2538}
-th{color:#8b949e;font-weight:600;font-size:0.8rem;text-transform:uppercase}
-tr:hover{background:#162033}
-.tag{display:inline-block;padding:2px 10px;border-radius:12px;font-size:0.75rem;font-weight:600}
-.tag.online,.tag.running,.tag.success{background:#0d4420;color:#7ee8a0}
-.tag.offline,.tag.stopped,.tag.error,.tag.failed{background:#441d0d;color:#f7a072}
-.tag.loading{background:#443d0d;color:#f0d76e}
-.disk-mini{font-size:0.75rem;color:#8b949e;white-space:nowrap}
-.empty{text-align:center;padding:40px;color:#8b949e}
-.footer{text-align:center;padding:20px;color:#555;font-size:0.8rem}
-.btn{display:inline-block;background:#1f6feb;color:#fff;padding:6px 14px;border-radius:6px;text-decoration:none;font-size:0.85rem}
-a{color:#58a6ff;text-decoration:none}
+:root {
+  --bg-0: #06080f;
+  --bg-1: #0c1019;
+  --bg-2: #111827;
+  --bg-3: #1f2937;
+  --border: rgba(255,255,255,0.06);
+  --border-hover: rgba(255,255,255,0.12);
+  --text-0: #f9fafb;
+  --text-1: #e5e7eb;
+  --text-2: #9ca3af;
+  --text-3: #6b7280;
+  --accent: #3b82f6;
+  --accent-glow: rgba(59,130,246,0.3);
+  --green: #10b981;
+  --green-glow: rgba(16,185,129,0.3);
+  --orange: #f59e0b;
+  --orange-glow: rgba(245,158,11,0.3);
+  --red: #ef4444;
+  --red-glow: rgba(239,68,68,0.3);
+  --purple: #8b5cf6;
+  --purple-glow: rgba(139,92,246,0.3);
+  --cyan: #06b6d4;
+  --radius: 16px;
+  --radius-sm: 10px;
+  --radius-xs: 6px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', -apple-system, sans-serif;
+  background: var(--bg-0);
+  color: var(--text-1);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Animated gradient background */
+body::before {
+  content: '';
+  position: fixed;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(circle at 20% 20%, rgba(59,130,246,0.08) 0%, transparent 50%),
+              radial-gradient(circle at 80% 80%, rgba(139,92,246,0.06) 0%, transparent 50%),
+              radial-gradient(circle at 50% 50%, rgba(6,182,212,0.04) 0%, transparent 50%);
+  animation: bgPulse 20s ease-in-out infinite;
+  z-index: -1;
+}
+
+@keyframes bgPulse {
+  0%, 100% { transform: translate(0, 0) rotate(0deg); }
+  33% { transform: translate(-2%, 2%) rotate(1deg); }
+  66% { transform: translate(2%, -1%) rotate(-1deg); }
+}
+
+.container {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px 32px;
+}
+
+/* ─── Navbar ─── */
+nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0;
+  margin-bottom: 32px;
+  border-bottom: 1px solid var(--border);
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.nav-logo {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, var(--accent), var(--purple));
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.nav-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--text-0), var(--text-2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.nav-subtitle {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.nav-links {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-2);
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.nav-links a {
+  color: var(--text-2);
+  text-decoration: none;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.nav-links a:hover {
+  color: var(--text-0);
+  background: var(--bg-3);
+}
+
+.nav-links a.active {
+  color: var(--text-0);
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.nav-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--text-3);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green-glow);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ─── Stats Grid ─── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+  margin-bottom: 32px;
+}
+
+.stat-card {
+  background: linear-gradient(135deg, var(--bg-2), var(--bg-1));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.stat-card:hover {
+  border-color: var(--border-hover);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--purple));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.stat-card:hover::before {
+  opacity: 1;
+}
+
+.stat-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  margin-bottom: 16px;
+}
+
+.stat-icon.blue { background: rgba(59,130,246,0.15); }
+.stat-icon.green { background: rgba(16,185,129,0.15); }
+.stat-icon.purple { background: rgba(139,92,246,0.15); }
+.stat-icon.orange { background: rgba(245,158,11,0.15); }
+
+.stat-label {
+  font-size: 0.8rem;
+  color: var(--text-3);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--text-0);
+  font-family: 'JetBrains Mono', monospace;
+  line-height: 1;
+}
+
+.stat-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  margin-top: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.stat-change.up { color: var(--green); background: rgba(16,185,129,0.1); }
+.stat-change.down { color: var(--red); background: rgba(239,68,68,0.1); }
+
+/* ─── Charts Section ─── */
+.charts-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 20px;
+  margin-bottom: 32px;
+}
+
+.chart-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.chart-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-0);
+}
+
+.chart-badge {
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: rgba(59,130,246,0.15);
+  color: var(--accent);
+}
+
+.chart-container {
+  height: 240px;
+  position: relative;
+}
+
+/* ─── Nodes Table ─── */
+.panel {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 32px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-0);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.panel-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: rgba(16,185,129,0.15);
+  color: var(--green);
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+
+.btn-ghost:hover {
+  background: var(--bg-3);
+  color: var(--text-0);
+  border-color: var(--border-hover);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  padding: 12px 20px;
+  text-align: left;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 16px 20px;
+  font-size: 0.875rem;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.15s ease;
+}
+
+tr:hover td {
+  background: rgba(255,255,255,0.02);
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+.node-id {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  color: var(--text-0);
+  font-size: 0.85rem;
+}
+
+.node-ip {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-2);
+  font-size: 0.8rem;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.tag::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.tag.running, .tag.online, .tag.success {
+  background: rgba(16,185,129,0.15);
+  color: var(--green);
+}
+.tag.running::before, .tag.online::before, .tag.success::before {
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green-glow);
+}
+
+.tag.stopped, .tag.offline, .tag.error, .tag.failed {
+  background: rgba(239,68,68,0.15);
+  color: var(--red);
+}
+.tag.stopped::before, .tag.offline::before, .tag.error::before, .tag.failed::before {
+  background: var(--red);
+}
+
+.tag.loading {
+  background: rgba(245,158,11,0.15);
+  color: var(--orange);
+}
+.tag.loading::before {
+  background: var(--orange);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.progress-bar {
+  width: 80px;
+  height: 6px;
+  background: var(--bg-3);
+  border-radius: 3px;
+  overflow: hidden;
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 8px;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+.progress-fill.low { background: var(--green); }
+.progress-fill.mid { background: var(--orange); }
+.progress-fill.high { background: var(--red); }
+
+.btn-detail {
+  padding: 6px 14px;
+  font-size: 0.75rem;
+  background: var(--bg-3);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.btn-detail:hover {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+/* ─── Empty State ─── */
+.empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-3);
+}
+
+.empty-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.empty-text {
+  font-size: 0.9rem;
+}
+
+/* ─── Footer ─── */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+.footer-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.footer-right {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 1200px) {
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .charts-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 768px) {
+  .container { padding: 16px; }
+  .stats-grid { grid-template-columns: 1fr; }
+  nav { flex-direction: column; gap: 16px; }
+  .nav-links { width: 100%; justify-content: center; }
+  table { font-size: 0.8rem; }
+  th, td { padding: 10px 12px; }
+}
+
+/* ─── Animations ─── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-in {
+  animation: fadeIn 0.5s ease forwards;
+}
+
+.animate-in:nth-child(1) { animation-delay: 0.05s; }
+.animate-in:nth-child(2) { animation-delay: 0.1s; }
+.animate-in:nth-child(3) { animation-delay: 0.15s; }
+.animate-in:nth-child(4) { animation-delay: 0.2s; }
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-1);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+}
 </style>
 </head>
 <body>
 <div class="container">
+  <!-- Navbar -->
   <nav>
-    <div class="logo">⚡ KV Cache Cluster Manager</div>
-    <div>
+    <div class="nav-brand">
+      <div class="nav-logo">⚡</div>
+      <div>
+        <div class="nav-title">Cascade</div>
+        <div class="nav-subtitle">KV Cache Cluster Manager</div>
+      </div>
+    </div>
+    <div class="nav-links">
       <a href="/" class="active">Dashboard</a>
       <a href="/nodes.html">Nodes</a>
       <a href="/cache.html">Cache</a>
       <a href="/commands.html">Commands</a>
     </div>
+    <div class="nav-status">
+      <div class="status-dot"></div>
+      <span>Live · Refresh 10s</span>
+      <span id="last-update">—</span>
+    </div>
   </nav>
 
-  <div class="cards">
-    <div class="card"><small>🟢 Online</small><h2 id="stat-nodes">—</h2></div>
-    <div class="card"><small>🎯 Hit Rate</small><h2 id="stat-hitrate">—</h2></div>
-    <div class="card"><small>📦 Blocks</small><h2 id="stat-blocks">—</h2></div>
-    <div class="card"><small>🎮 Mode</small><h2 id="stat-mode">—</h2></div>
+  <!-- Stats Cards -->
+  <div class="stats-grid">
+    <div class="stat-card animate-in">
+      <div class="stat-icon blue">🖥️</div>
+      <div class="stat-label">Online Nodes</div>
+      <div class="stat-value" id="stat-nodes">—</div>
+      <div class="stat-change up" id="stat-nodes-change">↑ Active</div>
+    </div>
+    <div class="stat-card animate-in">
+      <div class="stat-icon green">🎯</div>
+      <div class="stat-label">Cache Hit Rate</div>
+      <div class="stat-value" id="stat-hitrate">—</div>
+      <div class="stat-change up" id="stat-hitrate-change">↑ Optimal</div>
+    </div>
+    <div class="stat-card animate-in">
+      <div class="stat-icon purple">📦</div>
+      <div class="stat-label">Total Blocks</div>
+      <div class="stat-value" id="stat-blocks">—</div>
+      <div class="stat-change up" id="stat-blocks-change">↑ Cached</div>
+    </div>
+    <div class="stat-card animate-in">
+      <div class="stat-icon orange">💾</div>
+      <div class="stat-label">Cache Mode</div>
+      <div class="stat-value" id="stat-mode" style="font-size:1.4rem">—</div>
+      <div class="stat-change up">⚡ Active</div>
+    </div>
   </div>
 
-  <div class="panel">
-    <div class="panel-header">📋 Nodes</div>
+  <!-- Charts -->
+  <div class="charts-grid">
+    <div class="chart-card animate-in">
+      <div class="chart-header">
+        <div class="chart-title">Cluster Performance</div>
+        <div class="chart-badge">Realtime</div>
+      </div>
+      <div class="chart-container">
+        <canvas id="perfChart"></canvas>
+      </div>
+    </div>
+    <div class="chart-card animate-in">
+      <div class="chart-header">
+        <div class="chart-title">Node Distribution</div>
+        <div class="chart-badge">Live</div>
+      </div>
+      <div class="chart-container">
+        <canvas id="distChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Nodes Table -->
+  <div class="panel animate-in">
+    <div class="panel-header">
+      <div class="panel-title">
+        <span>📋 Cluster Nodes</span>
+        <span class="panel-badge" id="node-count">0 nodes</span>
+      </div>
+      <div class="panel-actions">
+        <button class="btn btn-ghost" onclick="load()">↻ Refresh</button>
+      </div>
+    </div>
     <table>
-      <thead><tr>
-        <th>Node</th><th>IP</th><th>GPU</th><th>Model</th><th>vLLM</th><th>Cache</th><th>Hit Rate</th><th>Status</th><th></th>
-      </tr></thead>
-      <tbody id="nodes-tbody"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
+      <thead>
+        <tr>
+          <th>Node</th>
+          <th>IP Address</th>
+          <th>GPU Usage</th>
+          <th>Model</th>
+          <th>vLLM Status</th>
+          <th>Cache Blocks</th>
+          <th>Hit Rate</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="nodes-tbody">
+        <tr><td colspan="9" class="empty">
+          <div class="empty-icon">⏳</div>
+          <div class="empty-text">Loading cluster data...</div>
+        </td></tr>
+      </tbody>
     </table>
   </div>
-  <div class="footer">Auto-refresh 10s · Last: <span id="last-update">—</span></div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="footer-left">
+      <span>Cascade v1.0</span>
+      <span>·</span>
+      <span>Powered by vLLM</span>
+    </div>
+    <div class="footer-right">
+      Last sync: <span id="footer-time">—</span>
+    </div>
+  </div>
 </div>
 
 <script>
-async function load(){
-  try{
-    const r=await fetch('/api/v1/cluster/status');
-    const d=await r.json();
-    document.getElementById('stat-nodes').textContent=(d.online_nodes||0)+'/'+(d.total_nodes||0);
-    document.getElementById('stat-hitrate').textContent=(d.hit_rate||0).toFixed(1)+'%';
-    document.getElementById('stat-blocks').textContent=(d.total_blocks||0).toLocaleString();
-    document.getElementById('stat-mode').textContent=d.cache_mode||'—';
-    document.getElementById('last-update').textContent=new Date().toLocaleTimeString();
-    const tb=document.getElementById('nodes-tbody');
-    if(!d.nodes||!d.nodes.length){tb.innerHTML='<tr><td colspan="9" class="empty">Waiting for C端 agents...</td></tr>';return}
-    tb.innerHTML=d.nodes.map(n=>{
-      const vllm=n.vllm_status||'stopped';
-      return '<tr><td>'+esc(n.node_id)+'</td><td>'+esc(n.ip)+'</td><td>'+(n.gpu_util*100).toFixed(0)+'%</td><td>'+(n.model_name||'—')+'</td><td><span class="tag '+vllm+'">'+vllm+'</span></td><td>'+(n.cache_blocks||0).toLocaleString()+'</td><td>'+(n.hit_rate||0).toFixed(1)+'%</td><td><span class="tag '+n.status+'">'+n.status+'</span></td><td><a href="/node.html?id='+encodeURIComponent(n.node_id)+'" class="btn" style="padding:4px 10px;font-size:.75rem">detail</a></td></tr>'
-    }).join('');
-  }catch(e){console.error(e)}
+// ─── Chart Setup ───
+const chartColors = {
+  blue: 'rgba(59, 130, 246, 0.8)',
+  blueFill: 'rgba(59, 130, 246, 0.1)',
+  green: 'rgba(16, 185, 129, 0.8)',
+  greenFill: 'rgba(16, 185, 129, 0.1)',
+  purple: 'rgba(139, 92, 246, 0.8)',
+  purpleFill: 'rgba(139, 92, 246, 0.1)',
+  orange: 'rgba(245, 158, 11, 0.8)',
+  orangeFill: 'rgba(245, 158, 11, 0.1)',
+};
+
+// Check if Chart.js is loaded
+let perfChart = null;
+let distChart = null;
+
+if (typeof Chart !== 'undefined') {
+  // Performance Chart
+  const perfCtx = document.getElementById('perfChart').getContext('2d');
+  perfChart = new Chart(perfCtx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      {
+        label: 'Hit Rate %',
+        data: [],
+        borderColor: chartColors.blue,
+        backgroundColor: chartColors.blueFill,
+        fill: true,
+        tension: 0.4,
+        pointRadius: 0,
+        borderWidth: 2,
+      },
+      {
+        label: 'GPU Util %',
+        data: [],
+        borderColor: chartColors.green,
+        backgroundColor: chartColors.greenFill,
+        fill: true,
+        tension: 0.4,
+        pointRadius: 0,
+        borderWidth: 2,
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: {
+      intersect: false,
+      mode: 'index',
+    },
+    plugins: {
+      legend: {
+        display: true,
+        position: 'top',
+        align: 'end',
+        labels: {
+          color: '#9ca3af',
+          font: { size: 11, family: 'Inter' },
+          boxWidth: 12,
+          boxHeight: 3,
+          useBorderRadius: true,
+          borderRadius: 2,
+        }
+      },
+      tooltip: {
+        backgroundColor: '#1f2937',
+        titleColor: '#f9fafb',
+        bodyColor: '#e5e7eb',
+        borderColor: 'rgba(255,255,255,0.1)',
+        borderWidth: 1,
+        padding: 12,
+        displayColors: true,
+        callbacks: {
+          label: function(ctx) {
+            return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(1) + '%';
+          }
+        }
+      }
+    },
+    scales: {
+      x: {
+        grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false },
+        ticks: { color: '#6b7280', font: { size: 10 }, maxTicksLimit: 8 }
+      },
+      y: {
+        min: 0,
+        max: 100,
+        grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false },
+        ticks: {
+          color: '#6b7280',
+          font: { size: 10 },
+          callback: v => v + '%'
+        }
+      }
+    }
+  }
+});
+
+  // Distribution Chart
+  const distCtx = document.getElementById('distChart').getContext('2d');
+  distChart = new Chart(distCtx, {
+  type: 'doughnut',
+  data: {
+    labels: ['Running', 'Loading', 'Stopped'],
+    datasets: [{
+      data: [0, 0, 0],
+      backgroundColor: [
+        chartColors.green,
+        chartColors.orange,
+        'rgba(107, 114, 128, 0.5)',
+      ],
+      borderWidth: 0,
+      spacing: 4,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    cutout: '70%',
+    plugins: {
+      legend: {
+        display: true,
+        position: 'bottom',
+        labels: {
+          color: '#9ca3af',
+          font: { size: 11, family: 'Inter' },
+          padding: 16,
+          usePointStyle: true,
+          pointStyleWidth: 10,
+        }
+      },
+      tooltip: {
+        backgroundColor: '#1f2937',
+        titleColor: '#f9fafb',
+        bodyColor: '#e5e7eb',
+        borderColor: 'rgba(255,255,255,0.1)',
+        borderWidth: 1,
+        padding: 12,
+      }
+    }
+  }
+});
+} // end if Chart
+
+// Chart data history
+const maxDataPoints = 20;
+const chartHistory = { labels: [], hitrate: [], gpu: [] };
+
+function updateCharts(data) {
+  // Skip if Chart.js not loaded
+  if (typeof Chart === 'undefined' || !perfChart || !distChart) return;
+  
+  const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  
+  // Calculate averages
+  const nodes = data.nodes || [];
+  const avgHitRate = data.hit_rate || 0;
+  const avgGpu = nodes.length > 0 
+    ? nodes.reduce((sum, n) => sum + (n.gpu_util || 0) * 100, 0) / nodes.length 
+    : 0;
+
+  // Update history
+  chartHistory.labels.push(now);
+  chartHistory.hitrate.push(avgHitRate);
+  chartHistory.gpu.push(avgGpu);
+
+  // Trim to max points
+  if (chartHistory.labels.length > maxDataPoints) {
+    chartHistory.labels.shift();
+    chartHistory.hitrate.shift();
+    chartHistory.gpu.shift();
+  }
+
+  // Update performance chart
+  perfChart.data.labels = chartHistory.labels;
+  perfChart.data.datasets[0].data = chartHistory.hitrate;
+  perfChart.data.datasets[1].data = chartHistory.gpu;
+  perfChart.update('none');
+
+  // Update distribution chart
+  const running = nodes.filter(n => n.vllm_status === 'running').length;
+  const loading = nodes.filter(n => n.vllm_status === 'loading').length;
+  const stopped = nodes.length - running - loading;
+  distChart.data.datasets[0].data = [running, loading, stopped];
+  distChart.update('none');
 }
-function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
-load();setInterval(load,10000);
+
+// ─── Data Loading ───
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+function getGpuClass(util) {
+  const pct = (util || 0) * 100;
+  if (pct < 50) return 'low';
+  if (pct < 80) return 'mid';
+  return 'high';
+}
+
+async function load() {
+  try {
+    const r = await fetch('/api/v1/cluster/status');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    
+    // Update stats
+    document.getElementById('stat-nodes').textContent = (d.online_nodes || 0) + '/' + (d.total_nodes || 0);
+    document.getElementById('stat-hitrate').textContent = (d.hit_rate || 0).toFixed(1) + '%';
+    document.getElementById('stat-blocks').textContent = (d.total_blocks || 0).toLocaleString();
+    document.getElementById('stat-mode').textContent = d.cache_mode || '—';
+    
+    // Update change indicators dynamically
+    const nodesChange = document.getElementById('stat-nodes-change');
+    if (d.online_nodes === 0) {
+      nodesChange.textContent = '⚠ All Offline';
+      nodesChange.className = 'stat-change down';
+    } else {
+      nodesChange.textContent = `↑ ${d.online_nodes} Active`;
+      nodesChange.className = 'stat-change up';
+    }
+    
+    const hitrateChange = document.getElementById('stat-hitrate-change');
+    if (d.hit_rate >= 70) {
+      hitrateChange.textContent = '↑ Optimal';
+      hitrateChange.className = 'stat-change up';
+    } else if (d.hit_rate >= 40) {
+      hitrateChange.textContent = '→ Moderate';
+      hitrateChange.className = 'stat-change';
+    } else {
+      hitrateChange.textContent = '↓ Low';
+      hitrateChange.className = 'stat-change down';
+    }
+    
+    const blocksChange = document.getElementById('stat-blocks-change');
+    if (d.total_blocks > 0) {
+      blocksChange.textContent = '↑ Cached';
+      blocksChange.className = 'stat-change up';
+    } else {
+      blocksChange.textContent = '— Empty';
+      blocksChange.className = 'stat-change';
+    }
+    
+    // Update timestamps
+    const time = new Date().toLocaleTimeString();
+    document.getElementById('last-update').textContent = time;
+    document.getElementById('footer-time').textContent = time;
+    
+    // Update charts
+    updateCharts(d);
+    
+    // Update node count
+    const nodes = d.nodes || [];
+    document.getElementById('node-count').textContent = nodes.length + ' nodes';
+    
+    // Update table
+    const tb = document.getElementById('nodes-tbody');
+    if (!nodes.length) {
+      tb.innerHTML = '<tr><td colspan="9" class="empty"><div class="empty-icon">🔌</div><div class="empty-text">Waiting for C agents to connect...</div></td></tr>';
+      return;
+    }
+    
+    tb.innerHTML = nodes.map(n => {
+      const vllm = n.vllm_status || 'stopped';
+      const gpuPct = ((n.gpu_util || 0) * 100).toFixed(0);
+      const gpuClass = getGpuClass(n.gpu_util);
+      
+      return `<tr>
+        <td><span class="node-id">${esc(n.node_id)}</span></td>
+        <td><span class="node-ip">${esc(n.ip)}</span></td>
+        <td>
+          <span>${gpuPct}%</span>
+          <div class="progress-bar">
+            <div class="progress-fill ${gpuClass}" style="width:${gpuPct}%"></div>
+          </div>
+        </td>
+        <td>${esc(n.model_name || '—')}</td>
+        <td><span class="tag ${esc(vllm)}">${esc(vllm)}</span></td>
+        <td>${(n.cache_blocks || 0).toLocaleString()}</td>
+        <td>${(n.hit_rate || 0).toFixed(1)}%</td>
+        <td><span class="tag ${esc(n.status)}">${esc(n.status)}</span></td>
+        <td><a href="/node.html?id=${encodeURIComponent(n.node_id)}" class="btn-detail">Details →</a></td>
+      </tr>`;
+    }).join('');
+    
+  } catch (e) {
+    console.error('Failed to load:', e);
+  }
+}
+
+// Initial load
+load();
+setInterval(load, 10000);
 </script>
 </body>
 </html>

@@ -3,78 +3,848 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>KV Cache Cluster - Cache</title>
+<title>Cascade · Cache Analytics</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0e17;color:#e0e0e0;padding:20px}
-.container{max-width:1400px;margin:0 auto}
-nav{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid #1e2a3a;margin-bottom:24px}
-nav .logo{font-size:1.2rem;font-weight:700;color:#58a6ff}
-nav a{color:#8b949e;text-decoration:none;padding:6px 14px;border-radius:6px;font-size:0.9rem}
-nav a.active,nav a:hover{color:#fff;background:#1e2a3a}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
-.card{background:#111b2e;border:1px solid #1e2a3a;border-radius:10px;padding:20px;text-align:center}
-.card small{color:#8b949e;font-size:0.8rem}
-.card h2{margin:8px 0 0;font-size:1.8rem;color:#f0f6fc}
-.panel{background:#111b2e;border:1px solid #1e2a3a;border-radius:10px;overflow:hidden;margin-bottom:24px}
-.panel-header{padding:14px 20px;border-bottom:1px solid #1e2a3a;font-weight:600;color:#f0f6fc}
-table{width:100%;border-collapse:collapse;font-size:0.9rem}
-th,td{padding:10px 14px;text-align:left;border-bottom:1px solid #1a2538}
-th{color:#8b949e;font-weight:600;font-size:0.8rem;text-transform:uppercase}
-tr:hover{background:#162033}
-.disk-mini{font-size:0.75rem;color:#8b949e;white-space:nowrap}
-.empty{text-align:center;padding:40px;color:#8b949e}
-hgroup{margin-bottom:20px}
-hgroup h2{color:#f0f6fc}
-hgroup p{color:#8b949e;font-size:0.9rem}
-a{color:#58a6ff;text-decoration:none}
-a:hover{text-decoration:underline}
+:root {
+  --bg-0: #06080f;
+  --bg-1: #0c1019;
+  --bg-2: #111827;
+  --bg-3: #1f2937;
+  --border: rgba(255,255,255,0.06);
+  --border-hover: rgba(255,255,255,0.12);
+  --text-0: #f9fafb;
+  --text-1: #e5e7eb;
+  --text-2: #9ca3af;
+  --text-3: #6b7280;
+  --accent: #3b82f6;
+  --accent-glow: rgba(59,130,246,0.3);
+  --green: #10b981;
+  --green-glow: rgba(16,185,129,0.3);
+  --orange: #f59e0b;
+  --orange-glow: rgba(245,158,11,0.3);
+  --red: #ef4444;
+  --red-glow: rgba(239,68,68,0.3);
+  --purple: #8b5cf6;
+  --purple-glow: rgba(139,92,246,0.3);
+  --cyan: #06b6d4;
+  --radius: 16px;
+  --radius-sm: 10px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', -apple-system, sans-serif;
+  background: var(--bg-0);
+  color: var(--text-1);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(circle at 20% 20%, rgba(59,130,246,0.08) 0%, transparent 50%),
+              radial-gradient(circle at 80% 80%, rgba(139,92,246,0.06) 0%, transparent 50%);
+  animation: bgPulse 20s ease-in-out infinite;
+  z-index: -1;
+}
+
+@keyframes bgPulse {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-2%, 2%); }
+}
+
+.container {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px 32px;
+}
+
+/* ─── Navbar ─── */
+nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0;
+  margin-bottom: 32px;
+  border-bottom: 1px solid var(--border);
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.nav-logo {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, var(--accent), var(--purple));
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.nav-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--text-0), var(--text-2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.nav-subtitle {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.nav-links {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-2);
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.nav-links a {
+  color: var(--text-2);
+  text-decoration: none;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.nav-links a:hover {
+  color: var(--text-0);
+  background: var(--bg-3);
+}
+
+.nav-links a.active {
+  color: var(--text-0);
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.nav-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--text-3);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green-glow);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ─── Page Header ─── */
+.page-header {
+  margin-bottom: 32px;
+}
+
+.page-title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text-0);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.page-desc {
+  font-size: 0.9rem;
+  color: var(--text-3);
+}
+
+/* ─── Stats Grid ─── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+  margin-bottom: 32px;
+}
+
+.stat-card {
+  background: linear-gradient(135deg, var(--bg-2), var(--bg-1));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.stat-card:hover {
+  border-color: var(--border-hover);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--purple));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.stat-card:hover::before {
+  opacity: 1;
+}
+
+.stat-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  margin-bottom: 16px;
+}
+
+.stat-icon.blue { background: rgba(59,130,246,0.15); }
+.stat-icon.green { background: rgba(16,185,129,0.15); }
+.stat-icon.purple { background: rgba(139,92,246,0.15); }
+.stat-icon.orange { background: rgba(245,158,11,0.15); }
+
+.stat-label {
+  font-size: 0.8rem;
+  color: var(--text-3);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--text-0);
+  font-family: 'JetBrains Mono', monospace;
+  line-height: 1;
+}
+
+/* ─── Charts Section ─── */
+.charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 32px;
+}
+
+.chart-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.chart-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-0);
+}
+
+.chart-badge {
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: rgba(59,130,246,0.15);
+  color: var(--accent);
+}
+
+.chart-container {
+  height: 240px;
+  position: relative;
+}
+
+/* ─── Table Panel ─── */
+.panel {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 32px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-0);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.panel-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: rgba(16,185,129,0.15);
+  color: var(--green);
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+
+.btn-ghost:hover {
+  background: var(--bg-3);
+  color: var(--text-0);
+  border-color: var(--border-hover);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  padding: 12px 20px;
+  text-align: left;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 16px 20px;
+  font-size: 0.875rem;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.15s ease;
+}
+
+tr:hover td {
+  background: rgba(255,255,255,0.02);
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+.node-id {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+
+.disk-info {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.hitrate-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.hitrate-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  min-width: 50px;
+}
+
+.hitrate-progress {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-3);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.hitrate-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s ease;
+}
+
+.hitrate-fill.high { background: linear-gradient(90deg, var(--green), #34d399); }
+.hitrate-fill.mid { background: linear-gradient(90deg, var(--orange), #fbbf24); }
+.hitrate-fill.low { background: linear-gradient(90deg, var(--red), #f87171); }
+
+/* ─── Empty State ─── */
+.empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-3);
+}
+
+.empty-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.empty-text {
+  font-size: 0.9rem;
+}
+
+/* ─── Footer ─── */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+.footer-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 1200px) {
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .charts-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 768px) {
+  .container { padding: 16px; }
+  .stats-grid { grid-template-columns: 1fr; }
+  nav { flex-direction: column; gap: 16px; }
+  .nav-links { width: 100%; justify-content: center; }
+  table { font-size: 0.8rem; }
+  th, td { padding: 10px 12px; }
+}
+
+/* ─── Animations ─── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-in {
+  animation: fadeIn 0.5s ease forwards;
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-1);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+}
 </style>
 </head>
 <body>
 <div class="container">
+  <!-- Navbar -->
   <nav>
-    <div class="logo">⚡ KV Cache Cluster Manager</div>
-    <div>
+    <div class="nav-brand">
+      <div class="nav-logo">⚡</div>
+      <div>
+        <div class="nav-title">Cascade</div>
+        <div class="nav-subtitle">KV Cache Cluster Manager</div>
+      </div>
+    </div>
+    <div class="nav-links">
       <a href="/">Dashboard</a>
       <a href="/nodes.html">Nodes</a>
       <a href="/cache.html" class="active">Cache</a>
       <a href="/commands.html">Commands</a>
     </div>
+    <div class="nav-status">
+      <div class="status-dot"></div>
+      <span>Live</span>
+    </div>
   </nav>
-  <hgroup><h2>📊 KV Cache Analytics</h2><p>Cluster-wide cache statistics</p></hgroup>
-  <div class="cards" id="summary-cards">
-    <div class="card"><small>Total Blocks</small><h2>—</h2></div>
-    <div class="card"><small>Total Size</small><h2>—</h2></div>
-    <div class="card"><small>Cache Mode</small><h2>—</h2></div>
-    <div class="card"><small>Hit Rate</small><h2>—</h2></div>
+
+  <!-- Page Header -->
+  <div class="page-header animate-in">
+    <h1 class="page-title">
+      <span>📊</span>
+      Cache Analytics
+    </h1>
+    <p class="page-desc">Cluster-wide KV cache statistics and performance metrics</p>
   </div>
-  <div class="panel">
-    <div class="panel-header">Cache per Node</div>
+
+  <!-- Stats Cards -->
+  <div class="stats-grid">
+    <div class="stat-card animate-in">
+      <div class="stat-icon blue">📦</div>
+      <div class="stat-label">Total Blocks</div>
+      <div class="stat-value" id="stat-blocks">—</div>
+    </div>
+    <div class="stat-card animate-in">
+      <div class="stat-icon green">💾</div>
+      <div class="stat-label">Total Size</div>
+      <div class="stat-value" id="stat-size">—</div>
+    </div>
+    <div class="stat-card animate-in">
+      <div class="stat-icon purple">🎯</div>
+      <div class="stat-label">Hit Rate</div>
+      <div class="stat-value" id="stat-hitrate">—</div>
+    </div>
+    <div class="stat-card animate-in">
+      <div class="stat-icon orange">⚡</div>
+      <div class="stat-label">Cache Mode</div>
+      <div class="stat-value" id="stat-mode" style="font-size:1.2rem">—</div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="charts-grid">
+    <div class="chart-card animate-in">
+      <div class="chart-header">
+        <div class="chart-title">Cache Distribution by Node</div>
+        <div class="chart-badge">Blocks</div>
+      </div>
+      <div class="chart-container">
+        <canvas id="blocksChart"></canvas>
+      </div>
+    </div>
+    <div class="chart-card animate-in">
+      <div class="chart-header">
+        <div class="chart-title">Hit Rate by Node</div>
+        <div class="chart-badge">Performance</div>
+      </div>
+      <div class="chart-container">
+        <canvas id="hitrateChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cache Table -->
+  <div class="panel animate-in">
+    <div class="panel-header">
+      <div class="panel-title">
+        <span>📋 Cache per Node</span>
+        <span class="panel-badge" id="node-count">0 nodes</span>
+      </div>
+      <div class="panel-actions">
+        <button class="btn btn-ghost" onclick="load()">↻ Refresh</button>
+      </div>
+    </div>
     <table>
-      <thead><tr><th>Node</th><th>Blocks</th><th>Hit Rate</th><th>Disks</th></tr></thead>
-      <tbody id="cache-tbody"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
+      <thead>
+        <tr>
+          <th>Node</th>
+          <th>Cache Blocks</th>
+          <th>Hit Rate</th>
+          <th>Disks</th>
+        </tr>
+      </thead>
+      <tbody id="cache-tbody">
+        <tr><td colspan="4" class="empty">
+          <div class="empty-icon">⏳</div>
+          <div class="empty-text">Loading cache data...</div>
+        </td></tr>
+      </tbody>
     </table>
   </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="footer-left">
+      <span>Cascade v1.0</span>
+      <span>·</span>
+      <span>Powered by vLLM</span>
+    </div>
+  </div>
 </div>
+
 <script>
-async function load(){
-  try{
-    const r=await fetch('/api/v1/cluster/status');
-    const d=await r.json();
-    const cards=document.getElementById('summary-cards').children;
-    cards[0].querySelector('h2').textContent=(d.total_blocks||0).toLocaleString();
-    cards[1].querySelector('h2').textContent=fmtBytes(d.total_bytes||0);
-    cards[2].querySelector('h2').textContent=d.cache_mode||'—';
-    cards[3].querySelector('h2').textContent=(d.hit_rate||0).toFixed(1)+'%';
-    const tb=document.getElementById('cache-tbody');
-    if(!d.nodes||!d.nodes.length){tb.innerHTML='<tr><td colspan="4" class="empty">No data</td></tr>';return}
-    tb.innerHTML=d.nodes.map(n=>'<tr><td>'+esc(n.node_id)+'</td><td>'+(n.cache_blocks||0).toLocaleString()+'</td><td>'+(n.hit_rate||0).toFixed(1)+'%</td><td>'+(n.disks||[]).map(d=>'<div class="disk-mini">'+esc(d.path)+': '+(d.free_gb/1024).toFixed(1)+'TB free</div>').join('')+'</td></tr>').join('');
-  }catch(e){console.error(e)}
+// ─── Chart Setup ───
+const chartColors = [
+  'rgba(59, 130, 246, 0.8)',
+  'rgba(16, 185, 129, 0.8)',
+  'rgba(139, 92, 246, 0.8)',
+  'rgba(245, 158, 11, 0.8)',
+  'rgba(6, 182, 212, 0.8)',
+  'rgba(236, 72, 153, 0.8)',
+];
+
+const chartColorsFaded = [
+  'rgba(59, 130, 246, 0.2)',
+  'rgba(16, 185, 129, 0.2)',
+  'rgba(139, 92, 246, 0.2)',
+  'rgba(245, 158, 11, 0.2)',
+  'rgba(6, 182, 212, 0.2)',
+  'rgba(236, 72, 153, 0.2)',
+];
+
+// Check if Chart.js is loaded
+let blocksChart = null;
+let hitrateChart = null;
+
+if (typeof Chart !== 'undefined') {
+  // Blocks Distribution Chart
+  const blocksCtx = document.getElementById('blocksChart').getContext('2d');
+  blocksChart = new Chart(blocksCtx, {
+  type: 'doughnut',
+  data: {
+    labels: [],
+    datasets: [{
+      data: [],
+      backgroundColor: chartColors,
+      borderWidth: 0,
+      spacing: 4,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    cutout: '65%',
+    plugins: {
+      legend: {
+        display: true,
+        position: 'right',
+        labels: {
+          color: '#9ca3af',
+          font: { size: 11, family: 'Inter' },
+          padding: 16,
+          usePointStyle: true,
+          pointStyleWidth: 10,
+        }
+      },
+      tooltip: {
+        backgroundColor: '#1f2937',
+        titleColor: '#f9fafb',
+        bodyColor: '#e5e7eb',
+        borderColor: 'rgba(255,255,255,0.1)',
+        borderWidth: 1,
+        padding: 12,
+        callbacks: {
+          label: function(ctx) {
+            return ctx.label + ': ' + ctx.parsed.toLocaleString() + ' blocks';
+          }
+        }
+      }
+    }
+  }
+});
+
+  // Hit Rate Chart
+  const hitrateCtx = document.getElementById('hitrateChart').getContext('2d');
+  hitrateChart = new Chart(hitrateCtx, {
+  type: 'bar',
+  data: {
+    labels: [],
+    datasets: [{
+      label: 'Hit Rate %',
+      data: [],
+      backgroundColor: chartColors,
+      borderRadius: 8,
+      borderSkipped: false,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#1f2937',
+        titleColor: '#f9fafb',
+        bodyColor: '#e5e7eb',
+        borderColor: 'rgba(255,255,255,0.1)',
+        borderWidth: 1,
+        padding: 12,
+        callbacks: {
+          label: function(ctx) {
+            return 'Hit Rate: ' + ctx.parsed.y.toFixed(1) + '%';
+          }
+        }
+      }
+    },
+    scales: {
+      x: {
+        grid: { display: false },
+        ticks: { color: '#6b7280', font: { size: 10 } }
+      },
+      y: {
+        min: 0,
+        max: 100,
+        grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false },
+        ticks: {
+          color: '#6b7280',
+          font: { size: 10 },
+          callback: v => v + '%'
+        }
+      }
+    }
+  }
+});
+} // end if Chart
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
 }
-function fmtBytes(b){if(!b)return'0';const u=['B','KB','MB','GB','TB'];let i=0;let v=b;while(v>=1024&&i<u.length-1){v/=1024;i++}return v.toFixed(1)+u[i]}
-function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+
+function fmtBytes(b) {
+  if (!b) return '0';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = b;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return v.toFixed(1) + ' ' + u[i];
+}
+
+function getHitrateClass(rate) {
+  if (rate >= 70) return 'high';
+  if (rate >= 40) return 'mid';
+  return 'low';
+}
+
+async function load() {
+  try {
+    const r = await fetch('/api/v1/cluster/status');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    
+    // Update stats
+    document.getElementById('stat-blocks').textContent = (d.total_blocks || 0).toLocaleString();
+    document.getElementById('stat-size').textContent = fmtBytes(d.total_bytes || 0);
+    document.getElementById('stat-hitrate').textContent = (d.hit_rate || 0).toFixed(1) + '%';
+    document.getElementById('stat-mode').textContent = d.cache_mode || '—';
+    
+    const nodes = d.nodes || [];
+    document.getElementById('node-count').textContent = nodes.length + ' nodes';
+    
+    // Update charts (only if Chart.js is loaded)
+    if (typeof Chart !== 'undefined' && blocksChart && hitrateChart) {
+      const nodeIds = nodes.map(n => n.node_id || 'Unknown');
+      const blockCounts = nodes.map(n => n.cache_blocks || 0);
+      const hitRates = nodes.map(n => n.hit_rate || 0);
+      
+      blocksChart.data.labels = nodeIds;
+      blocksChart.data.datasets[0].data = blockCounts;
+      blocksChart.update('none');
+      
+      hitrateChart.data.labels = nodeIds;
+      hitrateChart.data.datasets[0].data = hitRates;
+      hitrateChart.update('none');
+    }
+    
+    // Update table
+    const tb = document.getElementById('cache-tbody');
+    if (!nodes.length) {
+      tb.innerHTML = '<tr><td colspan="4" class="empty"><div class="empty-icon">📦</div><div class="empty-text">No cache data available</div></td></tr>';
+      return;
+    }
+    
+    tb.innerHTML = nodes.map(n => {
+      const hitRate = (n.hit_rate || 0).toFixed(1);
+      const hitrateClass = getHitrateClass(n.hit_rate || 0);
+      const disks = (n.disks || []).map(d => 
+        `<div class="disk-info">${esc(d.path)}: ${(d.free_gb / 1024).toFixed(1)}TB free</div>`
+      ).join('');
+      
+      return `<tr>
+        <td><span class="node-id">${esc(n.node_id)}</span></td>
+        <td>${(n.cache_blocks || 0).toLocaleString()}</td>
+        <td>
+          <div class="hitrate-bar">
+            <span class="hitrate-value">${hitRate}%</span>
+            <div class="hitrate-progress">
+              <div class="hitrate-fill ${hitrateClass}" style="width:${hitRate}%"></div>
+            </div>
+          </div>
+        </td>
+        <td>${disks || '—'}</td>
+      </tr>`;
+    }).join('');
+    
+  } catch (e) {
+    console.error('Failed to load:', e);
+  }
+}
+
+// Initial load
 load();
+setInterval(load, 10000);
 </script>
 </body>
 </html>

@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -138,15 +139,16 @@ func dirSizeGB(path string) float64 {
 }
 
 func getOutboundIP() string {
-	// Try environment first
 	if ip := os.Getenv("C_AGENT_IP"); ip != "" {
 		return ip
 	}
-	hostname, err := os.Hostname()
+	conn, err := net.Dial("udp", "8.8.8.8:80")
 	if err != nil {
 		return "127.0.0.1"
 	}
-	return hostname
+	defer conn.Close()
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP.String()
 }
 
 func runShell(params map[string]string) (string, error) {

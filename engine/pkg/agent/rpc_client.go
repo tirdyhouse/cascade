@@ -46,17 +46,23 @@ func (c *RPCClient) Connect() error {
 	return nil
 }
 
-// Close disconnects.
+// Close disconnects the rpcx client (keeps context alive for reconnection).
 func (c *RPCClient) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conn != nil {
 		c.conn.Close()
+		c.conn = nil
 	}
+}
+
+// Stop permanently shuts down the client.
+func (c *RPCClient) Stop() {
+	c.Close()
 	c.cancel()
 }
 
-// Reconnect re-establishes the connection after failure.
+// Reconnect closes the old connection and creates a new one.
 func (c *RPCClient) Reconnect() error {
 	c.Close()
 	time.Sleep(1 * time.Second)
@@ -101,7 +107,6 @@ func (c *RPCClient) Heartbeat(status *cluster.MachineStatus) (*cluster.Heartbeat
 
 // ReportResult calls S端 CommandService.ReportResult.
 func (c *RPCClient) ReportResult(result *cluster.CmdResult) error {
-	// Create a fresh connection for CommandService
 	d, err := client.NewPeer2PeerDiscovery("tcp@"+c.serverAddr, "")
 	if err != nil {
 		return err

@@ -303,5 +303,14 @@ See [COMMERCIAL_LICENSE.md](./COMMERCIAL_LICENSE.md) for details.
 
 <p align="center">
   <b>LLM inference shouldn't be memory-bound.</b><br>
-  Cascade — extending context, one NVMe at a time.
+  Cascade — extending context, one NVMe at a time.</p>
+
+---
+
+## 爱好者交流群
+
+<p align="center">
+  <img src="./images/qr-community.jpg" width="280" alt="微信爱好者交流群" /><br>
+  <em>扫码加入 Cascade 爱好者交流群，讨论 KV cache、长上下文推理与大模型工程实践</em>
 </p>
+

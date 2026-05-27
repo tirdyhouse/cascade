@@ -205,6 +205,9 @@ func (r *Registry) Summary() *cluster.ClusterSummary {
 			ns.GPUUtil = state.Status.GPUUtil
 			ns.GPUMemUsed = state.Status.GPUMemUsedMB
 			ns.ModelName = state.Status.ModelName
+			ns.VLLMStatus = state.Status.VLLMStatus
+			ns.QueueLen = state.Status.QueueLen
+			ns.LoadingPct = state.Status.LoadingPct
 			ns.CacheBlocks = state.Status.CacheBlocks
 			ns.HitRate = state.Status.CacheHitRate
 			ns.Disks = state.Status.Disks

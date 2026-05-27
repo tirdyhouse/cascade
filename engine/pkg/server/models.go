@@ -74,10 +74,7 @@ func (r *ModelRegistry) Scan() {
 					DefaultGPUMem:    "0.9",
 					SupportsPrefix:   true,
 					SupportsDiskCache: true,
-				}
-				// Override size if we can compute it
-				if sizeGB > 0 {
-					_ = sizeGB // ModelInfo doesn't have size yet, used for display
+					SizeGB:           sizeGB,
 				}
 			}
 		}

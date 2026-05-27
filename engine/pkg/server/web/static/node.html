@@ -78,49 +78,36 @@ async function load(){
   const id=new URLSearchParams(location.search).get('id');
   if(!id){document.getElementById('app').innerHTML='<div class="empty">No node ID</div>';return}
   try{
-    const [rNode,rModels]=await Promise.all([
-      fetch('/api/v1/nodes/'+encodeURIComponent(id)).then(r=>r.json()),
-      fetch('/api/v1/models').then(r=>r.json())
-    ]);
-    if(!rNode||!rNode.info){document.getElementById('app').innerHTML='<div class="empty">Node not found</div>';return}
-    render(id,rNode,rModels);
+    const rNode=await (await fetch('/api/v1/nodes/'+encodeURIComponent(id))).json();
+    const rModels=await (await fetch('/api/v1/models')).json();
+    document.getElementById('app').innerHTML=
+      '<div style="background:#111b2e;border:1px solid #1e2a3a;border-radius:10px;padding:20px;margin-bottom:20px;font-family:monospace;font-size:0.85rem;white-space:pre-wrap;color:#a0b0c0">'+
+      'Node API: '+esc(JSON.stringify(rNode,null,2))+
+      '\n\nModels API: '+esc(JSON.stringify(rModels,null,2))+'</div>';
+    if(!rNode||!rNode.info){return}
+    let html='';
+    try{
+      html=render(id,rNode,rModels);
+    }catch(e){
+      html='<div style="color:#f7a072;padding:12px;background:#441d0d;border-radius:6px">RENDER ERROR: '+esc(e.message)+'</div>';
+    }
+    document.getElementById('app').innerHTML=html+
+      '<div style="color:#7ee8a0;padding:8px;margin-top:12px">✅ render() completed</div>';
   }catch(e){document.getElementById('app').innerHTML='<div class="empty">Error: '+e.message+'</div>'}
 }
 
 function render(id,d,models){
   const st=d.status||{};
-  const diskModels=d.info.available_models||st.available_models||[];
   if(!models)models=[];
 
-  // Merge S端 registry + disk models (union by name)
-  const allNames=[...new Set([...models.map(m=>m.name),...diskModels.map(m=>m.name)])];
-  const allModels=allNames.map(name=>{
-    const reg=models.find(m=>m.name===name);
-    const disk=diskModels.find(m=>m.name===name);
-    return {
-      name:name,
-      onDisk:!!disk,
-      sizeGB:disk?disk.size_gb:0,
-      download_url:reg?reg.download_url:'',
-      supports_prefix:reg?reg.supports_prefix:true,
-      supports_disk_cache:reg?reg.supports_disk_cache:true
-    };
-  });
-
+  // Simple test - just show node ID and GPU mem
+  const modelRows=models.map(m=>{
+    const size=m.size_gb>0?' ('+m.size_gb.toFixed(1)+'GB)':'';
+    return '<tr><td>'+esc(m.name)+size+'</td><td><span class="tag missing">⬇ need download</span></td><td><button class="btn btn-sm btn-outline" onclick="alert(\'distribute\')">📦 Distribute</button></td></tr>';
+  }).join('');
   const online=st.vllm_status;
   const currentModel=st.model_name||'';
-
-  // Build model rows (sorted: on-disk first)
-  allModels.sort((a,b)=>b.onDisk-a.onDisk);
-  const modelRows=allModels.map(m=>{
-    const size=m.sizeGB>0?' ('+m.sizeGB.toFixed(1)+'GB)':'';
-    return '<tr><td>'+esc(m.name)+size+'</td><td><span class="tag '+(m.onDisk?'ok':'missing')+'">'+(m.onDisk?'✅ on disk ('+m.sizeGB.toFixed(1)+'GB)':'⬇ need download')+'</span></td><td>'+(m.onDisk
-      ?'<button class="btn btn-sm" onclick="doStart(\''+esc(m.name)+'\')">▶ Start</button>'
-      :'<button class="btn btn-sm btn-outline" onclick="doDistribute(\''+esc(m.name)+'\',\''+esc(m.download_url||'')+'\')">📦 Distribute</button>'
-    )+'</td></tr>';
-  }).join('');
-    // Status cards
-    '<div class="cards">'+
+  return '<div class="cards">'+
       '<div class="card"><small>GPU</small><h3>'+(d.info.gpu_type||'—')+'</h3></div>'+
       '<div class="card"><small>GPU Mem</small><h3>'+(st.gpu_mem_used_mb?((st.gpu_mem_used_mb/1024).toFixed(1)+'GB / '+(d.info.gpu_mem_mb/1024).toFixed(0)+'GB'):(d.info.gpu_mem_mb?(d.info.gpu_mem_mb/1024).toFixed(0)+'GB':'—'))+'</h3></div>'+
       '<div class="card"><small>vLLM</small><h3><span class="tag '+(st.vllm_status||'unknown')+'">'+(st.vllm_status||'unknown')+'</span></h3></div>'+
@@ -135,8 +122,8 @@ function render(id,d,models){
     // Launch config
     '<div class="panel"><div class="panel-header">🚀 Launch vLLM</div><div class="panel-body">'+
       '<div class="grid-2">'+
-        '<label>Model<select id="launch-model" onchange="updateCmdPreview()">'+
-          allModels.map(m=>'<option value="'+esc(m.name)+'" '+(m.name===currentModel?'selected':'')+'>'+esc(m.name)+(m.sizeGB>0?' ('+m.sizeGB.toFixed(1)+'GB)':'')+'</option>').join('')+
+        '<label>Model<select id="launch-model">'+
+          models.map(m=>'<option value="'+esc(m.name)+'" '+(m.name===currentModel?'selected':'')+'>'+esc(m.name)+(m.size_gb>0?' ('+m.size_gb.toFixed(1)+'GB)':'')+'</option>').join('')+
         '</select></label>'+
         '<label>GPU Utilization: <span id="gpu-val">0.90</span><input type="range" min="0.5" max="0.99" step="0.01" value="0.90" oninput="document.getElementById(\'gpu-val\').textContent=this.value;if(!cmdCustom)updateCmdPreview()"></label>'+
       '</div>'+

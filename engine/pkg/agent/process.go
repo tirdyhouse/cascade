@@ -10,18 +10,17 @@ import (
 	"sync"
 )
 
-// vllmBinary returns the path to the vllm binary.
-// It checks common locations and falls back to "vllm" (system PATH).
-func vllmBinary() string {
+// pythonBin returns the venv Python interpreter path.
+func pythonBin() string {
 	for _, p := range []string{
-		"/root/cascade/.venv-cascade/bin/vllm",
-		"vllm",
+		"/root/cascade/.venv-cascade/bin/python3",
+		"python3",
 	} {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
-	return "vllm"
+	return "python3"
 }
 
 // StartOptions holds parameters for starting vLLM.
@@ -68,14 +67,15 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 	// Prepare log file
 	logDir := filepath.Join(opts.WorkDir, "logs")
 	os.MkdirAll(logDir, 0755)
-	logFile := filepath.Join(logDir, "vllm-"+opts.Model+".log")
+	logName := strings.ReplaceAll(filepath.Base(opts.Model), "/", "-")
+	logFile := filepath.Join(logDir, "vllm-"+logName+".log")
 	f, err := os.Create(logFile)
 	if err != nil {
 		return "", fmt.Errorf("create log file: %w", err)
 	}
 
 	// Build vLLM args
-	args := []string{"serve", opts.Model}
+	args := []string{"-m", "vllm.entrypoints.cli.main", "serve", opts.Model}
 	args = append(args, "--gpu-memory-utilization", opts.GPUUtil)
 	if opts.Quantization != "" {
 		args = append(args, "--quantization", opts.Quantization)
@@ -89,7 +89,7 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 		args = append(args, "--kv-connector-extra-config", fmt.Sprintf(`{"disk_cache_path": %q}`, diskCachePath))
 	}
 
-	pm.cmd = exec.Command(vllmBinary(), args...)
+	pm.cmd = exec.Command(pythonBin(), args...)
 	pm.cmd.Stdout = f
 	pm.cmd.Stderr = f
 
@@ -157,7 +157,7 @@ func (pm *ProcessManager) StartRaw(raw, workDir string) (string, error) {
 		return "", fmt.Errorf("create log file: %w", err)
 	}
 
-	pm.cmd = exec.Command(vllmBinary(), args...)
+	pm.cmd = exec.Command(pythonBin(), args...)
 	pm.cmd.Stdout = f
 	pm.cmd.Stderr = f
 

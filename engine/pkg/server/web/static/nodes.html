@@ -1,65 +1,694 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Nodes</title><style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0e17;color:#e0e0e0;padding:20px}
-.container{max-width:1400px;margin:0 auto}
-nav{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid #1e2a3a;margin-bottom:24px}
-nav .logo{font-size:1.2rem;font-weight:700;color:#58a6ff}
-nav a{color:#8b949e;text-decoration:none;padding:6px 14px;border-radius:6px;font-size:0.9rem}
-nav a.active,nav a:hover{color:#fff;background:#1e2a3a}
-.panel{background:#111b2e;border:1px solid #1e2a3a;border-radius:10px;overflow:hidden;margin-bottom:24px}
-.panel-header{padding:14px 20px;border-bottom:1px solid #1e2a3a;font-weight:600;color:#f0f6fc}
-table{width:100%;border-collapse:collapse;font-size:0.9rem}
-th,td{padding:10px 14px;text-align:left;border-bottom:1px solid #1a2538}
-th{color:#8b949e;font-weight:600;font-size:0.8rem;text-transform:uppercase}
-tr:hover{background:#162033}
-.tag{display:inline-block;padding:2px 10px;border-radius:12px;font-size:0.75rem;font-weight:600}
-.tag.online{background:#0d4420;color:#7ee8a0}
-.tag.offline{background:#441d0d;color:#f7a072}
-.disk-mini{font-size:0.75rem;color:#8b949e}
-.empty{text-align:center;padding:40px;color:#8b949e}
-hgroup{margin-bottom:20px}
-hgroup h2{color:#f0f6fc}
-hgroup p{color:#8b949e;font-size:0.9rem}
-a{color:#58a6ff}
-#err{color:#f7a072;padding:20px;text-align:center}
-</style></head>
-<body><div class="container">
-<nav><div class="logo">⚡ KV Cache Cluster Manager</div><div>
-<a href="/">Dashboard</a><a href="/nodes.html" class="active">Nodes</a><a href="/cache.html">Cache</a>
-</div></nav>
-<hgroup><h2>📋 All Nodes</h2><p>Registered C端 agents in the cluster</p></hgroup>
-<div class="panel"><table><thead><tr>
-<th>Node</th><th>IP</th><th>GPU</th><th>GPU Mem</th><th>Model</th><th>vLLM</th><th>Cache</th><th>HitRate</th><th>Disks</th><th>Status</th>
-</tr></thead>
-<tbody id="tb"><tr><td colspan="10" class="empty" id="loading">Loading...</td></tr></tbody>
-</table></div></div>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cascade · Nodes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-0: #06080f;
+  --bg-1: #0c1019;
+  --bg-2: #111827;
+  --bg-3: #1f2937;
+  --border: rgba(255,255,255,0.06);
+  --border-hover: rgba(255,255,255,0.12);
+  --text-0: #f9fafb;
+  --text-1: #e5e7eb;
+  --text-2: #9ca3af;
+  --text-3: #6b7280;
+  --accent: #3b82f6;
+  --accent-glow: rgba(59,130,246,0.3);
+  --green: #10b981;
+  --green-glow: rgba(16,185,129,0.3);
+  --orange: #f59e0b;
+  --orange-glow: rgba(245,158,11,0.3);
+  --red: #ef4444;
+  --red-glow: rgba(239,68,68,0.3);
+  --purple: #8b5cf6;
+  --purple-glow: rgba(139,92,246,0.3);
+  --radius: 16px;
+  --radius-sm: 10px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', -apple-system, sans-serif;
+  background: var(--bg-0);
+  color: var(--text-1);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(circle at 20% 20%, rgba(59,130,246,0.08) 0%, transparent 50%),
+              radial-gradient(circle at 80% 80%, rgba(139,92,246,0.06) 0%, transparent 50%);
+  animation: bgPulse 20s ease-in-out infinite;
+  z-index: -1;
+}
+
+@keyframes bgPulse {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-2%, 2%); }
+}
+
+.container {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px 32px;
+}
+
+/* ─── Navbar ─── */
+nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0;
+  margin-bottom: 32px;
+  border-bottom: 1px solid var(--border);
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.nav-logo {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, var(--accent), var(--purple));
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.nav-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--text-0), var(--text-2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.nav-subtitle {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.nav-links {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-2);
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.nav-links a {
+  color: var(--text-2);
+  text-decoration: none;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.nav-links a:hover {
+  color: var(--text-0);
+  background: var(--bg-3);
+}
+
+.nav-links a.active {
+  color: var(--text-0);
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.nav-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--text-3);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green-glow);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ─── Page Header ─── */
+.page-header {
+  margin-bottom: 32px;
+}
+
+.page-title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text-0);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.page-desc {
+  font-size: 0.9rem;
+  color: var(--text-3);
+}
+
+/* ─── Stats Cards ─── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+  margin-bottom: 32px;
+}
+
+.stat-card {
+  background: linear-gradient(135deg, var(--bg-2), var(--bg-1));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  transition: all 0.3s ease;
+}
+
+.stat-card:hover {
+  border-color: var(--border-hover);
+  transform: translateY(-2px);
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-0);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* ─── Table Panel ─── */
+.panel {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 32px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-0);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.panel-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: rgba(16,185,129,0.15);
+  color: var(--green);
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+
+.btn-ghost:hover {
+  background: var(--bg-3);
+  color: var(--text-0);
+  border-color: var(--border-hover);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+}
+
+.btn-primary:hover {
+  background: #2563eb;
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  padding: 12px 20px;
+  text-align: left;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 16px 20px;
+  font-size: 0.875rem;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.15s ease;
+}
+
+tr:hover td {
+  background: rgba(255,255,255,0.02);
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+.node-id {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  color: var(--accent);
+  font-size: 0.85rem;
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.node-id:hover {
+  color: var(--text-0);
+  text-shadow: 0 0 8px var(--accent-glow);
+}
+
+.node-ip {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-2);
+  font-size: 0.8rem;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.tag::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.tag.running, .tag.online, .tag.success {
+  background: rgba(16,185,129,0.15);
+  color: var(--green);
+}
+.tag.running::before, .tag.online::before, .tag.success::before {
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green-glow);
+}
+
+.tag.stopped, .tag.offline, .tag.error, .tag.failed {
+  background: rgba(239,68,68,0.15);
+  color: var(--red);
+}
+.tag.stopped::before, .tag.offline::before, .tag.error::before, .tag.failed::before {
+  background: var(--red);
+}
+
+.tag.loading {
+  background: rgba(245,158,11,0.15);
+  color: var(--orange);
+}
+.tag.loading::before {
+  background: var(--orange);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.progress-bar {
+  width: 60px;
+  height: 6px;
+  background: var(--bg-3);
+  border-radius: 3px;
+  overflow: hidden;
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 8px;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+.progress-fill.low { background: var(--green); }
+.progress-fill.mid { background: var(--orange); }
+.progress-fill.high { background: var(--red); }
+
+.disk-info {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.btn-detail {
+  padding: 6px 14px;
+  font-size: 0.75rem;
+  background: var(--bg-3);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.btn-detail:hover {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+/* ─── Empty State ─── */
+.empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-3);
+}
+
+.empty-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.empty-text {
+  font-size: 0.9rem;
+}
+
+/* ─── Footer ─── */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+.footer-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 1200px) {
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 768px) {
+  .container { padding: 16px; }
+  .stats-grid { grid-template-columns: 1fr; }
+  nav { flex-direction: column; gap: 16px; }
+  .nav-links { width: 100%; justify-content: center; }
+  table { font-size: 0.8rem; }
+  th, td { padding: 10px 12px; }
+}
+
+/* ─── Animations ─── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-in {
+  animation: fadeIn 0.5s ease forwards;
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-1);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- Navbar -->
+  <nav>
+    <div class="nav-brand">
+      <div class="nav-logo">⚡</div>
+      <div>
+        <div class="nav-title">Cascade</div>
+        <div class="nav-subtitle">KV Cache Cluster Manager</div>
+      </div>
+    </div>
+    <div class="nav-links">
+      <a href="/">Dashboard</a>
+      <a href="/nodes.html" class="active">Nodes</a>
+      <a href="/cache.html">Cache</a>
+      <a href="/commands.html">Commands</a>
+    </div>
+    <div class="nav-status">
+      <div class="status-dot"></div>
+      <span>Live</span>
+    </div>
+  </nav>
+
+  <!-- Page Header -->
+  <div class="page-header animate-in">
+    <h1 class="page-title">
+      <span>🖥️</span>
+      Cluster Nodes
+    </h1>
+    <p class="page-desc">Monitor and manage all C-agents in the cluster</p>
+  </div>
+
+  <!-- Stats Cards -->
+  <div class="stats-grid animate-in">
+    <div class="stat-card">
+      <div class="stat-label">Total Nodes</div>
+      <div class="stat-value" id="stat-total">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Online</div>
+      <div class="stat-value" id="stat-online" style="color: var(--green)">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Running vLLM</div>
+      <div class="stat-value" id="stat-running" style="color: var(--accent)">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Avg GPU Util</div>
+      <div class="stat-value" id="stat-gpu">—</div>
+    </div>
+  </div>
+
+  <!-- Nodes Table -->
+  <div class="panel animate-in">
+    <div class="panel-header">
+      <div class="panel-title">
+        <span>📋 All Nodes</span>
+        <span class="panel-badge" id="node-count">0 nodes</span>
+      </div>
+      <div class="panel-actions">
+        <button class="btn btn-ghost" onclick="load()">↻ Refresh</button>
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Node ID</th>
+          <th>IP Address</th>
+          <th>GPU</th>
+          <th>GPU Memory</th>
+          <th>Model</th>
+          <th>vLLM</th>
+          <th>Cache</th>
+          <th>Hit Rate</th>
+          <th>Disks</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="nodes-tbody">
+        <tr><td colspan="11" class="empty">
+          <div class="empty-icon">⏳</div>
+          <div class="empty-text">Loading nodes...</div>
+        </td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="footer-left">
+      <span>Cascade v1.0</span>
+      <span>·</span>
+      <span>Powered by vLLM</span>
+    </div>
+  </div>
+</div>
+
 <script>
-async function load(){
-  try{
-    const r=await fetch('/api/v1/nodes');
-    if(!r.ok)throw new Error('HTTP '+r.status);
-    const nodes=await r.json();
-    const tb=document.getElementById('tb');
-    if(!nodes||!nodes.length){tb.innerHTML='<tr><td colspan="10" class="empty">No nodes registered.</td></tr>';return}
-    tb.innerHTML=nodes.map(n=>{
-      const mem=n.gpu_mem_used?' '+(n.gpu_mem_used/1024).toFixed(1)+'GB / '+(n.info?n.info.gpu_mem_mb/1024:0).toFixed(0)+'GB':'—';
-      return '<tr><td><a href="/node.html?id='+encodeURIComponent(n.node_id)+'">'+h(n.node_id)+'</a></td>'+
-        '<td>'+h(n.ip)+'</td>'+
-        '<td>'+(n.gpu_util*100).toFixed(0)+'%</td>'+
-        '<td>'+mem+'</td>'+
-        '<td>'+(n.model_name||'—')+'</td>'+
-        '<td><span class="tag '+n.status+'">'+n.status+'</span></td>'+
-        '<td>'+(n.cache_blocks||0)+'</td>'+
-        '<td>'+(n.hit_rate||0).toFixed(1)+'%</td>'+
-        '<td>'+(n.disks||[]).map(d=>'<div class="disk-mini">'+h(d.path)+' free '+(d.free_gb/1024).toFixed(1)+'TB</div>').join('')+'</td>'+
-        '<td><span class="tag '+n.status+'">'+n.status+'</span></td></tr>'
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+function getGpuClass(util) {
+  const pct = (util || 0) * 100;
+  if (pct < 50) return 'low';
+  if (pct < 80) return 'mid';
+  return 'high';
+}
+
+async function load() {
+  try {
+    const r = await fetch('/api/v1/nodes');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const nodes = await r.json();
+    
+    // Update stats
+    const total = nodes.length;
+    const online = nodes.filter(n => n.status === 'online').length;
+    const running = nodes.filter(n => n.vllm_status === 'running').length;
+    const avgGpu = total > 0 
+      ? (nodes.reduce((sum, n) => sum + (n.gpu_util || 0) * 100, 0) / total).toFixed(1)
+      : '0';
+    
+    document.getElementById('stat-total').textContent = total;
+    document.getElementById('stat-online').textContent = online;
+    document.getElementById('stat-running').textContent = running;
+    document.getElementById('stat-gpu').textContent = avgGpu + '%';
+    document.getElementById('node-count').textContent = total + ' nodes';
+    
+    // Update table
+    const tb = document.getElementById('nodes-tbody');
+    if (!nodes.length) {
+      tb.innerHTML = '<tr><td colspan="11" class="empty"><div class="empty-icon">🔌</div><div class="empty-text">No nodes registered yet</div></td></tr>';
+      return;
+    }
+    
+    tb.innerHTML = nodes.map(n => {
+      const vllm = n.vllm_status || 'stopped';
+      const gpuPct = ((n.gpu_util || 0) * 100).toFixed(0);
+      const gpuClass = getGpuClass(n.gpu_util);
+      const mem = n.gpu_mem_used 
+        ? (n.gpu_mem_used / 1024).toFixed(1) + 'GB / ' + ((n.info?.gpu_mem_mb || 0) / 1024).toFixed(0) + 'GB'
+        : '—';
+      const disks = (n.disks || []).map(d => 
+        `<div class="disk-info">${esc(d.path)}: ${(d.free_gb / 1024).toFixed(1)}TB free</div>`
+      ).join('');
+      
+      return `<tr>
+        <td><a href="/node.html?id=${encodeURIComponent(n.node_id)}" class="node-id">${esc(n.node_id)}</a></td>
+        <td><span class="node-ip">${esc(n.ip)}</span></td>
+        <td>
+          <span>${gpuPct}%</span>
+          <div class="progress-bar">
+            <div class="progress-fill ${gpuClass}" style="width:${gpuPct}%"></div>
+          </div>
+        </td>
+        <td>${mem}</td>
+        <td>${esc(n.model_name || '—')}</td>
+        <td><span class="tag ${esc(vllm)}">${esc(vllm)}</span></td>
+        <td>${(n.cache_blocks || 0).toLocaleString()}</td>
+        <td>${(n.hit_rate || 0).toFixed(1)}%</td>
+        <td>${disks || '—'}</td>
+        <td><span class="tag ${esc(n.status)}">${esc(n.status)}</span></td>
+        <td><a href="/node.html?id=${encodeURIComponent(n.node_id)}" class="btn-detail">Details →</a></td>
+      </tr>`;
     }).join('');
-  }catch(e){
-    document.getElementById('loading').textContent='Error: '+e.message;
+    
+  } catch (e) {
+    document.getElementById('nodes-tbody').innerHTML = 
+      `<tr><td colspan="11" class="empty"><div class="empty-icon">❌</div><div class="empty-text">Error: ${esc(e.message)}</div></td></tr>`;
   }
 }
-function h(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+
+// Initial load
 load();
-</script></body></html>
+setInterval(load, 10000);
+</script>
+</body>
+</html>

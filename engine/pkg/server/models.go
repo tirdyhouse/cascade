@@ -70,6 +70,8 @@ func (r *ModelRegistry) Scan() {
 				sizeGB := dirSizeGB(filepath.Join(r.modelsDir, name))
 
 				downloadURL := ""
+				quant := detectQuantization(r.modelsDir, name)
+
 				if r.baseURL != "" {
 					downloadURL = r.baseURL + name + "/"
 				}
@@ -80,6 +82,7 @@ func (r *ModelRegistry) Scan() {
 					SupportsPrefix:   true,
 					SupportsDiskCache: true,
 					SizeGB:           sizeGB,
+					Quantization:     quant,
 				}
 			}
 		}
@@ -101,6 +104,7 @@ func (r *ModelRegistry) Scan() {
 				DefaultGPUMem:     m.DefaultGPUMem,
 				SupportsPrefix:    m.SupportsPrefix,
 				SupportsDiskCache: m.SupportsDiskCache,
+				Quantization:      m.Quantization,
 			}
 		}
 	}
@@ -149,3 +153,23 @@ func dirSizeGB(path string) float64 {
 	})
 	return float64(total) / (1024 * 1024 * 1024)
 }
+func detectQuantization(modelsDir, name string) string {
+	cfgPath := filepath.Join(modelsDir, name, "config.json")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		QuantizationConfig *struct {
+			QuantMethod string `json:"quant_method"`
+		} `json:"quantization_config"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	if cfg.QuantizationConfig != nil && cfg.QuantizationConfig.QuantMethod != "" {
+		return cfg.QuantizationConfig.QuantMethod
+	}
+	return ""
+}
+

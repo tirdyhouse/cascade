@@ -988,7 +988,7 @@ function render(id, d, models) {
           <div class="form-group">
             <label class="form-label">Model</label>
             <select id="launch-model" class="form-select" onchange="updateCmdPreview()">
-              ${models.map(m => `<option value="${esc(m.name)}" ${m.name === currentModel ? 'selected' : ''}>${esc(m.name)} (${m.size_gb?.toFixed(1) || '—'} GB)</option>`).join('')}
+              ${models.map(m => `<option value="${esc(m.name)}" ${m.name === currentModel ? 'selected' : ''} data-quant="${esc(m.quantization || '')}">${esc(m.name)} (${m.size_gb?.toFixed(1) || '—'} GB)${m.quantization ? ' [' + m.quantization + ']' : ''}</option>`).join('')}
             </select>
           </div>
         </div>
@@ -1155,7 +1155,21 @@ function buildCmd(model, gpu, prefix, disk) {
   let cmd = model + ' --gpu-memory-utilization ' + gpu;
   if (prefix) cmd += ' --enable-prefix-caching';
   if (disk) cmd += ' --kv-connector disk-cache --disk-cache-path /root/cascade/agent/cache';
+  // Add quantization flag if model has it
+  const quant = getQuantization(model);
+  if (quant) cmd += ' --quantization ' + quant;
   return cmd;
+}
+
+function getQuantization(modelName) {
+  const sel = document.getElementById('launch-model');
+  if (!sel) return '';
+  for (let i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === modelName) {
+      return sel.options[i].dataset?.quant || '';
+    }
+  }
+  return '';
 }
 
 function updateCmdPreview() {
@@ -1173,11 +1187,13 @@ async function doStart() {
   if (auto) {
     const sel = document.getElementById('launch-model');
     const model = sel?.options[sel.selectedIndex]?.value || '';
+    const quant = getQuantization(model);
     params = {
       model: model,
       gpu_util: document.getElementById('gpu-val')?.textContent || '0.90',
       enable_prefix_caching: document.getElementById('chk-prefix')?.checked ? 'true' : 'false',
-      enable_disk_cache: document.getElementById('chk-disk')?.checked ? 'true' : 'false'
+      enable_disk_cache: document.getElementById('chk-disk')?.checked ? 'true' : 'false',
+      quantization: quant || ''
     };
   } else {
     params = { raw_args: document.getElementById('cmd-preview')?.value?.trim() || '' };

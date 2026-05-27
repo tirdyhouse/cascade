@@ -88,6 +88,26 @@ func (c *Collector) getDiskFree(path string) diskFreeResult {
 }
 
 // ── Utility functions ────────────────────────────────────────────────
+// GetAvailableModels scans the models directory and returns model names.
+func (c *Collector) GetAvailableModels() []string {
+	modelsDir := c.cfg.WorkDir + "/models"
+	entries, err := os.ReadDir(modelsDir)
+	if err != nil {
+		return nil
+	}
+	var models []string
+	for _, e := range entries {
+		if e.IsDir() {
+			// Check for download marker
+			marker := modelsDir + "/" + e.Name() + "/.downloaded"
+			if _, err := os.Stat(marker); err == nil {
+				models = append(models, e.Name())
+			}
+		}
+	}
+	return models
+}
+
 
 func getOutboundIP() string {
 	// Try environment first

@@ -85,7 +85,8 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 	}
 	if opts.DiskCache {
 		diskCachePath := filepath.Join(opts.WorkDir, "cache")
-		args = append(args, "--kv-connector", "DiskCacheConnector", "--disk-cache-path", diskCachePath)
+		args = append(args, "--kv-connector", "DiskCacheConnector")
+		args = append(args, "--kv-connector-extra-config", fmt.Sprintf(`{"disk_cache_path": %q}`, diskCachePath))
 	}
 
 	pm.cmd = exec.Command(vllmBinary(), args...)

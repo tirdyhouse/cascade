@@ -89,28 +89,40 @@ async function load(){
 
 function render(id,d,models){
   const st=d.status||{};
-  const avail=d.info.available_models||st.available_models||[];
+  const diskModels=d.info.available_models||st.available_models||[];
+  if(!models)models=[];
+
+  // Merge S端 registry + disk models (union by name)
+  const allNames=[...new Set([...models.map(m=>m.name),...diskModels.map(m=>m.name)])];
+  const allModels=allNames.map(name=>{
+    const reg=models.find(m=>m.name===name);
+    const disk=diskModels.find(m=>m.name===name);
+    return {
+      name:name,
+      onDisk:!!disk,
+      sizeGB:disk?disk.size_gb:0,
+      download_url:reg?reg.download_url:'',
+      supports_prefix:reg?reg.supports_prefix:true,
+      supports_disk_cache:reg?reg.supports_disk_cache:true
+    };
+  });
+
   const online=st.vllm_status;
   const currentModel=st.model_name||'';
-  const hasModels=avail.length>0;
 
-  // Build model status list
-  const modelRows=models.map(m=>{
-    const local=avail.includes(m.name);
-    return '<tr><td>'+esc(m.name)+'</td><td><span class="tag '+(local?'ok':'missing')+'">'+(local?'✅ on disk':'⬇ need download')+'</span></td><td>'+(local
+  // Build model rows (sorted: on-disk first)
+  allModels.sort((a,b)=>b.onDisk-a.onDisk);
+  const modelRows=allModels.map(m=>{
+    const size=m.sizeGB>0?' ('+m.sizeGB.toFixed(1)+'GB)':'';
+    return '<tr><td>'+esc(m.name)+size+'</td><td><span class="tag '+(m.onDisk?'ok':'missing')+'">'+(m.onDisk?'✅ on disk ('+m.sizeGB.toFixed(1)+'GB)':'⬇ need download')+'</span></td><td>'+(m.onDisk
       ?'<button class="btn btn-sm" onclick="doStart(\''+esc(m.name)+'\')">▶ Start</button>'
       :'<button class="btn btn-sm btn-outline" onclick="doDistribute(\''+esc(m.name)+'\',\''+esc(m.download_url||'')+'\')">📦 Distribute</button>'
     )+'</td></tr>';
   }).join('');
-
-  document.getElementById('app').innerHTML=
-    // Header
-    '<hgroup><h2>'+esc(d.info.node_id)+'</h2><p>'+esc(d.info.ip)+':'+d.info.rpc_port+' · '+esc(d.info.gpu_type)+' ×'+d.info.gpu_count+' · '+(d.info.cache_mode||'—')+'</p></hgroup>'+
-
     // Status cards
     '<div class="cards">'+
       '<div class="card"><small>GPU</small><h3>'+(d.info.gpu_type||'—')+'</h3></div>'+
-      '<div class="card"><small>GPU Mem</small><h3>'+(d.info.gpu_mem_mb?(d.info.gpu_mem_mb/1024).toFixed(0)+'GB':'—')+'</h3></div>'+
+      '<div class="card"><small>GPU Mem</small><h3>'+(st.gpu_mem_used_mb?((st.gpu_mem_used_mb/1024).toFixed(1)+'GB / '+(d.info.gpu_mem_mb/1024).toFixed(0)+'GB'):(d.info.gpu_mem_mb?(d.info.gpu_mem_mb/1024).toFixed(0)+'GB':'—'))+'</h3></div>'+
       '<div class="card"><small>vLLM</small><h3><span class="tag '+(st.vllm_status||'unknown')+'">'+(st.vllm_status||'unknown')+'</span></h3></div>'+
       '<div class="card"><small>Node</small><h3><span class="tag '+d.status+'">'+d.status+'</span></h3></div>'+
     '</div>'+
@@ -123,8 +135,8 @@ function render(id,d,models){
     // Launch config
     '<div class="panel"><div class="panel-header">🚀 Launch vLLM</div><div class="panel-body">'+
       '<div class="grid-2">'+
-        '<label>Model<select id="launch-model">'+
-          models.map(m=>'<option value="'+esc(m.name)+'" '+(m.name===currentModel?'selected':'')+'>'+esc(m.name)+'</option>').join('')+
+        '<label>Model<select id="launch-model" onchange="updateCmdPreview()">'+
+          allModels.map(m=>'<option value="'+esc(m.name)+'" '+(m.name===currentModel?'selected':'')+'>'+esc(m.name)+(m.sizeGB>0?' ('+m.sizeGB.toFixed(1)+'GB)':'')+'</option>').join('')+
         '</select></label>'+
         '<label>GPU Utilization: <span id="gpu-val">0.90</span><input type="range" min="0.5" max="0.99" step="0.01" value="0.90" oninput="document.getElementById(\'gpu-val\').textContent=this.value;if(!cmdCustom)updateCmdPreview()"></label>'+
       '</div>'+

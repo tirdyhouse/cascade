@@ -237,6 +237,22 @@ func (a *Agent) executeCommand(cmd *cluster.Command) {
 }
 
 func (a *Agent) executeStartVLLM(cmd *cluster.Command) {
+	// If raw_args is provided, use it directly as the full command line
+	if raw := cmd.Params["raw_args"]; raw != "" {
+		output, err := a.process.StartRaw(raw, a.config.WorkDir)
+		result := &cluster.CmdResult{CmdID: cmd.CmdID, NodeID: a.config.NodeID}
+		if err != nil {
+			result.Status = "failed"
+			result.Error = err.Error()
+			result.Output = output
+		} else {
+			result.Status = "success"
+			result.Output = output
+		}
+		a.reportResult(result)
+		return
+	}
+
 	model := cmd.Params["model"]
 	gpuUtil := cmd.Params["gpu_util"]
 	if gpuUtil == "" {

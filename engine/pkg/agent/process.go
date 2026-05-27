@@ -172,14 +172,26 @@ func (pm *ProcessManager) DownloadModel(model, url, workDir string) (string, err
 		return "", fmt.Errorf("create model dir: %w", err)
 	}
 
-	log.Printf("[process] downloading model %s from %s to %s", model, url, modelDir)
-	// Real implementation would use wget, curl, or huggingface_hub
-	// For now, create a placeholder
-	placeholder := filepath.Join(modelDir, ".downloaded")
-	if err := os.WriteFile(placeholder, []byte("downloaded from "+url+"\n"), 0644); err != nil {
-		return "", err
+	log.Printf("[process] downloading model %s from %s", model, url)
+
+	var cmd *exec.Cmd
+	if strings.Contains(url, "huggingface.co") {
+		cmd = exec.Command("huggingface-cli", "download",
+			model, "--local-dir", modelDir, "--local-dir-use-symlinks", "False")
+	} else if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		cmd = exec.Command("wget", "-c", "-P", modelDir, url)
+	} else {
+		marker := filepath.Join(modelDir, ".downloaded")
+		os.WriteFile(marker, []byte("placeholder\n"), 0644)
+		return fmt.Sprintf("placeholder model %s at %s", model, modelDir), nil
 	}
-	return fmt.Sprintf("model %s ready at %s", model, modelDir), nil
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("download failed: %w", err)
+	}
+	os.WriteFile(filepath.Join(modelDir, ".downloaded"), []byte("ok\n"), 0644)
+	return fmt.Sprintf("downloaded %s (%.1f GB)", model, dirSizeGB(modelDir)), nil
 }
 
 // Stop terminates the vLLM process.

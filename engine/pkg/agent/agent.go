@@ -267,6 +267,7 @@ func (a *Agent) executeStartVLLM(cmd *cluster.Command) {
 		PrefixCaching: enablePrefix == "true",
 		DiskCache:     enableDiskCache == "true",
 		WorkDir:       a.config.WorkDir,
+		Quantization:  cmd.Params["quantization"],
 	})
 	result := &cluster.CmdResult{
 		CmdID:  cmd.CmdID,

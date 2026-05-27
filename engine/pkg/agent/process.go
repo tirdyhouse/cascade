@@ -17,6 +17,8 @@ type StartOptions struct {
 	PrefixCaching bool
 	DiskCache     bool
 	WorkDir       string
+	Quantization  string // awq, gptq, etc.
+
 }
 
 // ProcessManager handles vLLM process lifecycle.
@@ -59,6 +61,9 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 	// Build vLLM args
 	args := []string{"serve", opts.Model}
 	args = append(args, "--gpu-memory-utilization", opts.GPUUtil)
+	if opts.Quantization != "" {
+		args = append(args, "--quantization", opts.Quantization)
+	}
 	if opts.PrefixCaching {
 		args = append(args, "--enable-prefix-caching")
 	}

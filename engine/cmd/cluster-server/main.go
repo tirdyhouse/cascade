@@ -14,7 +14,9 @@ import (
 var (
 	rpcxPort    = flag.Int("rpcx-port", 9000, "rpcx server port for C端 communication")
 	httpPort    = flag.Int("http-port", 8080, "HTTP port for REST API + Web UI")
-	modelsFile  = flag.String("models-file", "", "Path to models.json")
+	modelsFile  = flag.String("models-file", "", "Path to models.json (optional)")
+	modelsDir   = flag.String("models-dir", "", "Directory to auto-scan for models (optional)")
+	publicURL   = flag.String("public-url", "", "Public URL for model download links (optional)")
 )
 
 func main() {
@@ -24,6 +26,9 @@ func main() {
 	cfg.RPCPort = *rpcxPort
 	cfg.HTTPPort = *httpPort
 	cfg.ModelsFile = *modelsFile
+	cfg.ModelsDir = *modelsDir
+	cfg.PublicURL = *publicURL
+
 
 
 	srv := server.New(cfg)

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -163,6 +164,17 @@ func (a *Agent) heartbeat(cmdCh chan<- *cluster.Command) error {
 		status.CacheBytes = cacheStats.DiskUsedBytes
 	}
 	status.VLLMStatus = a.process.Status()
+	// vLLM health check: transition loading→running / running→error
+	switch status.VLLMStatus {
+	case "running":
+		if !a.vllmHealthy() {
+			status.VLLMStatus = "error"
+		}
+	case "loading":
+		if a.vllmHealthy() {
+			status.VLLMStatus = "running"
+		}
+	}
 	status.ModelName = a.process.ModelName()
 
 	reply, err := a.client.Heartbeat(status)
@@ -335,3 +347,15 @@ func (a *Agent) commandLoop(cmdCh <-chan *cluster.Command) {
 		a.executeCommand(cmd)
 	}
 }
+
+// vllmHealthy checks if the vLLM HTTP API is reachable.
+func (a *Agent) vllmHealthy() bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:8000/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == 200
+}
+

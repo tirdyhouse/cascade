@@ -30,6 +30,7 @@ func (d *Dispatcher) Dispatch(req *cluster.DispatchReq) *cluster.OK {
 		cluster.CmdUnloadModel:   true,
 		cluster.CmdUpdateConfig:  true,
 		cluster.CmdExecShell:     true,
+		cluster.CmdDownloadModel: true,
 	}
 	if !validActions[req.Action] {
 		return &cluster.OK{OK: false, Err: fmt.Sprintf("unknown action: %s", req.Action)}

@@ -84,8 +84,8 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 		args = append(args, "--enable-prefix-caching")
 	}
 	if opts.DiskCache {
-		args = append(args, "--kv-connector", "disk-cache")
-		args = append(args, "--disk-cache-path", filepath.Join(opts.WorkDir, "cache"))
+		diskCachePath := filepath.Join(opts.WorkDir, "cache")
+		args = append(args, "--kv-connector", "DiskCacheConnector", "--disk-cache-path", diskCachePath)
 	}
 
 	pm.cmd = exec.Command(vllmBinary(), args...)
@@ -94,8 +94,10 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 
 	if err := pm.cmd.Start(); err != nil {
 		f.Close()
+		// Write the error to the log file so it shows in Live Log
+		os.WriteFile(logFile, []byte(fmt.Sprintf("Failed to start vLLM: %v\n", err)), 0644)
 		pm.status = "error"
-		return "", fmt.Errorf("start vLLM: %w", err)
+		return fmt.Sprintf("Failed to start vLLM: %v", err), fmt.Errorf("start vLLM: %w", err)
 	}
 
 	pm.status = "loading"

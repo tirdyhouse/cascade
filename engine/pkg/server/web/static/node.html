@@ -129,12 +129,16 @@ function render(id,d,models){
         '<label>GPU Utilization: <span id="gpu-val">0.90</span><input type="range" min="0.5" max="0.99" step="0.01" value="0.90" oninput="gpuVal.textContent=this.value"></label>'+
       '</div>'+
       '<div class="toggle-group">'+
-        '<label><input type="checkbox" id="chk-prefix" checked> 🧠 Prefix Caching</label>'+
-        '<label><input type="checkbox" id="chk-disk" checked> 💾 Disk Cache</label>'+
+        '<label><input type="checkbox" id="chk-prefix" checked onchange="updateCmdPreview()"> 🧠 Prefix Caching</label>'+
+        '<label><input type="checkbox" id="chk-disk" checked onchange="updateCmdPreview()"> 💾 Disk Cache</label>'+
       '</div>'+
-      '<div class="flex" style="margin-top:16px">'+
-        '<button class="btn" onclick="doStart(document.getElementById(\'launch-model\').value)">▶ Start</button>'+
+      // Command preview (editable for advanced users)
+      '<label style="margin-top:16px">vLLM Command <span class="muted">(edit directly for custom args)</span></label>'+
+      '<textarea id="cmd-preview" rows="2" style="width:100%;margin-top:4px;font-family:monospace;font-size:0.85rem;background:#050a14;color:#a0b0c0" onchange="cmdCustom=true">'+esc(buildCmd(models[0]&&models[0].name||''))+'</textarea>'+
+      '<div class="flex" style="margin-top:12px">'+
+        '<button class="btn" onclick="doStart()">▶ Start</button>'+
         (online==='running'||online==='loading'?'<button class="btn btn-danger" onclick="doStop()">⏹ Stop</button>':'')+
+        '<label style="margin:0 0 0 auto;font-size:0.8rem;color:#555"><input type="checkbox" id="chk-auto" checked onchange="updateCmdPreview()"> Auto-generate</label>'+
       '</div>'+
       '<div id="cmd-result"></div>'+
     '</div></div>'+
@@ -162,17 +166,53 @@ function render(id,d,models){
     '</tbody></table></div>':'');
 }
 
-// ── Commands ──────────────────────────────────────────
-async function doStart(model){
+let cmdCustom=false;
+
+function buildCmd(model){
   const gpu=document.getElementById('gpu-val').textContent;
-  const prefix=document.getElementById('chk-prefix').checked?'true':'false';
-  const disk=document.getElementById('chk-disk').checked?'true':'false';
+  const prefix=document.getElementById('chk-prefix').checked;
+  const disk=document.getElementById('chk-disk').checked;
+  let cmd=model+' --gpu-memory-utilization '+gpu;
+  if(prefix)cmd+=' --enable-prefix-caching';
+  if(disk)cmd+=' --kv-connector disk-cache --disk-cache-path /root/cascade/agent/cache';
+  return cmd;
+}
+
+function updateCmdPreview(){
+  if(cmdCustom)return;
+  const sel=document.getElementById('launch-model');
+  const model=sel.options[sel.selectedIndex]?.value||'';
+  document.getElementById('cmd-preview').value=buildCmd(model);
+}
+
+// Auto-update preview when model/GPU changes
+document.addEventListener('change',function(e){
+  if(e.target.id==='launch-model'||e.target.id==='chk-gpu-util')updateCmdPreview();
+});
+
+// ── Commands ──────────────────────────────────────────
+async function doStart(){
   const id=new URLSearchParams(location.search).get('id');
-  showResult('Starting '+model+'...');
+  const raw=document.getElementById('cmd-preview').value.trim();
+  const auto=document.getElementById('chk-auto').checked;
+  let params;
+  if(auto){
+    const sel=document.getElementById('launch-model');
+    const model=sel.options[sel.selectedIndex]?.value||'';
+    params={
+      model:model,
+      gpu_util:document.getElementById('gpu-val').textContent,
+      enable_prefix_caching:document.getElementById('chk-prefix').checked?'true':'false',
+      enable_disk_cache:document.getElementById('chk-disk').checked?'true':'false'
+    };
+  }else{
+    params={raw_args:raw};
+  }
+  showResult('Starting...');
   const r=await fetch('/api/v1/command',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:'start_vllm',target:id,params:{model,gpu_util:gpu,enable_prefix_caching:prefix,enable_disk_cache:disk},timeout:600})});
+    body:JSON.stringify({action:'start_vllm',target:id,params:params,timeout:600})});
   const j=await r.json();
-  showResult(j.ok?'✅ Started '+model:'❌ '+j.err,j.ok?'success':'error');
+  showResult(j.ok?'✅ Started':'❌ '+j.err,j.ok?'success':'error');
   startLogPoll(id);
 }
 async function doStop(){

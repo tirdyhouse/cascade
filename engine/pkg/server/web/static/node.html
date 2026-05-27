@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>KV Cache Cluster - Node Detail</title>
+<title>Node Detail</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0e17;color:#e0e0e0;padding:20px}
@@ -18,6 +18,7 @@ nav a.active,nav a:hover{color:#fff;background:#1e2a3a}
 .card h3{margin:8px 0 0;color:#f0f6fc}
 .panel{background:#111b2e;border:1px solid #1e2a3a;border-radius:10px;overflow:hidden;margin-bottom:24px}
 .panel-header{padding:14px 20px;border-bottom:1px solid #1e2a3a;font-weight:600;color:#f0f6fc}
+.panel-body{padding:20px}
 table{width:100%;border-collapse:collapse;font-size:0.9rem}
 th,td{padding:10px 14px;text-align:left;border-bottom:1px solid #1a2538}
 th{color:#8b949e;font-weight:600;font-size:0.8rem;text-transform:uppercase}
@@ -26,17 +27,37 @@ tr:hover{background:#162033}
 .tag.online,.tag.running,.tag.success{background:#0d4420;color:#7ee8a0}
 .tag.offline,.tag.stopped,.tag.error,.tag.failed{background:#441d0d;color:#f7a072}
 .tag.loading{background:#443d0d;color:#f0d76e}
+.tag.ok{background:#0d4420;color:#7ee8a0}.tag.missing{background:#441d0d;color:#f7a072}
 .disk-bar{margin-bottom:12px}
 .disk-label{display:flex;justify-content:space-between;font-size:0.85rem;margin-bottom:4px;color:#8b949e}
 progress{width:100%;height:12px;border-radius:6px}
 progress::-webkit-progress-bar{background:#1a2538;border-radius:6px}
 progress::-webkit-progress-value{background:#1f6feb;border-radius:6px}
 .empty{text-align:center;padding:40px;color:#8b949e}
+.mono{font-family:'SF Mono',Consolas,monospace;font-size:0.8rem}
+.log-box{background:#050a14;border:1px solid #1a2538;border-radius:6px;padding:12px;font-family:'SF Mono',Consolas,monospace;font-size:0.8rem;color:#a0b0c0;max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;line-height:1.5}
+.log-box .info{color:#7ee8a0}.log-box .warn{color:#f0d76e}.log-box .err{color:#f7a072}
+.btn{display:inline-block;background:#1f6feb;color:#fff;border:none;padding:8px 24px;border-radius:6px;cursor:pointer;font-size:0.9rem;margin-right:8px}
+.btn:hover{background:#3b82f6}
+.btn-sm{padding:6px 16px;font-size:0.85rem}
+.btn-danger{background:#b91c1c}.btn-danger:hover{background:#dc2626}
+.btn-outline{background:transparent;border:1px solid #1e2a3a;color:#8b949e}
+.btn-outline:hover{border-color:#58a6ff;color:#58a6ff}
+input,select{background:#0a0e17;border:1px solid #1e2a3a;color:#e0e0e0;padding:8px 12px;border-radius:6px;font-size:0.9rem;box-sizing:border-box}
+label{display:block;margin-bottom:4px;color:#8b949e;font-size:0.85rem}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.toggle-group{display:flex;gap:24px;margin-top:12px;flex-wrap:wrap}
+.toggle-group label{display:flex;align-items:center;gap:8px;cursor:pointer;margin:0}
+.toggle-group input[type=checkbox]{width:18px;height:18px;cursor:pointer}
+input[type=range]{padding:0;height:6px;accent-color:#1f6feb;width:100%}
+.success-msg{color:#7ee8a0;margin:8px 0}
+.error-msg{color:#f7a072;margin:8px 0}
 a{color:#58a6ff;text-decoration:none}
 a:hover{text-decoration:underline}
 hgroup{margin-bottom:20px}
 hgroup h2{color:#f0f6fc}
 hgroup p{color:#8b949e;font-size:0.9rem}
+.flex{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 </style>
 </head>
 <body>
@@ -47,7 +68,6 @@ hgroup p{color:#8b949e;font-size:0.9rem}
       <a href="/">Dashboard</a>
       <a href="/nodes.html" class="active">Nodes</a>
       <a href="/cache.html">Cache</a>
-      <a href="/commands.html">Commands</a>
     </div>
   </nav>
   <a href="/nodes.html">← Back to Nodes</a>
@@ -56,34 +76,154 @@ hgroup p{color:#8b949e;font-size:0.9rem}
 <script>
 async function load(){
   const id=new URLSearchParams(location.search).get('id');
-  if(!id){document.getElementById('app').innerHTML='<div class="empty">No node ID specified</div>';return}
+  if(!id){document.getElementById('app').innerHTML='<div class="empty">No node ID</div>';return}
   try{
-    const r=await fetch('/api/v1/nodes/'+encodeURIComponent(id));
-    const d=await r.json();
-    if(!d||!d.info){document.getElementById('app').innerHTML='<div class="empty">Node not found</div>';return}
-    const st=d.status||{};
-    document.getElementById('app').innerHTML=
-      '<hgroup><h2>'+esc(d.info.node_id)+'</h2><p>'+esc(d.info.ip)+':'+d.info.rpc_port+' · '+esc(d.info.gpu_type)+' ×'+d.info.gpu_count+' · '+(d.info.cache_mode||'—')+'</p></hgroup>'+
-      '<div class="cards">'+
-        '<div class="card"><small>GPU</small><h3>'+(d.info.gpu_type||'—')+'</h3></div>'+
-        '<div class="card"><small>GPU Mem</small><h3>'+(d.info.gpu_mem_mb?(d.info.gpu_mem_mb/1024).toFixed(0)+'GB':'—')+'</h3></div>'+
-        '<div class="card"><small>Cache Mode</small><h3>'+(d.info.cache_mode||'—')+'</h3></div>'+
-        '<div class="card"><small>Status</small><h3><span class="tag '+(st.vllm_status||'unknown')+'">'+(st.vllm_status||'unknown')+'</span></h3></div>'+
-      '</div>'+
-      '<div class="panel"><div class="panel-header">💾 Disks</div><div style="padding:20px">'+
-        (d.info.disks||[]).map(di=>'<div class="disk-bar"><div class="disk-label"><span>'+esc(di.path)+'</span><span>'+di.total_gb+'GB total, '+di.free_gb+'GB free</span></div><progress value="'+(di.total_gb-di.free_gb)+'" max="'+di.total_gb+'"></progress></div>').join('')+
-      '</div></div>'+
-      '<div class="panel"><div class="panel-header">📊 KV Cache</div><div class="cards" style="padding:20px;margin:0">'+
-        '<div class="card"><small>Blocks</small><h3>'+(st.cache_blocks||0).toLocaleString()+'</h3></div>'+
-        '<div class="card"><small>Size</small><h3>'+fmtBytes(st.cache_bytes||0)+'</h3></div>'+
-        '<div class="card"><small>Hit Rate</small><h3>'+(st.cache_hit_rate||0).toFixed(1)+'%</h3></div>'+
-        '<div class="card"><small>Queue</small><h3>'+(st.queue_len||0)+'</h3></div>'+
-      '</div></div>'+
-      (d.recent&&d.recent.length?'<div class="panel"><div class="panel-header">📜 Recent Commands</div><table><thead><tr><th>Cmd ID</th><th>Status</th><th>Output</th></tr></thead><tbody>'+
-        d.recent.map(c=>'<tr><td class="mono">'+esc(c.cmd_id)+'</td><td><span class="tag '+c.status+'">'+c.status+'</span></td><td>'+esc((c.output||'').slice(0,80))+'</td></tr>').join('')+
-      '</tbody></table></div>':'');
+    const [rNode,rModels]=await Promise.all([
+      fetch('/api/v1/nodes/'+encodeURIComponent(id)).then(r=>r.json()),
+      fetch('/api/v1/models').then(r=>r.json())
+    ]);
+    if(!rNode||!rNode.info){document.getElementById('app').innerHTML='<div class="empty">Node not found</div>';return}
+    render(id,rNode,rModels);
   }catch(e){document.getElementById('app').innerHTML='<div class="empty">Error: '+e.message+'</div>'}
 }
+
+function render(id,d,models){
+  const st=d.status||{};
+  const avail=d.info.available_models||st.available_models||[];
+  const online=st.vllm_status;
+  const currentModel=st.model_name||'';
+  const hasModels=avail.length>0;
+
+  // Build model status list
+  const modelRows=models.map(m=>{
+    const local=avail.includes(m.name);
+    return '<tr><td>'+esc(m.name)+'</td><td><span class="tag '+(local?'ok':'missing')+'">'+(local?'✅ on disk':'⬇ need download')+'</span></td><td>'+(local
+      ?'<button class="btn btn-sm" onclick="doStart(\''+esc(m.name)+'\')">▶ Start</button>'
+      :'<button class="btn btn-sm btn-outline" onclick="doDistribute(\''+esc(m.name)+'\',\''+esc(m.download_url||'')+'\')">📦 Distribute</button>'
+    )+'</td></tr>';
+  }).join('');
+
+  document.getElementById('app').innerHTML=
+    // Header
+    '<hgroup><h2>'+esc(d.info.node_id)+'</h2><p>'+esc(d.info.ip)+':'+d.info.rpc_port+' · '+esc(d.info.gpu_type)+' ×'+d.info.gpu_count+' · '+(d.info.cache_mode||'—')+'</p></hgroup>'+
+
+    // Status cards
+    '<div class="cards">'+
+      '<div class="card"><small>GPU</small><h3>'+(d.info.gpu_type||'—')+'</h3></div>'+
+      '<div class="card"><small>GPU Mem</small><h3>'+(d.info.gpu_mem_mb?(d.info.gpu_mem_mb/1024).toFixed(0)+'GB':'—')+'</h3></div>'+
+      '<div class="card"><small>vLLM</small><h3><span class="tag '+(st.vllm_status||'unknown')+'">'+(st.vllm_status||'unknown')+'</span></h3></div>'+
+      '<div class="card"><small>Node</small><h3><span class="tag '+d.status+'">'+d.status+'</span></h3></div>'+
+    '</div>'+
+
+    // Models + control panel
+    '<div class="panel"><div class="panel-header">🎯 Models on S端</div><table><thead><tr><th>Model</th><th>Status on Node</th><th>Action</th></tr></thead><tbody>'+
+      (modelRows||'<tr><td colspan="3" class="empty">No models configured. Use --models-file on S端.</td></tr>')+
+    '</tbody></table></div>'+
+
+    // Launch config
+    '<div class="panel"><div class="panel-header">🚀 Launch vLLM</div><div class="panel-body">'+
+      '<div class="grid-2">'+
+        '<label>Model<select id="launch-model">'+
+          models.map(m=>'<option value="'+esc(m.name)+'" '+(m.name===currentModel?'selected':'')+'>'+esc(m.name)+'</option>').join('')+
+        '</select></label>'+
+        '<label>GPU Utilization: <span id="gpu-val">0.90</span><input type="range" min="0.5" max="0.99" step="0.01" value="0.90" oninput="gpuVal.textContent=this.value"></label>'+
+      '</div>'+
+      '<div class="toggle-group">'+
+        '<label><input type="checkbox" id="chk-prefix" checked> 🧠 Prefix Caching</label>'+
+        '<label><input type="checkbox" id="chk-disk" checked> 💾 Disk Cache</label>'+
+      '</div>'+
+      '<div class="flex" style="margin-top:16px">'+
+        '<button class="btn" onclick="doStart(document.getElementById(\'launch-model\').value)">▶ Start</button>'+
+        (online==='running'||online==='loading'?'<button class="btn btn-danger" onclick="doStop()">⏹ Stop</button>':'')+
+      '</div>'+
+      '<div id="cmd-result"></div>'+
+    '</div></div>'+
+
+    // Log viewer
+    '<div class="panel"><div class="panel-header">📜 Live Log <button class="btn btn-sm btn-outline" style="float:right" onclick="toggleLog()">'+ (logPaused?'▶ Resume':'⏸ Pause')+'</button></div><div class="panel-body">'+
+      '<div class="log-box" id="log-box">Waiting for log...</div>'+
+    '</div></div>'+
+
+    // Disks
+    '<div class="panel"><div class="panel-header">💾 Disks</div><div style="padding:20px">'+
+      (d.info.disks||[]).map(di=>'<div class="disk-bar"><div class="disk-label"><span>'+esc(di.path)+'</span><span>'+di.total_gb+'GB total, '+di.free_gb+'GB free</span></div><progress value="'+(di.total_gb-di.free_gb)+'" max="'+di.total_gb+'"></progress></div>').join('')+
+    '</div></div>'+
+
+    // KV Cache
+    '<div class="panel"><div class="panel-header">📊 KV Cache</div><div class="cards" style="padding:20px;margin:0">'+
+      '<div class="card"><small>Blocks</small><h3>'+(st.cache_blocks||0).toLocaleString()+'</h3></div>'+
+      '<div class="card"><small>Size</small><h3>'+fmtBytes(st.cache_bytes||0)+'</h3></div>'+
+      '<div class="card"><small>Hit Rate</small><h3>'+(st.cache_hit_rate||0).toFixed(1)+'%</h3></div>'+
+    '</div></div>'+
+
+    // Recent commands
+    (d.recent&&d.recent.length?'<div class="panel"><div class="panel-header">📜 Recent Commands</div><table><thead><tr><th>Cmd</th><th>Status</th><th>Output</th></tr></thead><tbody>'+
+      d.recent.map(c=>'<tr><td class="mono">'+esc(c.cmd_id)+'</td><td><span class="tag '+c.status+'">'+c.status+'</span></td><td class="mono">'+esc((c.output||'').slice(0,80))+'</td></tr>').join('')+
+    '</tbody></table></div>':'');
+}
+
+// ── Commands ──────────────────────────────────────────
+async function doStart(model){
+  const gpu=document.getElementById('gpu-val').textContent;
+  const prefix=document.getElementById('chk-prefix').checked?'true':'false';
+  const disk=document.getElementById('chk-disk').checked?'true':'false';
+  const id=new URLSearchParams(location.search).get('id');
+  showResult('Starting '+model+'...');
+  const r=await fetch('/api/v1/command',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'start_vllm',target:id,params:{model,gpu_util:gpu,enable_prefix_caching:prefix,enable_disk_cache:disk},timeout:600})});
+  const j=await r.json();
+  showResult(j.ok?'✅ Started '+model:'❌ '+j.err,j.ok?'success':'error');
+  startLogPoll(id);
+}
+async function doStop(){
+  const id=new URLSearchParams(location.search).get('id');
+  showResult('Stopping...');
+  const r=await fetch('/api/v1/command',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'stop_vllm',target:id,params:{},timeout:60})});
+  const j=await r.json();
+  showResult(j.ok?'✅ Stopped':'❌ '+j.err,j.ok?'success':'error');
+}
+async function doDistribute(model,url){
+  if(!url){showResult('No download URL for '+model,'error');return}
+  const id=new URLSearchParams(location.search).get('id');
+  showResult('Distributing '+model+'...');
+  const r=await fetch('/api/v1/command',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'download_model',target:id,params:{model,download_url:url},timeout:600})});
+  const j=await r.json();
+  showResult(j.ok?'✅ Distributing '+model:'❌ '+j.err,j.ok?'success':'error');
+}
+function showResult(msg,type){document.getElementById('cmd-result').innerHTML='<div class="'+(type=='error'?'error-msg':type=='success'?'success-msg':'')+'" style="margin-top:12px">'+msg+'</div>'}
+
+// ── Log polling ───────────────────────────────────────
+let logTimer=null, logPaused=false;
+
+function toggleLog(){
+  logPaused=!logPaused;
+  if(!logPaused)startLogPoll(new URLSearchParams(location.search).get('id'));
+}
+
+function startLogPoll(id){
+  if(logTimer)clearInterval(logTimer);
+  if(logPaused)return;
+  let offset=0,emptyCount=0;
+  const box=document.getElementById('log-box');
+  if(!box)return;
+  async function poll(){
+    if(logPaused||!box)return;
+    try{
+      const r=await fetch('/api/v1/nodes/'+encodeURIComponent(id)+'/logs?offset='+offset+'&lines=50');
+      if(r.status===404){box.textContent='Log not available yet. Start vLLM first.';return}
+      if(r.status!==200)return;
+      const log=await r.json();
+      if(log.lines){emptyCount=0;box.textContent+=log.lines;box.scrollTop=box.scrollHeight;offset=log.offset||offset}
+      else{emptyCount++}
+      if(log.eof&&emptyCount>6){clearInterval(logTimer);logTimer=null}
+    }catch(e){}
+  }
+  poll();
+  logTimer=setInterval(poll,3000);
+}
+
 function fmtBytes(b){if(!b)return'0';const u=['B','KB','MB','GB','TB'];let i=0;let v=b;while(v>=1024&&i<u.length-1){v/=1024;i++}return v.toFixed(1)+u[i]}
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
 load();

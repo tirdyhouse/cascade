@@ -211,7 +211,7 @@ func (r *Registry) Summary() *cluster.ClusterSummary {
 			ns.CacheBlocks = state.Status.CacheBlocks
 			ns.HitRate = state.Status.CacheHitRate
 			ns.Disks = state.Status.Disks
-
+			ns.AvailableModels = state.Status.AvailableModels
 			totalBlocks += state.Status.CacheBlocks
 			totalBytes += state.Status.CacheBytes
 			if state.Status.CacheHitRate > 0 {

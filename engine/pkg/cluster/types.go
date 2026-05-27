@@ -95,6 +95,9 @@ type MachineStatus struct {
 	CacheBlocks  int64   `json:"cache_blocks"`
 	CacheBytes   int64   `json:"cache_bytes"`
 	CacheHitRate float64 `json:"cache_hit_rate"`
+
+	// Models available locally (from scanning <work-dir>/models/)
+	AvailableModels []string `json:"available_models,omitempty"`
 }
 
 func NewMachineStatus(nodeID string, seq int64) *MachineStatus {
@@ -207,6 +210,7 @@ type NodeSummary struct {
 	LoadingPct  int32       `json:"loading_pct"`
 	LastSeen    int64       `json:"last_seen"`
 	Disks       []DiskUsage `json:"disks"`
+	AvailableModels []string `json:"available_models,omitempty"`
 }
 
 // ClusterSummary is the aggregated cluster view.

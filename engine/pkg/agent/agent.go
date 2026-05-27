@@ -165,6 +165,10 @@ func (a *Agent) heartbeat(cmdCh chan<- *cluster.Command) error {
 		status.CacheBytes = cacheStats.DiskUsedBytes
 	}
 	status.VLLMStatus = a.process.Status()
+	// Available models
+	status.AvailableModels = a.collector.GetAvailableModels()
+
+
 	// vLLM health check: transition loading→running / running→error
 	switch status.VLLMStatus {
 	case "running":

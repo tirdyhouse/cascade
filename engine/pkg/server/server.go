@@ -7,6 +7,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"predict/engine/pkg/cluster"
@@ -280,9 +283,66 @@ func (s *Server) apiModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiNodeLogs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	_ = id
-	// TODO: fetch logs from C端 via rpcx
-	jsonResp(w, cluster.LogChunk{NodeID: id, Lines: "log streaming not yet available", EOF: true})
+	offsetStr := r.URL.Query().Get("offset")
+	linesStr := r.URL.Query().Get("lines")
+	offset, _ := strconv.Atoi(offsetStr)
+	maxLines, _ := strconv.Atoi(linesStr)
+	if maxLines <= 0 {
+		maxLines = 50
+	}
+
+	// Try to find the latest vLLM log file for this node
+	logDir := fmt.Sprintf("/root/cascade/agent/logs")
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		jsonResp(w, cluster.LogChunk{NodeID: id, Lines: "", EOF: true})
+		return
+	}
+
+	// Find the most recent vllm-*.log file
+	var latest string
+	var latestMod time.Time
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "vllm-") && strings.HasSuffix(e.Name(), ".log") {
+			fi, err := e.Info()
+			if err == nil && fi.ModTime().After(latestMod) {
+				latest = filepath.Join(logDir, e.Name())
+				latestMod = fi.ModTime()
+			}
+		}
+	}
+	if latest == "" {
+		jsonResp(w, cluster.LogChunk{NodeID: id, Lines: "", EOF: true})
+		return
+	}
+
+	// Read from offset
+	data, err := os.ReadFile(latest)
+	if err != nil {
+		http.Error(w, "read log: "+err.Error(), 500)
+		return
+	}
+	total := len(data)
+	if offset > total {
+		offset = total
+	}
+	// Return last maxLines lines from offset
+	chunk := data[offset:]
+	lines := strings.Split(string(chunk), "\n")
+	start := 0
+	if len(lines) > maxLines {
+		start = len(lines) - maxLines
+	}
+	out := strings.Join(lines[start:], "\n")
+	newOffset := offset
+	for i := 0; i < start; i++ {
+		newOffset += len(lines[i]) + 1
+	}
+	jsonResp(w, cluster.LogChunk{
+		NodeID:   id,
+		Lines:    out,
+		Offset:   int64(newOffset),
+	})
 }
 
 // ============================================================================

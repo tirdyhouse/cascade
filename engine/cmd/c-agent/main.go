@@ -19,6 +19,7 @@ var (
 	rpcxPort   = flag.Int("rpcx-port", 9001, "Local rpcx port for bidirectional")
 	cacheMode  = flag.String("cache-mode", "local_nvme", "Cache mode: local_nvme | shared_pool")
 	cachePath  = flag.String("cache-path", "/tmp/disk-cache", "Local disk-cache HTTP API base URL")
+	workDir    = flag.String("work-dir", "/root/cascade/agent", "Working directory for models, logs, and cache")
 
 	// GPU
 	gpuType  = flag.String("gpu-type", "", "GPU type (e.g. H100)")
@@ -35,8 +36,9 @@ func main() {
 	cfg := agent.DefaultConfig()
 	cfg.ServerAddr = *serverAddr
 	cfg.RPCPort = *rpcxPort
-	cfg.CacheMode = cluster.CacheMode(*cacheMode)
 	cfg.CachePath = *cachePath
+	cfg.WorkDir = *workDir
+
 
 	// Node ID
 	if *nodeID != "" {

@@ -22,7 +22,7 @@ tr:hover{background:#162033}
 .tag{display:inline-block;padding:2px 10px;border-radius:12px;font-size:0.75rem;font-weight:600}
 .tag.online,.tag.running,.tag.success{background:#0d4420;color:#7ee8a0}
 .tag.offline,.tag.stopped,.tag.error,.tag.failed{background:#441d0d;color:#f7a072}
-.tag.loading,.tag.timeout{background:#443d0d;color:#f0d76e}
+.tag.loading{background:#443d0d;color:#f0d76e}
 .empty{text-align:center;padding:40px;color:#8b949e}
 hgroup{margin-bottom:20px}
 hgroup h2{color:#f0f6fc}
@@ -30,12 +30,22 @@ hgroup p{color:#8b949e;font-size:0.9rem}
 input,select,textarea{background:#0a0e17;border:1px solid #1e2a3a;color:#e0e0e0;padding:8px 12px;border-radius:6px;width:100%;font-size:0.9rem;box-sizing:border-box}
 label{display:block;margin-bottom:4px;color:#8b949e;font-size:0.85rem}
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
 .btn{display:inline-block;background:#1f6feb;color:#fff;border:none;padding:8px 24px;border-radius:6px;cursor:pointer;font-size:0.9rem}
 .btn:hover{background:#3b82f6}
+.btn-sm{padding:6px 16px;font-size:0.85rem;background:#2d5a9e}
+.btn-sm:hover{background:#3b82f6}
+.btn-danger{background:#b91c1c}.btn-danger:hover{background:#dc2626}
+.toggle-group{display:flex;gap:24px;margin-top:12px;flex-wrap:wrap}
+.toggle-group label{display:flex;align-items:center;gap:8px;cursor:pointer;margin:0}
+.toggle-group input[type=checkbox]{width:18px;height:18px;cursor:pointer}
 .success-msg{color:#7ee8a0;margin:8px 0}
 .error-msg{color:#f7a072;margin:8px 0}
 .mono{font-family:'SF Mono',Consolas,monospace;font-size:0.8rem}
+.muted{color:#8b949e;font-size:0.8rem}
 a{color:#58a6ff;text-decoration:none}
+.flex{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+input[type=range]{padding:0;height:6px;accent-color:#1f6feb}
 </style>
 </head>
 <body>
@@ -49,54 +59,64 @@ a{color:#58a6ff;text-decoration:none}
       <a href="/commands.html" class="active">Commands</a>
     </div>
   </nav>
-  <hgroup><h2>⚙️ Command Dispatch</h2><p>Send operations to C端 agents</p></hgroup>
+  <hgroup><h2>🚀 Start vLLM</h2><p>Select model, configure options, and launch on target node</p></hgroup>
 
   <div class="panel">
-    <div class="panel-header">Send Command</div>
+    <div class="panel-header">Launch Configuration</div>
     <div class="panel-body">
+      <!-- Row 1: Model + Target -->
       <div class="grid-2">
-        <label>Action
-          <select id="cmd-action">
-            <option value="start_vllm">start_vllm</option>
-            <option value="stop_vllm">stop_vllm</option>
-            <option value="restart_vllm">restart_vllm</option>
-            <option value="load_model">load_model</option>
-            <option value="unload_model">unload_model</option>
-            <option value="exec_shell">exec_shell</option>
-          </select>
+        <label>Model
+          <select id="cmd-model"><option value="">Loading models...</option></select>
         </label>
-        <label>Target
+        <label>Target Node
           <select id="cmd-target"><option value="*">* Broadcast (all)</option></select>
         </label>
       </div>
-      <label>Params (JSON)
-        <textarea id="cmd-params" rows="3" style="margin-top:4px">{"model":"Qwen-72B","gpu_util":"0.9"}</textarea>
-      </label>
-      <div style="display:flex;align-items:center;gap:16px;margin-top:12px">
-        <label style="display:flex;align-items:center;gap:8px;margin:0">
-          Timeout (s): <input type="number" id="cmd-timeout" value="300" style="width:100px">
-        </label>
-        <button class="btn" onclick="dispatch()">🚀 Send</button>
+
+      <!-- Row 2: GPU util slider -->
+      <label style="margin-top:16px">GPU Memory Utilization: <span id="gpu-util-val">0.90</span></label>
+      <input type="range" id="cmd-gpu-util" min="0.5" max="0.99" step="0.01" value="0.90" oninput="document.getElementById('gpu-util-val').textContent=this.value">
+
+      <!-- Row 3: Toggles -->
+      <div class="toggle-group">
+        <label><input type="checkbox" id="cmd-prefix" checked> 🧠 Enable Prefix Caching</label>
+        <label><input type="checkbox" id="cmd-disk-cache" checked> 💾 Enable Disk Cache</label>
       </div>
-      <div id="dispatch-result"></div>
+
+      <!-- Row 4: Buttons -->
+      <div class="flex" style="margin-top:20px">
+        <button class="btn" onclick="doStart()">▶ Start</button>
+        <button class="btn btn-sm" onclick="doDistribute()">📦 Distribute Model</button>
+        <button class="btn btn-sm btn-danger" onclick="doStop()">⏹ Stop</button>
+      </div>
+      <div id="cmd-result"></div>
     </div>
   </div>
 
   <div class="panel">
     <div class="panel-header">📜 Command History</div>
     <table>
-      <thead><tr><th>Cmd ID</th><th>Node</th><th>Status</th><th>Output</th><th>Error</th></tr></thead>
+      <thead><tr><th>Cmd ID</th><th>Node</th><th>Action</th><th>Status</th><th>Output</th></tr></thead>
       <tbody id="history-tbody"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
     </table>
   </div>
 </div>
 
 <script>
+async function loadModels(){
+  try{
+    const r=await fetch('/api/v1/models');const models=await r.json();
+    const sel=document.getElementById('cmd-model');
+    if(!models||!models.length){sel.innerHTML='<option value="">No models available</option>';return}
+    sel.innerHTML=models.map(m=>'<option value="'+esc(m.name)+'" data-url="'+esc(m.download_url||'')+'">'+esc(m.name)+'</option>').join('');
+  }catch(e){}
+}
 async function loadNodes(){
   try{
     const r=await fetch('/api/v1/nodes');const nodes=await r.json();
     const sel=document.getElementById('cmd-target');
-    sel.innerHTML='<option value="*">* Broadcast (all)</option>'+(nodes||[]).map(n=>'<option value="'+esc(n.node_id)+'">'+esc(n.node_id)+'</option>').join('');
+    sel.innerHTML='<option value="*">* Broadcast (all)</option>'+(nodes||[]).map(n=>'<option value="'+esc(n.node_id)+'">'+esc(n.node_id)+' ('+esc(n.ip)+')</option>').join('');
   }catch(e){}
 }
 async function loadHistory(){
@@ -104,25 +124,48 @@ async function loadHistory(){
     const r=await fetch('/api/v1/commands');const cmds=await r.json();
     const tb=document.getElementById('history-tbody');
     if(!cmds||!cmds.length){tb.innerHTML='<tr><td colspan="5" class="empty">No commands yet</td></tr>';return}
-    tb.innerHTML=cmds.slice(-50).reverse().map(c=>'<tr><td class="mono">'+esc(c.cmd_id)+'</td><td>'+esc(c.node_id)+'</td><td><span class="tag '+c.status+'">'+c.status+'</span></td><td class="mono">'+esc((c.output||'').slice(0,60))+'</td><td class="mono error-msg">'+esc((c.error||'').slice(0,60))+'</td></tr>').join('');
+    tb.innerHTML=cmds.slice(-50).reverse().map(c=>'<tr><td class="mono">'+esc(c.cmd_id)+'</td><td>'+esc(c.node_id)+'</td><td>'+esc(c.cmd_id.split('-')[1]||'')+'</td><td><span class="tag '+c.status+'">'+c.status+'</span></td><td class="mono">'+esc((c.output||'').slice(0,60))+'</td></tr>').join('');
   }catch(e){}
 }
-async function dispatch(){
-  const btn=document.querySelector('.btn');btn.disabled=true;
-  try{
-    let params={};try{params=JSON.parse(document.getElementById('cmd-params').value)}catch(e){}
-    const r=await fetch('/api/v1/command',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({action:document.getElementById('cmd-action').value,target:document.getElementById('cmd-target').value,params:params,timeout:parseInt(document.getElementById('cmd-timeout').value)||300})
-    });
-    const result=await r.json();
-    document.getElementById('dispatch-result').innerHTML=result.ok?'<div class="success-msg">✅ Command dispatched</div>':'<div class="error-msg">❌ '+esc(result.err)+'</div>';
-    loadHistory();
-  }catch(e){document.getElementById('dispatch-result').innerHTML='<div class="error-msg">Error: '+esc(e.message)+'</div>'}
+function getParams(){
+  return {
+    model: document.getElementById('cmd-model').value,
+    gpu_util: document.getElementById('cmd-gpu-util').value,
+    enable_prefix_caching: document.getElementById('cmd-prefix').checked ? 'true' : 'false',
+    enable_disk_cache: document.getElementById('cmd-disk-cache').checked ? 'true' : 'false'
+  };
+}
+async function doStart(){
+  const btn=event.target;btn.disabled=true;
+  await sendCmd('start_vllm',getParams());
   btn.disabled=false;
 }
+async function doStop(){
+  await sendCmd('stop_vllm',{});
+  loadHistory();
+}
+async function doDistribute(){
+  const model=document.getElementById('cmd-model').value;
+  const sel=document.getElementById('cmd-model');
+  const url=sel.options[sel.selectedIndex]?.dataset?.url||'';
+  if(!url){showMsg('No download URL for model '+model,'error');return}
+  await sendCmd('download_model',{model:model,download_url:url});
+}
+async function sendCmd(action,params){
+  showMsg('Dispatching...','');
+  try{
+    const r=await fetch('/api/v1/command',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:action,target:document.getElementById('cmd-target').value,params:params,timeout:600})
+    });
+    const result=await r.json();
+    showMsg(result.ok?'✅ Command '+action+' dispatched':'❌ '+result.err,result.ok?'success':'error');
+    loadHistory();
+  }catch(e){showMsg('❌ '+e.message,'error')}
+}
+function showMsg(msg,type){document.getElementById('cmd-result').innerHTML='<div class="'+(type=='error'?'error-msg':type=='success'?'success-msg':'')+'" style="margin-top:12px">'+msg+'</div>'}
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
-loadNodes();loadHistory();
+loadModels();loadNodes();loadHistory();
 </script>
 </body>
 </html>

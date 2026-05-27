@@ -169,12 +169,15 @@ type CacheLocation struct {
 type NodeSummary struct {
 	NodeID      string      `json:"node_id"`
 	IP          string      `json:"ip"`
-	Status      NodeStatus  `json:"status"`
+	Status      NodeStatus  `json:"status"`       // node connection status: online/offline
+	VLLMStatus  string      `json:"vllm_status"`  // vLLM process: running/stopped/loading/error
 	GPUUtil     float64     `json:"gpu_util"`
 	GPUMemUsed  int64       `json:"gpu_mem_used"`
 	ModelName   string      `json:"model_name"`
 	CacheBlocks int64       `json:"cache_blocks"`
 	HitRate     float64     `json:"hit_rate"`
+	QueueLen    int32       `json:"queue_len"`
+	LoadingPct  int32       `json:"loading_pct"`
 	LastSeen    int64       `json:"last_seen"`
 	Disks       []DiskUsage `json:"disks"`
 }

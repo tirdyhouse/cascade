@@ -103,7 +103,8 @@ function render(id,d,models){
   // Simple test - just show node ID and GPU mem
   const modelRows=models.map(m=>{
     const size=' ('+m.size_gb.toFixed(1)+'GB)';
-    return '<tr><td>'+esc(m.name)+size+'</td><td><span class="tag missing">⬇ need download</span></td><td><button class="btn btn-sm btn-outline" onclick="alert(\'distribute\')">📦 Distribute</button></td></tr>';
+    const url=m.download_url||'';
+    return '<tr><td>'+esc(m.name)+size+'</td><td><span class="tag missing">⬇ need download</span></td><td><button class="btn btn-sm btn-outline" onclick="doDistribute(\''+esc(m.name)+'\',\''+esc(url)+'\')">📦 Distribute</button></td></tr>';
   }).join('');
   const online=st.vllm_status;
   const currentModel=st.model_name||'';

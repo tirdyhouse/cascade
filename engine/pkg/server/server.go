@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"predict/engine/pkg/cluster"
@@ -124,19 +125,44 @@ func (s *Server) rpcxAddr() string {
 // ── HTTP ────────────────────────────────────────────────────────────────
 
 func (s *Server) startHTTP(ctx context.Context) error {
-	mux := http.NewServeMux()
+	// REST API mux (uses Go 1.22+ enhanced patterns for route params)
+	apiMux := http.NewServeMux()
+	s.registerAPI(apiMux)
 
-	// REST API
-	s.registerAPI(mux)
+	// Static file server
+	cwd, _ := os.Getwd()
+	staticDir := cwd + "/engine/pkg/server/web/static"
+	log.Printf("[debug] staticDir=%s", staticDir)
+	if f, err := os.Stat(staticDir + "/index.html"); err == nil {
+		log.Printf("[debug] index.html exists, size=%d", f.Size())
+	} else {
+		log.Printf("[debug] index.html not found: %v", err)
+	}
 
-	// Web UI static files
-	fs := http.FileServer(http.Dir("pkg/server/web/static"))
-	mux.Handle("/", fs)
+	// Single entry point: API routes → apiMux, everything else → static files
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if r.Method == "POST" && path == "/api/v1/command" {
+			apiMux.ServeHTTP(w, r)
+			return
+		}
+		if r.Method == "GET" && len(path) >= 8 && path[:8] == "/api/v1/" {
+			apiMux.ServeHTTP(w, r)
+			return
+		}
+		// Everything else → serve static file
+		fullPath := staticDir + "/index.html"
+		if path != "/" && path != "" {
+			fullPath = staticDir + path
+		}
+		log.Printf("[debug] serving: path=%s fullPath=%s", path, fullPath)
+		http.ServeFile(w, r, fullPath)
+	})
 
 	addr := fmt.Sprintf(":%d", s.config.HTTPPort)
 	s.httpServer = &http.Server{
 		Addr:    addr,
-		Handler: mux,
+		Handler: handler,
 	}
 
 	log.Printf("[server] HTTP + Web UI on %s", addr)

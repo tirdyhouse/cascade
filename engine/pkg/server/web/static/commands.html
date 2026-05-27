@@ -1,126 +1,128 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>KV Cache Cluster - Commands</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3"></script>
-  <link rel="stylesheet" href="style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KV Cache Cluster - Commands</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0e17;color:#e0e0e0;padding:20px}
+.container{max-width:1400px;margin:0 auto}
+nav{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid #1e2a3a;margin-bottom:24px}
+nav .logo{font-size:1.2rem;font-weight:700;color:#58a6ff}
+nav a{color:#8b949e;text-decoration:none;padding:6px 14px;border-radius:6px;font-size:0.9rem}
+nav a.active,nav a:hover{color:#fff;background:#1e2a3a}
+.panel{background:#111b2e;border:1px solid #1e2a3a;border-radius:10px;overflow:hidden;margin-bottom:24px}
+.panel-header{padding:14px 20px;border-bottom:1px solid #1e2a3a;font-weight:600;color:#f0f6fc}
+.panel-body{padding:20px}
+table{width:100%;border-collapse:collapse;font-size:0.9rem}
+th,td{padding:10px 14px;text-align:left;border-bottom:1px solid #1a2538}
+th{color:#8b949e;font-weight:600;font-size:0.8rem;text-transform:uppercase}
+tr:hover{background:#162033}
+.tag{display:inline-block;padding:2px 10px;border-radius:12px;font-size:0.75rem;font-weight:600}
+.tag.online,.tag.running,.tag.success{background:#0d4420;color:#7ee8a0}
+.tag.offline,.tag.stopped,.tag.error,.tag.failed{background:#441d0d;color:#f7a072}
+.tag.loading,.tag.timeout{background:#443d0d;color:#f0d76e}
+.empty{text-align:center;padding:40px;color:#8b949e}
+hgroup{margin-bottom:20px}
+hgroup h2{color:#f0f6fc}
+hgroup p{color:#8b949e;font-size:0.9rem}
+input,select,textarea{background:#0a0e17;border:1px solid #1e2a3a;color:#e0e0e0;padding:8px 12px;border-radius:6px;width:100%;font-size:0.9rem;box-sizing:border-box}
+label{display:block;margin-bottom:4px;color:#8b949e;font-size:0.85rem}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.btn{display:inline-block;background:#1f6feb;color:#fff;border:none;padding:8px 24px;border-radius:6px;cursor:pointer;font-size:0.9rem}
+.btn:hover{background:#3b82f6}
+.success-msg{color:#7ee8a0;margin:8px 0}
+.error-msg{color:#f7a072;margin:8px 0}
+.mono{font-family:'SF Mono',Consolas,monospace;font-size:0.8rem}
+a{color:#58a6ff;text-decoration:none}
+</style>
 </head>
-<body x-data="commandsPage()" x-init="init()">
-  <main class="container">
-    <nav>
-      <ul><li><strong>⚡ KV Cache Cluster Manager</strong></li></ul>
-      <ul>
-        <li><a href="/">Dashboard</a></li>
-        <li><a href="/nodes.html">Nodes</a></li>
-        <li><a href="/cache.html">Cache</a></li>
-        <li><a href="/commands.html" class="active">Commands</a></li>
-      </ul>
-    </nav>
+<body>
+<div class="container">
+  <nav>
+    <div class="logo">⚡ KV Cache Cluster Manager</div>
+    <div>
+      <a href="/">Dashboard</a>
+      <a href="/nodes.html">Nodes</a>
+      <a href="/cache.html">Cache</a>
+      <a href="/commands.html" class="active">Commands</a>
+    </div>
+  </nav>
+  <hgroup><h2>⚙️ Command Dispatch</h2><p>Send operations to C端 agents</p></hgroup>
 
-    <hgroup>
-      <h2>⚙️ Command Dispatch</h2>
-      <p>Send operations to C端 agents across the cluster</p>
-    </hgroup>
-
-    <!-- Dispatch Form -->
-    <article>
-      <header><strong>Send Command</strong></header>
-      <form @submit.prevent="dispatch()">
-        <div class="grid">
-          <label>Action
-            <select x-model="form.action">
-              <option value="start_vllm">start_vllm</option>
-              <option value="stop_vllm">stop_vllm</option>
-              <option value="restart_vllm">restart_vllm</option>
-              <option value="load_model">load_model</option>
-              <option value="unload_model">unload_model</option>
-              <option value="exec_shell">exec_shell</option>
-            </select>
-          </label>
-          <label>Target Node
-            <select x-model="form.target">
-              <option value="*">* Broadcast (all nodes)</option>
-              <template x-for="n in nodes">
-                <option :value="n.node_id" x-text="n.node_id + ' (' + n.ip + ')'"></option>
-              </template>
-            </select>
-          </label>
-        </div>
-        <label>Params (JSON key-value)
-          <textarea x-model="form.params" rows="3" placeholder='{"model":"Qwen-72B","gpu_util":"0.9"}'></textarea>
+  <div class="panel">
+    <div class="panel-header">Send Command</div>
+    <div class="panel-body">
+      <div class="grid-2">
+        <label>Action
+          <select id="cmd-action">
+            <option value="start_vllm">start_vllm</option>
+            <option value="stop_vllm">stop_vllm</option>
+            <option value="restart_vllm">restart_vllm</option>
+            <option value="load_model">load_model</option>
+            <option value="unload_model">unload_model</option>
+            <option value="exec_shell">exec_shell</option>
+          </select>
         </label>
-        <div class="grid">
-          <label>Timeout (seconds)
-            <input type="number" x-model="form.timeout" value="300">
-          </label>
-          <div><br><button type="submit">🚀 Send</button></div>
-        </div>
-        <template x-if="dispatchResult">
-          <p :class="dispatchResult.ok ? 'success' : 'error'" x-text="dispatchResult.ok ? '✅ Command dispatched' : '❌ ' + dispatchResult.err"></p>
-        </template>
-      </form>
-    </article>
-
-    <!-- Command History -->
-    <article>
-      <header><strong>📜 Command History</strong></header>
-      <div class="overflow-auto">
-        <table>
-          <thead><tr><th>Cmd ID</th><th>Node</th><th>Status</th><th>Output</th><th>Error</th></tr></thead>
-          <tbody>
-            <template x-for="cmd in history" :key="cmd.cmd_id">
-              <tr>
-                <td x-text="cmd.cmd_id"></td>
-                <td x-text="cmd.node_id"></td>
-                <td><span :class="'tag ' + cmd.status" x-text="cmd.status"></span></td>
-                <td x-text="cmd.output || '—'" class="mono"></td>
-                <td x-text="cmd.error || '—'" class="mono error-text"></td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
+        <label>Target
+          <select id="cmd-target"><option value="*">* Broadcast (all)</option></select>
+        </label>
       </div>
-    </article>
-  </main>
+      <label>Params (JSON)
+        <textarea id="cmd-params" rows="3" style="margin-top:4px">{"model":"Qwen-72B","gpu_util":"0.9"}</textarea>
+      </label>
+      <div style="display:flex;align-items:center;gap:16px;margin-top:12px">
+        <label style="display:flex;align-items:center;gap:8px;margin:0">
+          Timeout (s): <input type="number" id="cmd-timeout" value="300" style="width:100px">
+        </label>
+        <button class="btn" onclick="dispatch()">🚀 Send</button>
+      </div>
+      <div id="dispatch-result"></div>
+    </div>
+  </div>
 
-  <script>
-    function commandsPage() {
-      return {
-        form: { action: 'start_vllm', target: '*', params: '{}', timeout: 300 },
-        nodes: [],
-        history: [],
-        dispatchResult: null,
-        async init() {
-          const [n, h] = await Promise.all([
-            fetch('/api/v1/nodes').then(r => r.json()),
-            fetch('/api/v1/commands').then(r => r.json())
-          ]);
-          this.nodes = n;
-          this.history = h;
-        },
-        async dispatch() {
-          let params;
-          try { params = JSON.parse(this.form.params); } catch { params = {}; }
-          const r = await fetch('/api/v1/command', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-              action: this.form.action,
-              target: this.form.target,
-              params: params,
-              timeout: this.form.timeout
-            })
-          });
-          this.dispatchResult = await r.json();
-          // Refresh history
-          const h = await fetch('/api/v1/commands').then(r => r.json());
-          this.history = h;
-        }
-      }
-    }
-  </script>
+  <div class="panel">
+    <div class="panel-header">📜 Command History</div>
+    <table>
+      <thead><tr><th>Cmd ID</th><th>Node</th><th>Status</th><th>Output</th><th>Error</th></tr></thead>
+      <tbody id="history-tbody"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+async function loadNodes(){
+  try{
+    const r=await fetch('/api/v1/nodes');const nodes=await r.json();
+    const sel=document.getElementById('cmd-target');
+    sel.innerHTML='<option value="*">* Broadcast (all)</option>'+(nodes||[]).map(n=>'<option value="'+esc(n.node_id)+'">'+esc(n.node_id)+'</option>').join('');
+  }catch(e){}
+}
+async function loadHistory(){
+  try{
+    const r=await fetch('/api/v1/commands');const cmds=await r.json();
+    const tb=document.getElementById('history-tbody');
+    if(!cmds||!cmds.length){tb.innerHTML='<tr><td colspan="5" class="empty">No commands yet</td></tr>';return}
+    tb.innerHTML=cmds.slice(-50).reverse().map(c=>'<tr><td class="mono">'+esc(c.cmd_id)+'</td><td>'+esc(c.node_id)+'</td><td><span class="tag '+c.status+'">'+c.status+'</span></td><td class="mono">'+esc((c.output||'').slice(0,60))+'</td><td class="mono error-msg">'+esc((c.error||'').slice(0,60))+'</td></tr>').join('');
+  }catch(e){}
+}
+async function dispatch(){
+  const btn=document.querySelector('.btn');btn.disabled=true;
+  try{
+    let params={};try{params=JSON.parse(document.getElementById('cmd-params').value)}catch(e){}
+    const r=await fetch('/api/v1/command',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:document.getElementById('cmd-action').value,target:document.getElementById('cmd-target').value,params:params,timeout:parseInt(document.getElementById('cmd-timeout').value)||300})
+    });
+    const result=await r.json();
+    document.getElementById('dispatch-result').innerHTML=result.ok?'<div class="success-msg">✅ Command dispatched</div>':'<div class="error-msg">❌ '+esc(result.err)+'</div>';
+    loadHistory();
+  }catch(e){document.getElementById('dispatch-result').innerHTML='<div class="error-msg">Error: '+esc(e.message)+'</div>'}
+  btn.disabled=false;
+}
+function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+loadNodes();loadHistory();
+</script>
 </body>
 </html>

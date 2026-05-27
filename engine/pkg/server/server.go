@@ -79,23 +79,12 @@ func New(cfg *Config) *Server {
 			log.Printf("[server] warn: load models from %s: %v", cfg.ModelsFile, err)
 		}
 	}
-	// Register default models for testing
-	if len(srv.models.List()) == 0 {
-		srv.models.Register(cluster.ModelInfo{
-			Name:        "Qwen/Qwen2.5-72B-Instruct",
-			DownloadURL: "",
-			DefaultGPUMem:   "0.9",
-			SupportsPrefix:  true,
-			SupportsDiskCache: true,
-		})
-		srv.models.Register(cluster.ModelInfo{
-			Name:        "Qwen/Qwen2.5-7B-Instruct",
-			DownloadURL: "",
-			DefaultGPUMem:   "0.9",
-			SupportsPrefix:  true,
-			SupportsDiskCache: true,
-		})
-	}
+	// Models are loaded from --models-file. If no file specified, the model list
+	// is empty and must be configured before distributing/starting vLLM.
+	// Example models.json:
+	// [
+	//   {"name":"Qwen2.5-7B-Instruct","download_url":"https://huggingface.co/Qwen/Qwen2.5-7B-Instruct","default_gpu_mem":"0.9","supports_prefix":true,"supports_disk_cache":true}
+	// ]
 
 	return srv
 }

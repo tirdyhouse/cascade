@@ -33,18 +33,21 @@ type Server struct {
 	rpcxServer *server.Server
 	xaddrs     []string // known C端 addresses for push (optional)
 
-	// REST
+	// HTTP
 	httpServer *http.Server
+
+	// Models
+	models *ModelRegistry
 
 	// Config
 	config *Config
 }
-
 // Config holds S端 configuration.
 type Config struct {
 	RPCPort     int    // rpcx server port (C端 connect here)
 	HTTPPort    int    // REST API + Web UI port
 	MetadataDir string // metadata directory for existing disk-cache engine
+	ModelsFile  string // path to models.json (optional)
 }
 
 // DefaultConfig returns sensible defaults.
@@ -69,6 +72,30 @@ func New(cfg *Config) *Server {
 
 	// Router with nil meta backend for now — will be connected to disk-cache engine later
 	srv.router = NewRouter(reg, dt, nil)
+	// Initialize model registry
+	srv.models = NewModelRegistry()
+	if cfg.ModelsFile != "" {
+		if err := srv.models.LoadFromFile(cfg.ModelsFile); err != nil {
+			log.Printf("[server] warn: load models from %s: %v", cfg.ModelsFile, err)
+		}
+	}
+	// Register default models for testing
+	if len(srv.models.List()) == 0 {
+		srv.models.Register(cluster.ModelInfo{
+			Name:        "Qwen/Qwen2.5-72B-Instruct",
+			DownloadURL: "",
+			DefaultGPUMem:   "0.9",
+			SupportsPrefix:  true,
+			SupportsDiskCache: true,
+		})
+		srv.models.Register(cluster.ModelInfo{
+			Name:        "Qwen/Qwen2.5-7B-Instruct",
+			DownloadURL: "",
+			DefaultGPUMem:   "0.9",
+			SupportsPrefix:  true,
+			SupportsDiskCache: true,
+		})
+	}
 
 	return srv
 }
@@ -187,8 +214,10 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cluster/status", s.apiClusterStatus)
 	mux.HandleFunc("GET /api/v1/nodes", s.apiListNodes)
 	mux.HandleFunc("GET /api/v1/nodes/{id}", s.apiNodeDetail)
+	mux.HandleFunc("GET /api/v1/nodes/{id}/logs", s.apiNodeLogs)
 	mux.HandleFunc("POST /api/v1/command", s.apiDispatchCommand)
 	mux.HandleFunc("GET /api/v1/commands", s.apiCommandHistory)
+	mux.HandleFunc("GET /api/v1/models", s.apiModels)
 }
 
 func jsonResp(w http.ResponseWriter, data interface{}) {
@@ -228,6 +257,17 @@ func (s *Server) apiDispatchCommand(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiCommandHistory(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, s.registry.CommandHistory())
+}
+
+func (s *Server) apiModels(w http.ResponseWriter, r *http.Request) {
+	jsonResp(w, s.models.List())
+}
+
+func (s *Server) apiNodeLogs(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	_ = id
+	// TODO: fetch logs from C端 via rpcx
+	jsonResp(w, cluster.LogChunk{NodeID: id, Lines: "log streaming not yet available", EOF: true})
 }
 
 // ============================================================================

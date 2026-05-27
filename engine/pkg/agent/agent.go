@@ -39,6 +39,7 @@ type Config struct {
 	RPCPort     int    // local rpcx port for bidirectional (optional)
 	CacheMode   cluster.CacheMode
 	CachePath   string // path to local disk-cache API
+	WorkDir     string // working directory for models, logs, cache
 
 	// Hardware
 	GPUType  string
@@ -219,6 +220,8 @@ func (a *Agent) executeCommand(cmd *cluster.Command) {
 		a.executeUnloadModel(cmd)
 	case cluster.CmdExecShell:
 		a.executeShell(cmd)
+	case cluster.CmdDownloadModel:
+		a.executeDownloadModel(cmd)
 	default:
 		a.reportResult(&cluster.CmdResult{
 			CmdID:  cmd.CmdID,
@@ -231,12 +234,20 @@ func (a *Agent) executeCommand(cmd *cluster.Command) {
 
 func (a *Agent) executeStartVLLM(cmd *cluster.Command) {
 	model := cmd.Params["model"]
-	gpuUtil := cmd.Params["gpu_memory_utilization"]
+	gpuUtil := cmd.Params["gpu_util"]
 	if gpuUtil == "" {
 		gpuUtil = "0.9"
 	}
+	enablePrefix := cmd.Params["enable_prefix_caching"]
+	enableDiskCache := cmd.Params["enable_disk_cache"]
 
-	output, err := a.process.Start(model, gpuUtil)
+	output, err := a.process.Start(&StartOptions{
+		Model:         model,
+		GPUUtil:       gpuUtil,
+		PrefixCaching: enablePrefix == "true",
+		DiskCache:     enableDiskCache == "true",
+		WorkDir:       a.config.WorkDir,
+	})
 	result := &cluster.CmdResult{
 		CmdID:  cmd.CmdID,
 		NodeID: a.config.NodeID,
@@ -251,6 +262,31 @@ func (a *Agent) executeStartVLLM(cmd *cluster.Command) {
 	}
 	a.reportResult(result)
 }
+
+func (a *Agent) executeDownloadModel(cmd *cluster.Command) {
+	model := cmd.Params["model"]
+	url := cmd.Params["download_url"]
+	if url == "" {
+		a.reportResult(&cluster.CmdResult{
+			CmdID: cmd.CmdID, NodeID: a.config.NodeID,
+			Status: "failed", Error: "download_url required",
+		})
+		return
+	}
+	log.Printf("[agent] downloading model %s from %s", model, url)
+	output, err := a.process.DownloadModel(model, url, a.config.WorkDir)
+	result := &cluster.CmdResult{CmdID: cmd.CmdID, NodeID: a.config.NodeID}
+	if err != nil {
+		result.Status = "failed"
+		result.Error = err.Error()
+		result.Output = output
+	} else {
+		result.Status = "success"
+		result.Output = output
+	}
+	a.reportResult(result)
+}
+
 
 func (a *Agent) executeStopVLLM(cmd *cluster.Command) {
 	output, err := a.process.Stop()

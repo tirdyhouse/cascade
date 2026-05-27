@@ -117,6 +117,7 @@ const (
 	CmdRestartVLLM   CommandAction = "restart_vllm"
 	CmdLoadModel     CommandAction = "load_model"
 	CmdUnloadModel   CommandAction = "unload_model"
+	CmdDownloadModel CommandAction = "download_model"
 	CmdUpdateConfig  CommandAction = "update_config"
 	CmdExecShell     CommandAction = "exec_shell"
 )
@@ -129,6 +130,32 @@ type Command struct {
 	Target    string            `json:"target"`     // target node_id, "" = broadcast
 	CreatedAt int64             `json:"created_at"`
 	Timeout   int               `json:"timeout"`    // seconds
+}
+
+// ============================================================================
+// Models
+// ============================================================================
+
+// ModelInfo describes a model available on S端 for distribution.
+type ModelInfo struct {
+	Name        string `json:"name"`
+	DownloadURL string `json:"download_url"`
+	DefaultGPUMem   string `json:"default_gpu_mem"`
+	SupportsPrefix  bool   `json:"supports_prefix"`
+	SupportsDiskCache bool `json:"supports_disk_cache"`
+}
+
+// ============================================================================
+// Logs
+// ============================================================================
+
+// LogChunk represents a portion of a log file.
+type LogChunk struct {
+	NodeID   string `json:"node_id"`
+	Filename string `json:"filename"`
+	Lines    string `json:"lines"`
+	Offset   int64  `json:"offset"`
+	EOF      bool   `json:"eof"`
 }
 
 // CmdResult is the execution result reported back to S端.

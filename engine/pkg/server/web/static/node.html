@@ -1009,7 +1009,7 @@ function render(id, d, models) {
             <span class="toggle-label">🧠 Prefix Caching</span>
           </label>
           <label class="toggle-item">
-            <input type="checkbox" class="toggle-checkbox" id="chk-disk" checked onchange="updateCmdPreview()">
+            <input type="checkbox" class="toggle-checkbox" id="chk-disk" onchange="updateCmdPreview()">
             <span class="toggle-switch"></span>
             <span class="toggle-label">💾 Disk Cache</span>
           </label>
@@ -1017,7 +1017,7 @@ function render(id, d, models) {
 
         <div class="form-group" style="margin-bottom: 16px;">
           <label class="form-label">vLLM Command</label>
-          <textarea id="cmd-preview" class="form-textarea" rows="2" onchange="cmdCustom=true">${esc(buildCmd(models[0]?.name || '', '0.90', true, true))}</textarea>
+          <textarea id="cmd-preview" class="form-textarea" rows="2" onchange="cmdCustom=true">${esc(buildCmd(models[0]?.name || '', '0.90', true, false))}</textarea>
         </div>
 
         <div style="display: flex; align-items: center; gap: 12px;">
@@ -1154,7 +1154,7 @@ function buildCmd(model, gpu, prefix, disk) {
   }
   let cmd = model + ' --gpu-memory-utilization ' + gpu;
   if (prefix) cmd += ' --enable-prefix-caching';
-  if (disk) cmd += ' --kv-connector disk-cache --disk-cache-path /root/cascade/agent/cache';
+  if (disk) cmd += ' --kv-connector DiskCacheConnector --disk-cache-path /root/cascade/agent/cache';
   // Add quantization flag if model has it
   const quant = getQuantization(model);
   if (quant) cmd += ' --quantization ' + quant;

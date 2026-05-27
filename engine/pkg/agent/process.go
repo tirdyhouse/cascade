@@ -10,6 +10,20 @@ import (
 	"sync"
 )
 
+// vllmBinary returns the path to the vllm binary.
+// It checks common locations and falls back to "vllm" (system PATH).
+func vllmBinary() string {
+	for _, p := range []string{
+		"/root/cascade/.venv-cascade/bin/vllm",
+		"vllm",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "vllm"
+}
+
 // StartOptions holds parameters for starting vLLM.
 type StartOptions struct {
 	Model         string
@@ -18,6 +32,8 @@ type StartOptions struct {
 	DiskCache     bool
 	WorkDir       string
 	Quantization  string // awq, gptq, etc.
+	VLLMPath      string // path to vllm binary, auto-detected if empty
+
 
 }
 
@@ -72,7 +88,7 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 		args = append(args, "--disk-cache-path", filepath.Join(opts.WorkDir, "cache"))
 	}
 
-	pm.cmd = exec.Command("vllm", args...)
+	pm.cmd = exec.Command(vllmBinary(), args...)
 	pm.cmd.Stdout = f
 	pm.cmd.Stderr = f
 
@@ -138,7 +154,7 @@ func (pm *ProcessManager) StartRaw(raw, workDir string) (string, error) {
 		return "", fmt.Errorf("create log file: %w", err)
 	}
 
-	pm.cmd = exec.Command("vllm", args...)
+	pm.cmd = exec.Command(vllmBinary(), args...)
 	pm.cmd.Stdout = f
 	pm.cmd.Stderr = f
 

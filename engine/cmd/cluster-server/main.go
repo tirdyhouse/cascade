@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	rpcxPort = flag.Int("rpcx-port", 9000, "rpcx server port for C端 communication")
-	httpPort = flag.Int("http-port", 8080, "HTTP port for REST API + Web UI")
+	rpcxPort    = flag.Int("rpcx-port", 9000, "rpcx server port for C端 communication")
+	httpPort    = flag.Int("http-port", 8080, "HTTP port for REST API + Web UI")
+	modelsFile  = flag.String("models-file", "", "Path to models.json")
 )
 
 func main() {
@@ -22,6 +23,8 @@ func main() {
 	cfg := server.DefaultConfig()
 	cfg.RPCPort = *rpcxPort
 	cfg.HTTPPort = *httpPort
+	cfg.ModelsFile = *modelsFile
+
 
 	srv := server.New(cfg)
 

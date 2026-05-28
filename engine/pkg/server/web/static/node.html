@@ -988,7 +988,7 @@ function render(id, d, models) {
           <div class="form-group">
             <label class="form-label">Model</label>
             <select id="launch-model" class="form-select" onchange="updateCmdPreview()">
-              ${models.map(m => `<option value="${esc(m.path || m.name)}" ${m.name === currentModel ? 'selected' : ''} data-quant="${esc(m.quantization || '')}">${esc(m.name)} (${m.size_gb?.toFixed(1) || '—'} GB)${m.quantization ? ' [' + m.quantization + ']' : ''}</option>`).join('')}
+              ${models.map(m => `<option value="${esc(m.name)}" ${m.name === currentModel ? 'selected' : ''} data-quant="${esc(m.quantization || '')}">${esc(m.name)} (${m.size_gb?.toFixed(1) || '—'} GB)${m.quantization ? ' [' + m.quantization + ']' : ''}</option>`).join('')}
             </select>
           </div>
         </div>

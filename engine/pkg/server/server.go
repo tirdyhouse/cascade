@@ -403,10 +403,10 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		diskBlocks = 0
 	}
 
-	// Extract cached_tokens from vLLM's API response (enabled via --enable-prompt-tokens-details)
+	// Only inject _cache for successful responses
 	hitTokens := int64(0)
 	var responseMap map[string]interface{}
-	if err := json.Unmarshal(respBody, &responseMap); err == nil {
+	if resp.StatusCode == http.StatusOK && json.Unmarshal(respBody, &responseMap) == nil {
 		if usage, ok := responseMap["usage"].(map[string]interface{}); ok {
 			if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
 				if ct, ok := details["cached_tokens"].(float64); ok {

@@ -430,12 +430,6 @@ class DiskCacheConnector(KVConnectorBase_V1):
         except Exception as e:
             logger.debug("Go Put failed: %s", e)
 
-    def _go_get(self, hash_val):
-        try:
-            resp = urllib.request.urlopen(f"{self.go_addr}/get?hash={hash_val:016x}", timeout=5)
-            return json.loads(resp.read())
-        except Exception:
-            return None
 
     def _go_get(self, hash_val):
         try:

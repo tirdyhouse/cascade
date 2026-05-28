@@ -1312,8 +1312,57 @@ function startLogPoll(id) {
 
 // Initial load
 load();
-// Auto-refresh node detail every 10s
-setInterval(load, 10000);
+// Lightweight refresh: update status + model list without destroying log
+setInterval(async () => {
+  const id = new URLSearchParams(location.search).get('id');
+  if (!id) return;
+  try {
+    const r = await fetch('/api/v1/nodes/' + encodeURIComponent(id));
+    const d = await r.json();
+    if (!d || !d.info) return;
+    const st = d.status || {};
+    // Update GPU memory card
+    const gpuMem = document.querySelector('.stat-card:nth-child(2) .stat-value');
+    if (gpuMem) {
+      const used = ((st.gpu_mem_used_mb || 0) / 1024).toFixed(1);
+      const total = ((d.info.gpu_mem_mb || 0) / 1024).toFixed(0);
+      gpuMem.textContent = used + '/' + total + 'GB';
+    }
+    // Update vLLM status card
+    const statusCard = document.querySelector('.stat-card:nth-child(3) .stat-value');
+    if (statusCard) {
+      const vllmSt = st.vllm_status || 'stopped';
+      statusCard.innerHTML = '<span class="tag ' + vllmSt + '">' + vllmSt + '</span>';
+    }
+    // Update model availability
+    const localModels = new Set((st.available_models || []).map(m => m.name));
+    document.querySelectorAll('#models-tbody tr').forEach(row => {
+      const nameCell = row.querySelector('td:first-child');
+      if (!nameCell) return;
+      const name = nameCell.textContent.trim().replace(/\s*\(.*\)$/, '');
+      const isLocal = localModels.has(name);
+      const statusCell = row.querySelector('td:nth-child(3)');
+      const actionCell = row.querySelector('td:nth-child(4)');
+      if (statusCell) {
+        statusCell.innerHTML = isLocal
+          ? '<span class="tag ok">✓ Available</span>'
+          : '<span class="tag missing">⬇ Need Download</span>';
+      }
+      if (actionCell) {
+        const btn = actionCell.querySelector('button');
+        if (btn) {
+          btn.textContent = isLocal ? '▶ Start' : '📦 Distribute';
+          btn.className = isLocal ? 'btn btn-primary' : 'btn btn-ghost';
+          btn.style.padding = '6px 12px';
+          btn.style.fontSize = '0.8rem';
+          if (isLocal) {
+            btn.onclick = () => doStart();
+          }
+        }
+      }
+    });
+  } catch(e) { /* ignore refresh errors */ }
+}, 10000);
 </script>
 </body>
 </html>

@@ -152,3 +152,16 @@ ls /dev/nvidia-fs*
    python -c "from cuda.bindings import cufile; print('OK')"
    ```
 3. `/root/cascade` 是否在 Python 的 `sys.path` 中
+
+### GDS write/read `TypeError: an integer is required`
+
+**现象**：vLLM 启动后处理第一个推理请求时 crash，NvFileBackend 报错：
+```
+File "nvfile_backend.py", line 81, in write
+    return self._C.write(handle, gpu_ptr, size, file_offset, dev_offset)
+TypeError: an integer is required
+```
+
+**根因**：`_CuFileHandle.write()` 的低级 API 路径传了 `ctypes.c_void_p(gpu_addr)` 给 `cuda.bindings.cufile.write()`，但后者的 `buf_ptr_base` 参数类型为 `intptr_t`（Cython 绑定需要 Python int），不接受 `ctypes.c_void_p`。高级 API（`import cufile`）可接受 `c_void_p`，但依赖 NVIDIA GDS SDK Python 包，在部分环境中不可用。
+
+**修复**：`adapter/storage/nvfile_backend.py` `_CuFileHandle.write()`/`read()` 方法中，对低级 API 调用传 `gpu_addr`（raw int）而非 `ptr`（c_void_p）。

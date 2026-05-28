@@ -1342,6 +1342,8 @@ function startLogPoll(id) {
 }
 
 // ── LLM Chat ──────────────────────────────────────────────────────
+let chatHistory = []; // multi-turn conversation history
+let chatCacheRetrievedBefore = 0; // cache_retrieved before last request
 
 async function loadChatModels() {
   const id = new URLSearchParams(location.search).get('id');
@@ -1360,6 +1362,17 @@ async function loadChatModels() {
   } catch(e) { /* ignore */ }
 }
 
+async function fetchCacheRetrieved() {
+  const id = new URLSearchParams(location.search).get('id');
+  if (!id) return 0;
+  try {
+    const r = await fetch('/api/v1/nodes/' + encodeURIComponent(id) + '/cache/stats');
+    if (!r.ok) return 0;
+    const d = await r.json();
+    return d.cache_retrieved || 0;
+  } catch(e) { return 0; }
+}
+
 async function doChat() {
   const id = new URLSearchParams(location.search).get('id');
   const input = document.getElementById('chat-input');
@@ -1371,8 +1384,11 @@ async function doChat() {
   const msg = input.value.trim();
   if (!model || !msg) return;
 
+  // Read cache_retrieved BEFORE the request
+  const retrievedBefore = await fetchCacheRetrieved();
+
   // Append user message
-  box.innerHTML += '<div style="margin-bottom:8px;text-align:right;"><span style="background:var(--accent);color:#fff;padding:8px 14px;border-radius:12px 12px 4px 12px;display:inline-block;max-width:80%;word-break:break-word;">' + esc(msg) + '</span></div>';
+  box.innerHTML += '<div style="margin-bottom:6px;text-align:right;"><span style="background:var(--accent);color:#fff;padding:8px 14px;border-radius:12px 12px 4px 12px;display:inline-block;max-width:80%;word-break:break-word;">' + esc(msg) + '</span></div>';
   input.value = '';
   box.scrollTop = box.scrollHeight;
 
@@ -1384,12 +1400,16 @@ async function doChat() {
   const startTime = performance.now();
 
   try {
+    // Build multi-turn messages: keep last 20 messages to avoid context explosion
+    const messages = chatHistory.slice(-20);
+    messages.push({ role: 'user', content: msg });
+
     const r = await fetch('/api/v1/nodes/' + encodeURIComponent(id) + '/vllm/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: model,
-        messages: [{ role: 'user', content: msg }],
+        messages: messages,
         max_tokens: 512,
         temperature: 0.7
       })
@@ -1403,6 +1423,15 @@ async function doChat() {
 
     const reply = data?.choices?.[0]?.message?.content || 'Error: ' + (data?.error?.message || JSON.stringify(data));
 
+    // Update conversation history
+    chatHistory.push({ role: 'user', content: msg });
+    chatHistory.push({ role: 'assistant', content: reply });
+
+    // Read cache_retrieved AFTER the request
+    const retrievedAfter = await fetchCacheRetrieved();
+    const cacheDelta = retrievedAfter - retrievedBefore;
+    const cacheHit = cacheDelta > 0;
+
     // Compute metrics
     const usage = data?.usage || {};
     const promptTokens = usage.prompt_tokens || 0;
@@ -1414,10 +1443,13 @@ async function doChat() {
       : '—';
 
     // Build metrics bar
+    const cacheIcon = cacheHit ? '✅' : '❌';
+    const cacheLabel = cacheHit ? 'HIT +' + cacheDelta : 'MISS';
     const metricsHtml = '<div style="margin-top:4px;font-size:0.7rem;color:var(--text-3);display:flex;gap:16px;flex-wrap:wrap;">'
       + '<span>⚡ TTFT: <strong style="color:var(--accent);">' + ttft + 's</strong></span>'
       + '<span>📝 Output: <strong style="color:var(--green);">' + tokPerSec + ' tok/s</strong></span>'
-      + '<span>🔤 Prompt: <strong>' + promptTokens + '</strong> · Completion: <strong>' + completionTokens + '</strong> · Total: <strong>' + totalTokens + '</strong></span>'
+      + '<span>' + cacheIcon + ' Cache: <strong style="color:' + (cacheHit ? 'var(--green)' : 'var(--red)') + ';">' + cacheLabel + '</strong></span>'
+      + '<span>🔤 P:<strong>' + promptTokens + '</strong> · C:<strong>' + completionTokens + '</strong> · T:<strong>' + totalTokens + '</strong></span>'
       + '</div>';
 
     box.innerHTML += '<div style="margin-bottom:12px;">'
@@ -1428,7 +1460,6 @@ async function doChat() {
   } catch(e) {
     const loadingEl = document.getElementById(loadId);
     if (loadingEl) loadingEl.remove();
-    const elapsed = performance.now() - startTime;
     box.innerHTML += '<div style="margin-bottom:8px;"><span style="background:rgba(239,68,68,0.15);color:var(--red);padding:8px 14px;border-radius:12px;display:inline-block;">Error: ' + esc(e.message) + '</span></div>';
     box.scrollTop = box.scrollHeight;
   }

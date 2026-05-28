@@ -1086,8 +1086,16 @@ function render(id, d, models) {
       <div class="panel-body">
         <div class="stats-grid" style="margin-bottom: 0;">
           <div class="stat-card">
-            <div class="stat-label">Cache Blocks</div>
+            <div class="stat-label">Blocks Stored</div>
             <div class="stat-value">${(st.cache_blocks || 0).toLocaleString()}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Cache Retrieved</div>
+            <div class="stat-value">${(st.cache_retrieved || 0).toLocaleString()}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Cache Evicted</div>
+            <div class="stat-value">${(st.cache_evicted || 0).toLocaleString()}</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Cache Size</div>
@@ -1095,7 +1103,7 @@ function render(id, d, models) {
           </div>
           <div class="stat-card">
             <div class="stat-label">Hit Rate</div>
-            <div class="stat-value">${(st.cache_hit_rate || 0).toFixed(1)}%</div>
+            <div class="stat-value" style="font-size:1.3rem;">${(st.cache_hit_rate || 0).toFixed(1)}%</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Status</div>
@@ -1103,7 +1111,9 @@ function render(id, d, models) {
           </div>
         </div>
       </div>
-    <!-- LLM Chat -->
+    </div>
+
+    <!-- LLM Chat Test -->
     <div class="panel animate-in" id="chat-panel">
       <div class="panel-header">
         <div class="panel-title">
@@ -1124,7 +1134,6 @@ function render(id, d, models) {
           <button class="btn btn-primary" onclick="doChat()" style="padding:10px 20px;">Send</button>
         </div>
       </div>
-    </div>
     </div>
 
     <!-- Recent Commands -->
@@ -1482,23 +1491,17 @@ setInterval(async () => {
     updateStartStop(document.querySelector('.page-actions'));
     updateStartStop(document.querySelector('#app .panel:nth-of-type(2) .panel-body > div:has(.btn-primary)'));
     // Update KV Cache stats
-    // Update the stats-grid inside the KV Cache Statistics panel
-    const allStatsGrids = document.querySelectorAll('.panel .stats-grid');
-    if (allStatsGrids.length > 0) {
-      const kvGrid = allStatsGrids[allStatsGrids.length - 1];
-      if (kvGrid) {
-        const kvCards = kvGrid.querySelectorAll('.stat-card');
-        if (kvCards.length >= 4) {
-          // Cache Blocks
-          kvCards[0].querySelector('.stat-value').textContent = (st.cache_blocks || 0).toLocaleString();
-          // Cache Size
-          kvCards[1].querySelector('.stat-value').textContent = fmtBytes(st.cache_bytes || 0);
-          // Hit Rate
-          kvCards[2].querySelector('.stat-value').textContent = (st.cache_hit_rate || 0).toFixed(1) + '%';
-          // Node Status
-          const nodeSt = st.vllm_status || 'unknown';
-          kvCards[3].querySelector('.stat-value').innerHTML = '<span class="tag ' + nodeSt + '">' + nodeSt + '</span>';
-        }
+    const kvGrid = document.querySelector('.panel .stats-grid');
+    if (kvGrid) {
+      const kvCards = kvGrid.querySelectorAll('.stat-card');
+      if (kvCards.length >= 6) {
+        kvCards[0].querySelector('.stat-value').textContent = (st.cache_blocks || 0).toLocaleString();
+        kvCards[1].querySelector('.stat-value').textContent = (st.cache_retrieved || 0).toLocaleString();
+        kvCards[2].querySelector('.stat-value').textContent = (st.cache_evicted || 0).toLocaleString();
+        kvCards[3].querySelector('.stat-value').textContent = fmtBytes(st.cache_bytes || 0);
+        kvCards[4].querySelector('.stat-value').textContent = (st.cache_hit_rate || 0).toFixed(1) + '%';
+        const nodeSt = st.vllm_status || 'unknown';
+        kvCards[5].querySelector('.stat-value').innerHTML = '<span class="tag ' + nodeSt + '">' + nodeSt + '</span>';
       }
     }
     // Update model availability

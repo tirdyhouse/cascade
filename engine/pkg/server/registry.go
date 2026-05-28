@@ -210,6 +210,8 @@ func (r *Registry) Summary() *cluster.ClusterSummary {
 			ns.LoadingPct = state.Status.LoadingPct
 			ns.CacheBlocks = state.Status.CacheBlocks
 			ns.HitRate = state.Status.CacheHitRate
+			ns.CacheRetrieved = state.Status.CacheRetrieved
+			ns.CacheEvicted = state.Status.CacheEvicted
 			ns.Disks = state.Status.Disks
 			ns.AvailableModels = state.Status.AvailableModels
 			totalBlocks += state.Status.CacheBlocks

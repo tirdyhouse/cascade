@@ -92,9 +92,11 @@ type MachineStatus struct {
 	LoadingPct int32  `json:"loading_pct"` // 0-100
 
 	// KV Cache stats (from local disk-cache engine)
-	CacheBlocks  int64   `json:"cache_blocks"`
-	CacheBytes   int64   `json:"cache_bytes"`
-	CacheHitRate float64 `json:"cache_hit_rate"`
+	CacheBlocks      int64   `json:"cache_blocks"`
+	CacheBytes       int64   `json:"cache_bytes"`
+	CacheHitRate     float64 `json:"cache_hit_rate"`
+	CacheRetrieved   int64   `json:"cache_retrieved"`
+	CacheEvicted     int64   `json:"cache_evicted"`
 
 	// Models available locally (from scanning <work-dir>/models/)
 	AvailableModels []LocalModel `json:"available_models,omitempty"`
@@ -210,19 +212,21 @@ type CacheLocation struct {
 
 // NodeSummary is a compact view of a node for listing.
 type NodeSummary struct {
-	NodeID      string      `json:"node_id"`
-	IP          string      `json:"ip"`
-	Status      NodeStatus  `json:"status"`       // node connection status: online/offline
-	VLLMStatus  string      `json:"vllm_status"`  // vLLM process: running/stopped/loading/error
-	GPUUtil     float64     `json:"gpu_util"`
-	GPUMemUsed  int64       `json:"gpu_mem_used"`
-	ModelName   string      `json:"model_name"`
-	CacheBlocks int64       `json:"cache_blocks"`
-	HitRate     float64     `json:"hit_rate"`
-	QueueLen    int32       `json:"queue_len"`
-	LoadingPct  int32       `json:"loading_pct"`
-	LastSeen    int64       `json:"last_seen"`
-	Disks       []DiskUsage `json:"disks"`
+	NodeID          string      `json:"node_id"`
+	IP              string      `json:"ip"`
+	Status          NodeStatus  `json:"status"`       // node connection status: online/offline
+	VLLMStatus      string      `json:"vllm_status"`  // vLLM process: running/stopped/loading/error
+	GPUUtil         float64     `json:"gpu_util"`
+	GPUMemUsed      int64       `json:"gpu_mem_used"`
+	ModelName       string      `json:"model_name"`
+	CacheBlocks     int64       `json:"cache_blocks"`
+	HitRate         float64     `json:"hit_rate"`
+	CacheRetrieved  int64       `json:"cache_retrieved"`
+	CacheEvicted    int64       `json:"cache_evicted"`
+	QueueLen        int32       `json:"queue_len"`
+	LoadingPct      int32       `json:"loading_pct"`
+	LastSeen        int64       `json:"last_seen"`
+	Disks           []DiskUsage `json:"disks"`
 	AvailableModels []LocalModel `json:"available_models,omitempty"`
 }
 

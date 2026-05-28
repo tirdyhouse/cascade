@@ -1103,6 +1103,28 @@ function render(id, d, models) {
           </div>
         </div>
       </div>
+    <!-- LLM Chat -->
+    <div class="panel animate-in" id="chat-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>💬</span>
+          LLM Chat Test
+        </div>
+        <span style="font-size:0.75rem;color:var(--text-3);">Quick test — messages are sent directly to vLLM</span>
+      </div>
+      <div class="panel-body">
+        <div id="chat-box" style="background:var(--bg-1);border-radius:var(--radius-sm);padding:16px;max-height:400px;overflow-y:auto;margin-bottom:12px;font-size:0.85rem;line-height:1.6;min-height:120px;">
+          <div style="color:var(--text-3);text-align:center;padding:40px 0;">vLLM must be running to chat. Type a message below to test.</div>
+        </div>
+        <div style="display:flex;gap:12px;">
+          <select id="chat-model" class="form-select" style="flex:0 0 auto;width:auto;max-width:300px;padding:10px 36px 10px 12px;font-size:0.85rem;">
+            <option value="">Loading models...</option>
+          </select>
+          <input id="chat-input" type="text" class="form-input" style="flex:1;" placeholder="Type a test message..." onkeydown="if(event.key==='Enter') doChat()">
+          <button class="btn btn-primary" onclick="doChat()" style="padding:10px 20px;">Send</button>
+        </div>
+      </div>
+    </div>
     </div>
 
     <!-- Recent Commands -->
@@ -1310,6 +1332,76 @@ function startLogPoll(id) {
   logTimer = setInterval(poll, 3000);
 }
 
+// ── LLM Chat ──────────────────────────────────────────────────────
+
+async function loadChatModels() {
+  const id = new URLSearchParams(location.search).get('id');
+  if (!id) return;
+  try {
+    const r = await fetch('/api/v1/nodes/' + encodeURIComponent(id) + '/vllm/models');
+    if (!r.ok) return;
+    const data = await r.json();
+    const sel = document.getElementById('chat-model');
+    if (!sel) return;
+    const models = data.data || [];
+    sel.innerHTML = models.map(m => `<option value="${esc(m.id)}">${esc(m.id.replace(/^.*\\//, ''))}</option>`).join('');
+    if (models.length === 0) {
+      sel.innerHTML = '<option value="">No models loaded</option>';
+    }
+  } catch(e) { /* ignore */ }
+}
+
+async function doChat() {
+  const id = new URLSearchParams(location.search).get('id');
+  const input = document.getElementById('chat-input');
+  const sel = document.getElementById('chat-model');
+  const box = document.getElementById('chat-box');
+  if (!id || !input || !sel || !box) return;
+
+  const model = sel.value;
+  const msg = input.value.trim();
+  if (!model || !msg) return;
+
+  // Append user message
+  box.innerHTML += '<div style="margin-bottom:8px;text-align:right;"><span style="background:var(--accent);color:#fff;padding:8px 14px;border-radius:12px 12px 4px 12px;display:inline-block;max-width:80%;word-break:break-word;">' + esc(msg) + '</span></div>';
+  input.value = '';
+  box.scrollTop = box.scrollHeight;
+
+  // Append loading indicator
+  const loadId = 'chat-loading';
+  box.innerHTML += '<div id="' + loadId + '" style="margin-bottom:8px;"><span style="background:var(--bg-3);color:var(--text-2);padding:8px 14px;border-radius:12px 12px 12px 4px;display:inline-block;">thinking...</span></div>';
+  box.scrollTop = box.scrollHeight;
+
+  try {
+    const r = await fetch('/api/v1/nodes/' + encodeURIComponent(id) + '/vllm/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: model,
+        messages: [{ role: 'user', content: msg }],
+        max_tokens: 512,
+        temperature: 0.7
+      })
+    });
+    const data = await r.json();
+
+    // Remove loading indicator
+    const loadingEl = document.getElementById(loadId);
+    if (loadingEl) loadingEl.remove();
+
+    const reply = data?.choices?.[0]?.message?.content || 'Error: ' + (data?.error?.message || JSON.stringify(data));
+    box.innerHTML += '<div style="margin-bottom:8px;"><span style="background:var(--bg-3);color:var(--text-1);padding:8px 14px;border-radius:12px 12px 12px 4px;display:inline-block;max-width:80%;word-break:break-word;white-space:pre-wrap;">' + esc(reply) + '</span></div>';
+    box.scrollTop = box.scrollHeight;
+  } catch(e) {
+    const loadingEl = document.getElementById(loadId);
+    if (loadingEl) loadingEl.remove();
+    box.innerHTML += '<div style="margin-bottom:8px;"><span style="background:rgba(239,68,68,0.15);color:var(--red);padding:8px 14px;border-radius:12px;display:inline-block;">Error: ' + esc(e.message) + '</span></div>';
+    box.scrollTop = box.scrollHeight;
+  }
+}
+
+// Load chat models when vLLM is running
+setTimeout(loadChatModels, 1000);
 // Initial load
 load();
 // Lightweight refresh: update all live stats without destroying log

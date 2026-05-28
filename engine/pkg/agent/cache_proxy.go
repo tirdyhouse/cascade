@@ -21,7 +21,7 @@ type CacheStats struct {
 	BlocksRetrieved int64   `json:"blocks_retrieved"`
 	BlocksEvicted   int64   `json:"blocks_evicted"`
 	DiskUsedBytes   int64   `json:"disk_used_bytes"`
-	HitRate         float64 `json:"-"`
+	HitRate         float64 `json:"hit_rate"`
 }
 
 // NewCacheProxy creates a CacheProxy.

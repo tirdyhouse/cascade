@@ -810,7 +810,6 @@ tr:last-child td {
       <a href="/">Dashboard</a>
       <a href="/nodes.html" class="active">Nodes</a>
       <a href="/cache.html">Cache</a>
-      <a href="/commands.html">Commands</a>
     </div>
     <div class="nav-status">
       <div class="status-dot"></div>
@@ -1313,7 +1312,7 @@ function startLogPoll(id) {
 
 // Initial load
 load();
-// Lightweight refresh: update status + model list without destroying log
+// Lightweight refresh: update all live stats without destroying log
 setInterval(async () => {
   const id = new URLSearchParams(location.search).get('id');
   if (!id) return;
@@ -1322,18 +1321,68 @@ setInterval(async () => {
     const d = await r.json();
     if (!d || !d.info) return;
     const st = d.status || {};
-    // Update GPU memory card
+    // Update GPU memory card (2nd)
     const gpuMem = document.querySelector('.stat-card:nth-child(2) .stat-value');
     if (gpuMem) {
       const used = ((st.gpu_mem_used_mb || 0) / 1024).toFixed(1);
       const total = ((d.info.gpu_mem_mb || 0) / 1024).toFixed(0);
       gpuMem.textContent = used + '/' + total + 'GB';
     }
-    // Update vLLM status card
+    // Update GPU utilization card (3rd)
+    const gpuUtil = document.querySelector('.stat-card:nth-child(3) .stat-value');
+    if (gpuUtil) {
+      gpuUtil.textContent = ((st.gpu_util || 0) * 100).toFixed(0) + '%';
+    }
+    // Update vLLM status card (4th)
     const statusCard = document.querySelector('.stat-card:nth-child(4) .stat-value');
     if (statusCard) {
       const vllmSt = st.vllm_status || 'stopped';
       statusCard.innerHTML = '<span class="tag ' + vllmSt + '">' + vllmSt + '</span>';
+    }
+    // Update Start/Stop buttons visibility (page header + launch config)
+    const vllmSt = st.vllm_status || 'stopped';
+    const isRunning = vllmSt === 'running' || vllmSt === 'loading';
+    function updateStartStop(container) {
+      if (!container) return;
+      const stopBtn = container.querySelector('.btn-danger');
+      const startBtn = container.querySelector('.btn-primary');
+      if (isRunning && !stopBtn) {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-danger';
+        btn.onclick = () => doStop();
+        btn.textContent = '⏹ Stop';
+        container.appendChild(btn);
+        if (startBtn) startBtn.style.display = 'none';
+      } else if (!isRunning && stopBtn) {
+        stopBtn.remove();
+        if (startBtn) startBtn.style.display = '';
+      } else if (isRunning && startBtn) {
+        startBtn.style.display = 'none';
+      } else if (!isRunning && startBtn) {
+        startBtn.style.display = '';
+      }
+    }
+    updateStartStop(document.querySelector('.page-actions'));
+    updateStartStop(document.querySelector('#app .panel:nth-of-type(2) .panel-body > div:has(.btn-primary)'));
+    // Update KV Cache stats
+    // Update the stats-grid inside the KV Cache Statistics panel
+    const allStatsGrids = document.querySelectorAll('.panel .stats-grid');
+    if (allStatsGrids.length > 0) {
+      const kvGrid = allStatsGrids[allStatsGrids.length - 1];
+      if (kvGrid) {
+        const kvCards = kvGrid.querySelectorAll('.stat-card');
+        if (kvCards.length >= 4) {
+          // Cache Blocks
+          kvCards[0].querySelector('.stat-value').textContent = (st.cache_blocks || 0).toLocaleString();
+          // Cache Size
+          kvCards[1].querySelector('.stat-value').textContent = fmtBytes(st.cache_bytes || 0);
+          // Hit Rate
+          kvCards[2].querySelector('.stat-value').textContent = (st.cache_hit_rate || 0).toFixed(1) + '%';
+          // Node Status
+          const nodeSt = st.vllm_status || 'unknown';
+          kvCards[3].querySelector('.stat-value').innerHTML = '<span class="tag ' + nodeSt + '">' + nodeSt + '</span>';
+        }
+      }
     }
     // Update model availability
     const localModels = new Set((st.available_models || []).map(m => m.name));

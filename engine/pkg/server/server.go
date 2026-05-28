@@ -240,6 +240,7 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/models", s.apiModels)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/vllm/chat", s.apiNodeVLLMChat)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/vllm/models", s.apiNodeVLLMModels)
+	mux.HandleFunc("GET /api/v1/nodes/{id}/cache/stats", s.apiNodeCacheStats)
 }
 
 func jsonResp(w http.ResponseWriter, data interface{}) {
@@ -349,6 +350,23 @@ func (s *Server) apiNodeVLLMModels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
+}
+
+// apiNodeCacheStats returns the node's current cache stats (from latest heartbeat).
+func (s *Server) apiNodeCacheStats(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	detail := s.registry.NodeDetail(id)
+	if detail == nil || detail.Status == nil {
+		http.Error(w, `{"error":"node not found or no status"}`, 404)
+		return
+	}
+	jsonResp(w, map[string]interface{}{
+		"cache_blocks":    detail.Status.CacheBlocks,
+		"cache_bytes":     detail.Status.CacheBytes,
+		"cache_retrieved": detail.Status.CacheRetrieved,
+		"cache_evicted":   detail.Status.CacheEvicted,
+		"cache_hit_rate":  detail.Status.CacheHitRate,
+	})
 }
 
 func (s *Server) apiNodeLogs(w http.ResponseWriter, r *http.Request) {

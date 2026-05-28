@@ -380,7 +380,6 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 
 	// Read stats BEFORE the request
 	diskRetrievedBefore := s.fetchGoEngineBlocksRetrieved(detail.Info.IP)
-	matchBefore := s.fetchGoEngineLastMatch(detail.Info.IP)
 
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
@@ -412,21 +411,25 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read stats AFTER the request and compute per-request deltas
+	// Read stats AFTER the request
 	diskRetrievedAfter := s.fetchGoEngineBlocksRetrieved(detail.Info.IP)
 	diskStored := s.fetchGoEngineBlocksStored(detail.Info.IP)
 	diskBlocks := diskRetrievedAfter - diskRetrievedBefore
 	if diskBlocks < 0 {
 		diskBlocks = 0
 	}
-	matchAfter := s.fetchGoEngineLastMatch(detail.Info.IP)
-	hitTokens := matchAfter - matchBefore
-	if hitTokens < 0 {
-		hitTokens = 0
-	}
-	// Embed cache info into the response JSON
+
+	// Extract cached_tokens from vLLM's API response (enabled via --enable-prompt-tokens-details)
+	hitTokens := int64(0)
 	var responseMap map[string]interface{}
 	if err := json.Unmarshal(respBody, &responseMap); err == nil {
+		if usage, ok := responseMap["usage"].(map[string]interface{}); ok {
+			if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
+				if ct, ok := details["cached_tokens"].(float64); ok {
+					hitTokens = int64(ct)
+				}
+			}
+		}
 		responseMap["_cache"] = map[string]interface{}{
 			"hit_tokens":          hitTokens,
 			"disk_blocks":         diskBlocks,

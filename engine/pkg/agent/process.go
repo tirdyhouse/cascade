@@ -128,7 +128,14 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 		f.Close()
 		pm.mu.Lock()
 		if err != nil {
-			pm.status = "error"
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.Exited() && !exitErr.Success() {
+				// Killed intentionally via Stop() — keep current status
+				if pm.status != "stopped" {
+					pm.status = "error"
+				}
+			} else {
+				pm.status = "error"
+			}
 			log.Printf("[process] vLLM exited: %v", err)
 		} else {
 			pm.status = "stopped"

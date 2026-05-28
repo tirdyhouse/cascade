@@ -1389,8 +1389,8 @@ async function doChat() {
   const startTime = performance.now();
 
   try {
-    // Build multi-turn messages: keep last 20 messages to avoid context explosion
-    const messages = chatHistory.slice(-20);
+    // Build multi-turn messages: send full history for consistent prefix matching
+    const messages = chatHistory.slice();
     messages.push({ role: 'user', content: msg });
 
     const r = await fetch('/api/v1/nodes/' + encodeURIComponent(id) + '/vllm/chat', {

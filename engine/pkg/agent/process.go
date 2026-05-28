@@ -165,8 +165,15 @@ func (pm *ProcessManager) StartRaw(raw, workDir string) (string, error) {
 
 	// Split raw string into args
 	args := []string{"serve"}
-	args = append(args, splitArgs(raw)...)
-
+	rawParts := splitArgs(raw)
+	// Prepend local models dir if model is a relative name
+	if len(rawParts) > 0 && !strings.HasPrefix(rawParts[0], "/") && workDir != "" {
+		modelPath := filepath.Join(workDir, "models", rawParts[0])
+		if _, err := os.Stat(modelPath); err == nil {
+			rawParts[0] = modelPath
+		}
+	}
+	args = append(args, rawParts...)
 	// Prepare log file
 	logDir := filepath.Join(workDir, "logs")
 	os.MkdirAll(logDir, 0755)

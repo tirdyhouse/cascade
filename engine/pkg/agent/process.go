@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -86,6 +87,7 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create log file: %w", err)
 	}
+
 	// Build vLLM args — model is just the name, prepend local models dir
 	localModel := opts.Model
 	if opts.WorkDir != "" && !strings.HasPrefix(opts.Model, "/") {
@@ -99,12 +101,20 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 			args = append(args, "--dtype", "float16")
 		}
 	}
-	// Disk cache: ensure cache dir exists; connector configured via launch wrapper
+	// Disk cache: ensure cache dir exists and pass --kv-transfer-config
 	if opts.DiskCache {
 		diskCachePath := filepath.Join(opts.WorkDir, "cache")
 		os.MkdirAll(diskCachePath, 0755)
+		kvConfig := map[string]interface{}{
+			"kv_connector": "DiskCacheConnector",
+			"kv_role":      "kv_both",
+			"kv_connector_extra_config": map[string]string{
+				"disk_cache_path": diskCachePath,
+			},
+		}
+		kvJSON, _ := json.Marshal(kvConfig)
+		args = append(args, "--kv-transfer-config", string(kvJSON))
 	}
-
 	pm.cmd = exec.Command(vllmBinary(), args...)
 	pm.cmd.Stdout = f
 	pm.cmd.Stderr = f

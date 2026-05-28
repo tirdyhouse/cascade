@@ -362,10 +362,6 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read vLLM prefix cache counters BEFORE the request
-	hitsBefore := s.fetchVLLMMetric(detail.Info.IP, "vllm:prefix_cache_hits_total")
-	queriesBefore := s.fetchVLLMMetric(detail.Info.IP, "vllm:prefix_cache_queries_total")
-
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -396,33 +392,18 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read vLLM prefix cache counters AFTER the request
-	hitsAfter := s.fetchVLLMMetric(detail.Info.IP, "vllm:prefix_cache_hits_total")
-	queriesAfter := s.fetchVLLMMetric(detail.Info.IP, "vllm:prefix_cache_queries_total")
-	// Read disk engine stats (cumulative BlocksRetrieved)
+	// Read disk engine stats (cumulative)
 	diskRetrieved := s.fetchGoEngineBlocksRetrieved(detail.Info.IP)
-
-	hitTokens := int64(hitsAfter - hitsBefore)
-	if hitTokens < 0 {
-		hitTokens = 0
-	}
-	queriedTokens := int64(queriesAfter - queriesBefore)
-	if queriedTokens < 0 {
-		queriedTokens = 0
-	}
+	diskStored := s.fetchGoEngineBlocksStored(detail.Info.IP)
 
 	// Try to embed cache info into the response JSON
 	var responseMap map[string]interface{}
 	if err := json.Unmarshal(respBody, &responseMap); err == nil {
 		responseMap["_cache"] = map[string]interface{}{
-			"hit_tokens":          hitTokens,
-			"queried_tokens":      queriedTokens,
+			"hit_tokens":          0,
+			"queried_tokens":      0,
 			"disk_blocks_retrieved": diskRetrieved,
-			"disk_blocks_stored":   s.fetchGoEngineBlocksStored(detail.Info.IP),
-		}
-		// Also add cache info to usage.prompt_tokens_details if present
-		if usage, ok := responseMap["usage"].(map[string]interface{}); ok {
-			usage["cached_tokens"] = hitTokens
+			"disk_blocks_stored":   diskStored,
 		}
 		respBody, _ = json.Marshal(responseMap)
 	}

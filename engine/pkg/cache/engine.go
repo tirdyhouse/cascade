@@ -181,6 +181,9 @@ func (e *diskEngine) ListChunks(prefixKey, layerName string) ([]int, error) {
 // and records them as sentinels in a single Pebble batch.
 // numTokens is the actual number of KV tokens cached (aligned to block_size).
 func (e *diskEngine) RecordAll(tokenIDs []int64, mmHashes []string, blockSize int) error {
+	if blockSize <= 0 || len(tokenIDs) == 0 {
+		return nil
+	}
 	numTokens := len(tokenIDs)
 	numBlocks := numTokens / blockSize
 	if numBlocks < 1 {

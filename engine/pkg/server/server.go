@@ -187,11 +187,7 @@ func (s *Server) startHTTP(ctx context.Context) error {
 			return
 		}
 
-		if r.Method == "POST" && path == "/api/v1/command" {
-			apiMux.ServeHTTP(w, r)
-			return
-		}
-		if r.Method == "GET" && len(path) >= 8 && path[:8] == "/api/v1/" {
+		if len(path) >= 8 && path[:8] == "/api/v1/" {
 			apiMux.ServeHTTP(w, r)
 			return
 		}

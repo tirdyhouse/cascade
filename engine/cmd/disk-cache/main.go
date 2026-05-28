@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"predict/engine/pkg/cache"
 )
@@ -55,6 +56,11 @@ func parseSize(s string) (int64, error) {
 
 var eng cache.Engine
 
+var (
+	lastMatchMu     sync.Mutex
+	lastMatchTokens int
+)
+
 func main() {
 	flag.Parse()
 
@@ -83,6 +89,7 @@ func main() {
 	mux.HandleFunc("/exists", handleExists)
 	mux.HandleFunc("/evict", handleEvict)
 	mux.HandleFunc("/stats", handleStats)
+	mux.HandleFunc("/last_match", handleLastMatch)
 	mux.HandleFunc("/match", handleMatch)
 	mux.HandleFunc("/record", handleRecord)
 	mux.HandleFunc("/record_batch", handleRecordBatch)
@@ -180,6 +187,13 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 // handleMatch receives token IDs and returns the best cache hit.
 // The Go engine computes hashes for all block-aligned lengths in parallel
 // and returns the largest match.
+func handleLastMatch(w http.ResponseWriter, r *http.Request) {
+	lastMatchMu.Lock()
+	tokens := lastMatchTokens
+	lastMatchMu.Unlock()
+	json.NewEncoder(w).Encode(map[string]int{"matched_tokens": tokens})
+}
+
 func handleMatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "POST required", 400)
@@ -191,6 +205,9 @@ func handleMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := eng.Match(req.TokenIDs, req.MMHashes, req.BlockSize)
+	lastMatchMu.Lock()
+	lastMatchTokens = result.MatchedTokens
+	lastMatchMu.Unlock()
 	json.NewEncoder(w).Encode(result)
 }
 

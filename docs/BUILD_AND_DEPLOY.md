@@ -304,6 +304,45 @@ TypeError: an integer is required
 
 ### 6.4 `launch_vllm.py` 环境变量不生效
 
+---
+
+## 7. vLLM 0.21 已知 Bug 与 Fix
+
+以下是在 vLLM 0.21.0（当前最新 release）中发现的 Bug 及修复方式。vLLM 官方已在 main 分支修复（Issue [#36755](https://github.com/vllm-project/vllm/issues/36755)、[#36533](https://github.com/vllm-project/vllm/issues/36533)），将在下一个 release 中包含。
+
+### 7.1 Prometheus Counter 负值崩溃
+
+**现象**：多轮对话或高并发时，vLLM API 返回 `400 Bad Request`，错误信息 `"Counters can only be incremented by non-negative amounts."`，随后 vLLM 进程退出。
+
+**根因**：调度器 `_preempt_request()` 抢占请求时，只重置了 `num_computed_tokens`，但未重置 `num_cached_tokens`。恢复后 token 统计不一致，导致 Prometheus counter 收到负值。
+
+**修复**（手动 backport，等待 vLLM 0.22+）：
+
+```bash
+# 1. scheduler.py: _preempt_request() 复位 num_cached_tokens
+# 修改前：
+request.num_computed_tokens = 0
+# 修改后：
+request.num_computed_tokens = 0
+request.num_cached_tokens = 0
+# 文件位置：vllm/v1/core/sched/scheduler.py
+
+# 2. stats.py: PromptTokenStats.update_from_output() 加 max(0) 防护
+# 文件位置：vllm/v1/metrics/stats.py
+# self.computed += max(0, prefill_stats.num_computed_tokens)
+# self.cached_tokens += max(0, prefill_stats.num_cached_tokens)  
+# self.local_cache_hit += max(0, prefill_stats.num_local_cached_tokens)
+# self.external_kv_transfer += max(0, prefill_stats.num_external_cached_tokens)
+
+# 3. loggers.py: counter_connector_prefix_cache_hits 加 max(0) 防护
+# 文件位置：vllm/v1/metrics/loggers.py 第 1095 行
+# .inc(max(0, scheduler_stats.connector_prefix_cache_stats.hits))
+```
+
+### 7.2 `--enable-prompt-tokens-details` 必需
+
+**说明**：`usage.prompt_tokens_details.cached_tokens` 是 OpenAI 兼容的缓存命中字段，vLLM 默认关闭。C端 `process.go` 在 DiskCache 模式下会自动添加 `--enable-prompt-tokens-details` 参数。如果手动启动 vLLM，需要加上此参数才能在 API 响应中看到缓存命中信息。
+
 **现象**：设置了 `VLLM_KV_CONNECTOR` 环境变量但 DiskCacheConnector 未加载。
 
 **根因**：vLLM 0.21 **不读取** `VLLM_KV_CONNECTOR` / `VLLM_KV_CONNECTOR_EXTRA_CONFIG` 环境变量。正确方式是通过 `--kv-transfer-config` CLI 参数传递 JSON 配置。

@@ -116,6 +116,8 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 		}
 		kvJSON, _ := json.Marshal(kvConfig)
 		args = append(args, "--kv-transfer-config", string(kvJSON))
+		// Enable prompt_tokens_details.cached_tokens in the API response
+		args = append(args, "--enable-prompt-tokens-details")
 	}
 	pm.cmd = exec.Command(vllmBinary(), args...)
 	pm.cmd.Stdout = f

@@ -1154,7 +1154,7 @@ function buildCmd(model, gpu, prefix, disk) {
   }
   let cmd = model + ' --gpu-memory-utilization ' + gpu;
   if (prefix) cmd += ' --enable-prefix-caching';
-  if (disk) cmd += ' --kv-connector DiskCacheConnector --kv-connector-extra-config '{"disk_cache_path": "/root/cascade/agent/cache"}';
+  // Disk cache connector will use a Python launch wrapper (see adapter/)
   // Add quantization flag if model has it
   const quant = getQuantization(model);
   if (quant) {

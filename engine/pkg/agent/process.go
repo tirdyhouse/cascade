@@ -99,6 +99,7 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 	if opts.PrefixCaching {
 		args = append(args, "--enable-prefix-caching")
 	}
+	// Disk cache: ensure cache dir exists; connector configured via launch wrapper
 	if opts.DiskCache {
 		diskCachePath := filepath.Join(opts.WorkDir, "cache")
 		os.MkdirAll(diskCachePath, 0755)

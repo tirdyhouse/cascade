@@ -244,8 +244,11 @@ class DiskCacheConnector(KVConnectorBase_V1):
                 total_computed = num_to_check - self._block_size
             if total_computed <= num_computed_tokens:
                 return 0, False
+            ext_return = total_computed - num_computed_tokens
+            self._go_set_last_match(ext_return)
             logger.info("Disk cache HIT for request %s (%d tokens)", request.request_id, total_computed)
-            return total_computed - num_computed_tokens, False
+            return ext_return, False
+        self._go_set_last_match(0)
         return 0, False
 
     def update_state_after_alloc(self, request, blocks, num_external_tokens):
@@ -430,6 +433,23 @@ class DiskCacheConnector(KVConnectorBase_V1):
             logger.debug("Go Put failed: %s", e)
 
     def _go_get(self, hash_val):
+        try:
+            resp = urllib.request.urlopen(f"{self.go_addr}/get?hash={hash_val:016x}", timeout=5)
+            return json.loads(resp.read())
+        except Exception:
+            return None
+
+    def _go_set_last_match(self, tokens: int):
+        """Store the adjusted match value (after guard) for UI display."""
+        try:
+            data = json.dumps({"tokens": tokens}).encode()
+            req = urllib.request.Request(f"{self.go_addr}/set_last_match",
+                                         data=data,
+                                         headers={"Content-Type": "application/json"})
+            req.method = "POST"
+            urllib.request.urlopen(req, timeout=3)
+        except Exception:
+            pass
         try:
             resp = urllib.request.urlopen(f"{self.go_addr}/get?hash={hash_val:016x}", timeout=5)
             return json.loads(resp.read())

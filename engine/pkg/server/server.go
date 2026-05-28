@@ -351,7 +351,7 @@ func (s *Server) fetchGoEngineBlocksStored(nodeIP string) int64 {
 	return stats.BlocksStored
 }
 
-// fetchGoEngineLastMatch queries the node's Go disk-cache engine /last_match for the most recent match token count.
+// fetchGoEngineLastMatch returns the most recent adjusted match value set by the connector.
 func (s *Server) fetchGoEngineLastMatch(nodeIP string) int64 {
 	target := fmt.Sprintf("http://%s:9100/last_match", nodeIP)
 	resp, err := s.httpClient.Get(target)
@@ -367,6 +367,7 @@ func (s *Server) fetchGoEngineLastMatch(nodeIP string) int64 {
 	}
 	return int64(result.MatchedTokens)
 }
+
 
 // apiNodeVLLMChat proxies a chat completion request to the node's vLLM instance,
 func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
@@ -417,27 +418,10 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 	if diskBlocks < 0 {
 		diskBlocks = 0
 	}
-	// Read the last /match result from Go engine (per-request token-level hit)
-	matchTokens := s.fetchGoEngineLastMatch(detail.Info.IP)
-	var promptTokens int64
-
-	// Try to embed cache info into the response JSON
+	// Embed cache info into the response JSON
 	var responseMap map[string]interface{}
 	if err := json.Unmarshal(respBody, &responseMap); err == nil {
-		// Read prompt_tokens from usage for hit rate calculation
-		if usage, ok := responseMap["usage"].(map[string]interface{}); ok {
-			if pt, ok := usage["prompt_tokens"].(float64); ok {
-				promptTokens = int64(pt)
-			}
-		}
-		hitRate := float64(0)
-		if promptTokens > 0 {
-			hitRate = float64(matchTokens) / float64(promptTokens) * 100
-		}
 		responseMap["_cache"] = map[string]interface{}{
-			"hit_tokens":          matchTokens,
-			"prompt_tokens":       promptTokens,
-			"hit_rate":            hitRate,
 			"disk_blocks":         diskBlocks,
 			"disk_blocks_total":   diskRetrievedAfter,
 			"disk_blocks_stored":  diskStored,

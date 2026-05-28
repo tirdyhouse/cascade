@@ -149,6 +149,8 @@ type LocalModel struct {
 // ModelInfo describes a model available on S端 for distribution.
 type ModelInfo struct {
 	Name        string `json:"name"`
+	Path        string `json:"path"`        // full filesystem path on S端
+
 	DownloadURL string `json:"download_url"`
 	DefaultGPUMem   string `json:"default_gpu_mem"`
 	SupportsPrefix  bool   `json:"supports_prefix"`

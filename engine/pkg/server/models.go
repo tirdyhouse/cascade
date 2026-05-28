@@ -77,8 +77,8 @@ func (r *ModelRegistry) Scan() {
 				}
 				modelMap[name] = &cluster.ModelInfo{
 					Name:             name,
+					Path:             filepath.Join(r.modelsDir, name),
 					DownloadURL:      downloadURL,
-					DefaultGPUMem:    "0.9",
 					SupportsPrefix:   true,
 					SupportsDiskCache: true,
 					SizeGB:           sizeGB,

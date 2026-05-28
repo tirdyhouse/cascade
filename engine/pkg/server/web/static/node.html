@@ -1329,7 +1329,7 @@ setInterval(async () => {
       gpuMem.textContent = used + '/' + total + 'GB';
     }
     // Update vLLM status card
-    const statusCard = document.querySelector('.stat-card:nth-child(3) .stat-value');
+    const statusCard = document.querySelector('.stat-card:nth-child(4) .stat-value');
     if (statusCard) {
       const vllmSt = st.vllm_status || 'stopped';
       statusCard.innerHTML = '<span class="tag ' + vllmSt + '">' + vllmSt + '</span>';

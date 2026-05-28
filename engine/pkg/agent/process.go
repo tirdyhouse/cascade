@@ -181,7 +181,8 @@ func (pm *ProcessManager) StartRaw(raw, workDir string) (string, error) {
 	if len(args) > 1 {
 		modelName = args[1]
 	}
-	logFile := filepath.Join(logDir, "vllm-"+modelName+".log")
+	logName := filepath.Base(modelName)
+	logFile := filepath.Join(logDir, "vllm-"+logName+".log")
 	f, err := os.Create(logFile)
 	if err != nil {
 		return "", fmt.Errorf("create log file: %w", err)

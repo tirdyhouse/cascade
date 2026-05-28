@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -38,6 +40,7 @@ type Server struct {
 
 	// HTTP
 	httpServer *http.Server
+	httpClient *http.Client
 
 	// Models
 	models *ModelRegistry
@@ -73,6 +76,9 @@ func New(cfg *Config) *Server {
 		dispatcher:  NewDispatcher(reg),
 		diskTracker: dt,
 		config:      cfg,
+		httpClient: &http.Client{
+			Timeout: 120 * time.Second,
+		},
 	}
 
 	// Router with nil meta backend for now — will be connected to disk-cache engine later
@@ -236,6 +242,8 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/command", s.apiDispatchCommand)
 	mux.HandleFunc("GET /api/v1/commands", s.apiCommandHistory)
 	mux.HandleFunc("GET /api/v1/models", s.apiModels)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/vllm/chat", s.apiNodeVLLMChat)
+	mux.HandleFunc("GET /api/v1/nodes/{id}/vllm/models", s.apiNodeVLLMModels)
 }
 
 func jsonResp(w http.ResponseWriter, data interface{}) {
@@ -279,6 +287,72 @@ func (s *Server) apiCommandHistory(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiModels(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, s.models.List())
+}
+
+// apiNodeVLLMChat proxies a chat completion request to the node's vLLM instance.
+func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	detail := s.registry.NodeDetail(id)
+	if detail == nil || detail.Info == nil {
+		http.Error(w, `{"error":"node not found"}`, 404)
+		return
+	}
+	// Read the request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, `{"error":"read body: `+err.Error()+`"}`, 400)
+		return
+	}
+
+	// Proxy to vLLM (always port 8000 on the node)
+	target := fmt.Sprintf("http://%s:8000/v1/chat/completions", detail.Info.IP)
+	req, err := http.NewRequestWithContext(r.Context(), "POST", target, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, `{"error":"create request: `+err.Error()+`"}`, 500)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		http.Error(w, `{"error":"vLLM proxy: `+err.Error()+`"}`, 502)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy headers
+	for k, v := range resp.Header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// apiNodeVLLMModels proxies a model list request to the node's vLLM instance.
+func (s *Server) apiNodeVLLMModels(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	detail := s.registry.NodeDetail(id)
+	if detail == nil || detail.Info == nil {
+		http.Error(w, `{"error":"node not found"}`, 404)
+		return
+	}
+
+	target := fmt.Sprintf("http://%s:8000/v1/models", detail.Info.IP)
+	resp, err := s.httpClient.Get(target)
+	if err != nil {
+		http.Error(w, `{"error":"vLLM proxy: `+err.Error()+`"}`, 502)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, `{"error":"read response: `+err.Error()+`"}`, 502)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
 }
 
 func (s *Server) apiNodeLogs(w http.ResponseWriter, r *http.Request) {

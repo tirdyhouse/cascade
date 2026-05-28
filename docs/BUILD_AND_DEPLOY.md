@@ -155,6 +155,59 @@ cd engine && GOOS=linux GOARCH=amd64 go build -o disk-cache-linux ./cmd/disk-cac
 
 ---
 
+## 3.5 DiskCache 引擎部署（前置依赖）
+
+DiskCache 引擎是一个**全局唯一的独立守护进程**，每台机器运行一个实例，监听 `:9100`。
+它必须**在 C端 Agent 和 vLLM 之前启动**，否则 DiskCacheConnector 无法连接。
+
+### 启动命令
+
+```bash
+# 编译（也可在本地交叉编译后上传）
+cd engine && GOOS=linux GOARCH=amd64 go build -o ../bin/disk-cache ./cmd/disk-cache/
+
+# 启动
+./bin/disk-cache \
+  --cache-path /tmp/cascade-kv \       # KV 缓存数据文件目录
+  --metadata-path /tmp/cascade-meta \   # Pebble 元数据存储目录
+  --max-size 200GB \                    # 缓存上限
+  --listen :9100                        # HTTP API 监听地址
+```
+
+### 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--cache-path` | `/tmp/disk-cache` | KV 缓存块文件存储路径（建议放在大容量 NVMe 盘） |
+| `--metadata-path` | `/tmp/disk-cache-meta` | Pebble 元数据数据库路径 |
+| `--max-size` | `100GB` | 最大缓存容量（支持 `MB`, `GB`, `TB` 单位） |
+| `--listen` | `:9100` | HTTP API 监听地址，C端 通过 `--cache-path http://<ip>:9100` 连接 |
+
+### 验证
+
+```bash
+# 检查是否正常运行
+curl http://localhost:9100/stats
+# 输出示例：{"BlocksStored":0,"BlocksRetrieved":0,"BlocksEvicted":0,"DiskUsedBytes":0}
+```
+
+### 架构说明
+
+```
+┌──────────────┐     HTTP API (:9100)     ┌──────────────────┐
+│  C端 Agent   │◄────────────────────────►│  DiskCache Engine │
+│ (cache_proxy)│                          │  (独立 Go 进程)   │
+└──────────────┘                          └──────────────────┘
+┌─────────────────────┐                   ┌──────────────────┐
+│  vLLM Process       │─── /put /match ──►│  Pebble 元数据   │
+│  DiskCacheConnector │◄── /get /chunk ───│  + KV 块文件     │
+└─────────────────────┘                   └──────────────────┘
+```
+
+C端 Agent 的心跳通过 `cache_proxy.go` 定时拉取引擎统计（`BlocksStored`、`BlocksRetrieved` 等），上报到 S端 展示在 Web UI 上。
+
+---
+
 ## 4. Disk Cache 磁盘缓存
 
 ### 工作原理

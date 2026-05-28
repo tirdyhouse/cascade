@@ -7,8 +7,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"sync"
-
 	"predict/engine/pkg/cache"
 )
 
@@ -56,10 +54,6 @@ func parseSize(s string) (int64, error) {
 
 var eng cache.Engine
 
-var (
-	lastMatchMu     sync.Mutex
-	lastMatchTokens int
-)
 
 func main() {
 	flag.Parse()
@@ -89,8 +83,6 @@ func main() {
 	mux.HandleFunc("/exists", handleExists)
 	mux.HandleFunc("/evict", handleEvict)
 	mux.HandleFunc("/stats", handleStats)
-	mux.HandleFunc("/last_match", handleLastMatch)
-	mux.HandleFunc("/set_last_match", handleSetMatchDisplay)
 	mux.HandleFunc("/match", handleMatch)
 	mux.HandleFunc("/record", handleRecord)
 	mux.HandleFunc("/record_batch", handleRecordBatch)
@@ -188,33 +180,6 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 // handleMatch receives token IDs and returns the best cache hit.
 // The Go engine computes hashes for all block-aligned lengths in parallel
 // and returns the largest match.
-// handleSetMatchDisplay stores the adjusted match value (after connector guard) for UI display.
-func handleSetMatchDisplay(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "POST required", 400)
-		return
-	}
-	var req struct {
-		Tokens int `json:"tokens"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	lastMatchMu.Lock()
-	lastMatchTokens = req.Tokens
-	lastMatchMu.Unlock()
-	w.WriteHeader(200)
-}
-
-// handleLastMatch returns the most recent adjusted match value for UI display.
-func handleLastMatch(w http.ResponseWriter, r *http.Request) {
-	lastMatchMu.Lock()
-	tokens := lastMatchTokens
-	lastMatchMu.Unlock()
-	json.NewEncoder(w).Encode(map[string]int{"matched_tokens": tokens})
-}
-
 func handleMatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "POST required", 400)

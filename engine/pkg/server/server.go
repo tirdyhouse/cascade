@@ -351,22 +351,6 @@ func (s *Server) fetchGoEngineBlocksStored(nodeIP string) int64 {
 	return stats.BlocksStored
 }
 
-// fetchGoEngineLastMatch returns the most recent adjusted match value set by the connector.
-func (s *Server) fetchGoEngineLastMatch(nodeIP string) int64 {
-	target := fmt.Sprintf("http://%s:9100/last_match", nodeIP)
-	resp, err := s.httpClient.Get(target)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-	var result struct {
-		MatchedTokens int `json:"matched_tokens"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0
-	}
-	return int64(result.MatchedTokens)
-}
 
 
 // apiNodeVLLMChat proxies a chat completion request to the node's vLLM instance,

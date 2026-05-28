@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
 
 // vllmBinary returns the path to the vllm binary.
@@ -118,6 +120,7 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 	pm.cmd = exec.Command(vllmBinary(), args...)
 	pm.cmd.Stdout = f
 	pm.cmd.Stderr = f
+	pm.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := pm.cmd.Start(); err != nil {
 		f.Close()
@@ -201,6 +204,7 @@ func (pm *ProcessManager) StartRaw(raw, workDir string) (string, error) {
 	pm.cmd = exec.Command(vllmBinary(), args...)
 	pm.cmd.Stdout = f
 	pm.cmd.Stderr = f
+	pm.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := pm.cmd.Start(); err != nil {
 		f.Close()
@@ -258,8 +262,7 @@ func (pm *ProcessManager) DownloadModel(model, url, workDir string) (string, err
 	os.WriteFile(filepath.Join(modelDir, ".downloaded"), []byte("ok\n"), 0644)
 	return fmt.Sprintf("downloaded %s (%.1f GB)", model, dirSizeGB(modelDir)), nil
 }
-
-// Stop terminates the vLLM process.
+// Stop terminates the vLLM process and all its children.
 func (pm *ProcessManager) Stop() (string, error) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -269,15 +272,31 @@ func (pm *ProcessManager) Stop() (string, error) {
 	}
 
 	pid := pm.cmd.Process.Pid
-	if err := pm.cmd.Process.Kill(); err != nil {
-		pm.status = "error"
-		return "", fmt.Errorf("kill vLLM (pid=%d): %w", pid, err)
+	// Kill the entire process group (vLLM spawns EngineCore subprocesses
+	// that hold GPU memory; killing only the parent leaves orphans).
+	pgid, err := syscall.Getpgid(pid)
+	if err == nil {
+		syscall.Kill(-pgid, syscall.SIGTERM)
+		// Give it a moment to exit cleanly, then force-kill
+		done := make(chan struct{})
+		go func() {
+			pm.cmd.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+	} else {
+		// Fallback: kill just the process
+		pm.cmd.Process.Kill()
 	}
 
 	pm.status = "stopped"
 	pm.modelName = ""
-	log.Printf("[process] killed vLLM (pid=%d)", pid)
-	return fmt.Sprintf("killed pid=%d", pid), nil
+	log.Printf("[process] killed vLLM process group (pid=%d)", pid)
+	return fmt.Sprintf("killed pid=%d (process group)", pid), nil
 }
 
 // LogFile returns the current vLLM log file path.

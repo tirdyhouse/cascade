@@ -18,7 +18,7 @@ var (
 	nodeID     = flag.String("node-id", "", "Node ID (default: hostname)")
 	rpcxPort   = flag.Int("rpcx-port", 9001, "Local rpcx port for bidirectional")
 	cacheMode  = flag.String("cache-mode", "local_nvme", "Cache mode: local_nvme | shared_pool")
-	cachePath  = flag.String("cache-path", "/tmp/disk-cache", "Local disk-cache HTTP API base URL")
+	cachePath  = flag.String("cache-path", "http://127.0.0.1:9100", "Local disk-cache HTTP API base URL")
 	workDir    = flag.String("work-dir", "/root/cascade/agent", "Working directory for models, logs, and cache")
 
 	// GPU

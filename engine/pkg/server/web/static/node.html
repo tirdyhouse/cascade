@@ -1157,7 +1157,10 @@ function buildCmd(model, gpu, prefix, disk) {
   if (disk) cmd += ' --kv-connector DiskCacheConnector --kv-connector-extra-config '{"disk_cache_path": "/root/cascade/agent/cache"}';
   // Add quantization flag if model has it
   const quant = getQuantization(model);
-  if (quant) cmd += ' --quantization ' + quant;
+  if (quant) {
+    cmd += ' --quantization ' + quant;
+    if (quant === 'awq') cmd += ' --dtype float16';
+  }
   return cmd;
 }
 

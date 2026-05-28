@@ -164,6 +164,8 @@ func (a *Agent) heartbeat(cmdCh chan<- *cluster.Command) error {
 		status.CacheBlocks = cacheStats.BlocksStored
 		status.CacheBytes = cacheStats.DiskUsedBytes
 		status.CacheHitRate = cacheStats.HitRate
+		status.CacheRetrieved = cacheStats.BlocksRetrieved
+		status.CacheEvicted = cacheStats.BlocksEvicted
 	}
 	status.VLLMStatus = a.process.Status()
 	// Available models

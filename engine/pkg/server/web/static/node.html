@@ -1361,12 +1361,15 @@ async function loadChatModels() {
   } catch(e) { /* ignore */ }
 }
 
+let chatSending = false; // prevent rapid-fire sends
+
 async function doChat() {
   const id = new URLSearchParams(location.search).get('id');
   const input = document.getElementById('chat-input');
   const sel = document.getElementById('chat-model');
   const box = document.getElementById('chat-box');
   if (!id || !input || !sel || !box) return;
+  if (chatSending) return; // prevent rapid-fire sends
 
   const model = sel.value;
   const msg = input.value.trim();
@@ -1382,6 +1385,7 @@ async function doChat() {
   box.innerHTML += '<div id="' + loadId + '" style="margin-bottom:8px;"><span style="background:var(--bg-3);color:var(--text-2);padding:8px 14px;border-radius:12px 12px 12px 4px;display:inline-block;">thinking...</span></div>';
   box.scrollTop = box.scrollHeight;
 
+  chatSending = true;
   const startTime = performance.now();
 
   try {
@@ -1449,6 +1453,8 @@ async function doChat() {
     if (loadingEl) loadingEl.remove();
     box.innerHTML += '<div style="margin-bottom:8px;"><span style="background:rgba(239,68,68,0.15);color:var(--red);padding:8px 14px;border-radius:12px;display:inline-block;">Error: ' + esc(e.message) + '</span></div>';
     box.scrollTop = box.scrollHeight;
+  } finally {
+    chatSending = false;
   }
 }
 

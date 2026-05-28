@@ -17,11 +17,12 @@ type CacheProxy struct {
 
 // CacheStats is the response from the local disk-cache /stats endpoint.
 type CacheStats struct {
-	BlocksStored    int64   `json:"blocks_stored"`
-	BlocksRetrieved int64   `json:"blocks_retrieved"`
-	BlocksEvicted   int64   `json:"blocks_evicted"`
-	DiskUsedBytes   int64   `json:"disk_used_bytes"`
-	HitRate         float64 `json:"hit_rate"`
+	BlocksStored    int64   `json:"BlocksStored"`
+	BlocksRetrieved int64   `json:"BlocksRetrieved"`
+	BlocksEvicted   int64   `json:"BlocksEvicted"`
+	DiskUsedBytes   int64   `json:"DiskUsedBytes"`
+	// HitRate is computed from retrieved / (retrieved + stored) during Stats().
+	HitRate float64 `json:"-"`
 }
 
 // NewCacheProxy creates a CacheProxy.
@@ -56,6 +57,17 @@ func (cp *CacheProxy) Stats() *CacheStats {
 	var stats CacheStats
 	if err := json.Unmarshal(body, &stats); err != nil {
 		return nil
+	}
+	// Compute hit rate
+	total := stats.BlocksRetrieved + stats.BlocksStored
+	if total > 0 {
+		if stats.BlocksRetrieved >= stats.BlocksStored {
+			// More retrievals than stored blocks — use retrieved as denominator
+			stats.HitRate = float64(stats.BlocksRetrieved) / float64(stats.BlocksRetrieved+stats.BlocksEvicted) * 100.0
+		} else {
+			// Otherwise use total stored as estimate
+			stats.HitRate = float64(stats.BlocksRetrieved) / float64(total) * 100.0
+		}
 	}
 
 	return &stats

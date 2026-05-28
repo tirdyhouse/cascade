@@ -1414,12 +1414,9 @@ async function doChat() {
 
     // Get cache hit info from the proxy response (_cache field)
     const cacheInfo = data?._cache || {};
-    const hitTokens = cacheInfo.hit_tokens || 0;
-    const queriedTokens = cacheInfo.queried_tokens || 0;
     const diskRetrieved = cacheInfo.disk_blocks_retrieved || 0;
     const diskStored = cacheInfo.disk_blocks_stored || 0;
-    const cacheHit = hitTokens > 0 || diskRetrieved > 0;
-    const hitRate = queriedTokens > 0 ? ((hitTokens / queriedTokens) * 100).toFixed(1) : '—';
+    const cacheHit = diskRetrieved > 0;
 
     // Compute metrics
     const usage = data?.usage || {};
@@ -1438,8 +1435,8 @@ async function doChat() {
       + '<span>⚡ Time to First Token: <strong style="color:var(--accent);">' + ttft + 's</strong></span>'
       + '<span>📝 Generation Speed: <strong style="color:var(--green);">' + tokPerSec + ' tokens/s</strong></span>'
       + '<span>' + cacheIcon + ' KV Cache: <strong style="color:' + (cacheHit ? 'var(--green)' : 'var(--red)') + ';">' + hitLabel + '</strong>'
-      + (hitTokens > 0 ? ' <span style="color:var(--text-3);font-size:0.65rem;">GPU prefix: ' + hitTokens + '/' + queriedTokens + ' tokens · ' + hitRate + '%</span>' : '')
-      + (diskRetrieved > 0 ? ' <span style="color:var(--text-3);font-size:0.65rem;">Disk: ' + diskRetrieved + ' blocks retrieved · ' + diskStored + ' stored</span>' : '')
+      + (diskRetrieved > 0 ? ' <span style="color:var(--text-3);font-size:0.65rem;">Disk: ' + diskRetrieved + ' blocks retrieved · ' + diskStored + ' blocks stored</span>' : '')
+      + (diskRetrieved === 0 && diskStored > 0 ? ' <span style="color:var(--text-3);font-size:0.65rem;">' + diskStored + ' blocks on disk</span>' : '')
       + '</span>'
       + '<span>📄 Prompt: <strong>' + promptTokens + '</strong> · Completion: <strong>' + completionTokens + '</strong> · Total: <strong>' + totalTokens + '</strong></span>'
       + '</div>';

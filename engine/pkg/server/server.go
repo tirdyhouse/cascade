@@ -316,32 +316,37 @@ func (s *Server) apiNodeLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read from offset
+	// Read from offset, return lines after offset
 	data, err := os.ReadFile(latest)
 	if err != nil {
 		http.Error(w, "read log: "+err.Error(), 500)
 		return
 	}
 	total := len(data)
-	if offset > total {
-		offset = total
+	if offset >= total {
+		jsonResp(w, cluster.LogChunk{NodeID: id, Lines: "", Offset: int64(total), EOF: true})
+		return
 	}
-	// Return last maxLines lines from offset
+	// Return content from offset (max maxLines lines)
 	chunk := data[offset:]
 	lines := strings.Split(string(chunk), "\n")
-	start := 0
-	if len(lines) > maxLines {
-		start = len(lines) - maxLines
+	end := len(lines)
+	if end > maxLines {
+		end = maxLines
 	}
-	out := strings.Join(lines[start:], "\n")
+	out := strings.Join(lines[:end], "\n")
 	newOffset := offset
-	for i := 0; i < start; i++ {
+	for i := 0; i < end; i++ {
 		newOffset += len(lines[i]) + 1
+	}
+	if newOffset > total {
+		newOffset = total
 	}
 	jsonResp(w, cluster.LogChunk{
 		NodeID:   id,
 		Lines:    out,
 		Offset:   int64(newOffset),
+		EOF:      newOffset >= total,
 	})
 }
 

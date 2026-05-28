@@ -100,9 +100,8 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 		args = append(args, "--enable-prefix-caching")
 	}
 	if opts.DiskCache {
-		args = append(args, "--kv-connector", "DiskCacheConnector")
 		diskCachePath := filepath.Join(opts.WorkDir, "cache")
-		args = append(args, "--disk-cache-path", diskCachePath)
+		os.MkdirAll(diskCachePath, 0755)
 	}
 
 	pm.cmd = exec.Command(vllmBinary(), args...)

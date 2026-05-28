@@ -1343,7 +1343,6 @@ function startLogPoll(id) {
 
 // ── LLM Chat ──────────────────────────────────────────────────────
 let chatHistory = []; // multi-turn conversation history
-let chatCacheRetrievedBefore = 0; // cache_retrieved before last request
 
 async function loadChatModels() {
   const id = new URLSearchParams(location.search).get('id');
@@ -1362,17 +1361,6 @@ async function loadChatModels() {
   } catch(e) { /* ignore */ }
 }
 
-async function fetchCacheRetrieved() {
-  const id = new URLSearchParams(location.search).get('id');
-  if (!id) return 0;
-  try {
-    const r = await fetch('/api/v1/nodes/' + encodeURIComponent(id) + '/cache/stats');
-    if (!r.ok) return 0;
-    const d = await r.json();
-    return d.cache_retrieved || 0;
-  } catch(e) { return 0; }
-}
-
 async function doChat() {
   const id = new URLSearchParams(location.search).get('id');
   const input = document.getElementById('chat-input');
@@ -1383,9 +1371,6 @@ async function doChat() {
   const model = sel.value;
   const msg = input.value.trim();
   if (!model || !msg) return;
-
-  // Read cache_retrieved BEFORE the request
-  const retrievedBefore = await fetchCacheRetrieved();
 
   // Append user message
   box.innerHTML += '<div style="margin-bottom:6px;text-align:right;"><span style="background:var(--accent);color:#fff;padding:8px 14px;border-radius:12px 12px 4px 12px;display:inline-block;max-width:80%;word-break:break-word;">' + esc(msg) + '</span></div>';
@@ -1427,10 +1412,12 @@ async function doChat() {
     chatHistory.push({ role: 'user', content: msg });
     chatHistory.push({ role: 'assistant', content: reply });
 
-    // Read cache_retrieved AFTER the request
-    const retrievedAfter = await fetchCacheRetrieved();
-    const cacheDelta = retrievedAfter - retrievedBefore;
-    const cacheHit = cacheDelta > 0;
+    // Get cache hit info from the proxy response (_cache field)
+    const cacheInfo = data?._cache || {};
+    const hitTokens = cacheInfo.hit_tokens || 0;
+    const queriedTokens = cacheInfo.queried_tokens || 0;
+    const cacheHit = hitTokens > 0;
+    const hitRate = queriedTokens > 0 ? ((hitTokens / queriedTokens) * 100).toFixed(1) : '—';
 
     // Compute metrics
     const usage = data?.usage || {};
@@ -1443,16 +1430,13 @@ async function doChat() {
       : '—';
 
     // Build metrics bar
-    const blockSize = 16; // vLLM default block size (tokens per block)
     const cacheIcon = cacheHit ? '✅' : '❌';
     const cacheLabel = cacheHit ? 'HIT' : 'MISS';
-    const hitTokens = cacheDelta * blockSize;
-    const hitRate = promptTokens > 0 ? ((hitTokens / promptTokens) * 100).toFixed(1) : '—';
     const metricsHtml = '<div style="margin-top:4px;font-size:0.7rem;color:var(--text-3);display:flex;gap:16px;flex-wrap:wrap;">'
       + '<span>⚡ TTFT: <strong style="color:var(--accent);">' + ttft + 's</strong></span>'
       + '<span>📝 Output: <strong style="color:var(--green);">' + tokPerSec + ' tok/s</strong></span>'
       + '<span>' + cacheIcon + ' Cache: <strong style="color:' + (cacheHit ? 'var(--green)' : 'var(--red)') + ';">' + cacheLabel + '</strong>'
-      + (cacheHit ? ' <span style="color:var(--text-3);font-size:0.65rem;">+' + cacheDelta + ' blk · ' + hitTokens + ' tok · ' + hitRate + '%</span>' : '')
+      + (cacheHit ? ' <span style="color:var(--text-3);font-size:0.65rem;">+' + hitTokens + ' tok · ' + hitRate + '%</span>' : '')
       + '</span>'
       + '<span>🔤 P:<strong>' + promptTokens + '</strong> · C:<strong>' + completionTokens + '</strong> · T:<strong>' + totalTokens + '</strong></span>'
       + '</div>';

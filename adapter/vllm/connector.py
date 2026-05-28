@@ -235,7 +235,7 @@ class DiskCacheConnector(KVConnectorBase_V1):
             return 0, False
         mm_hashes = [f.identifier for f in request.mm_features]
         result = self._go_match(token_ids, mm_hashes)
-        if result and result.get("matched_tokens", 0) > 0:
+        if result and result.get("matched_tokens", 0) > num_computed_tokens:
             matched = result["matched_tokens"]
             logger.info("Disk cache HIT for request %s (%d tokens)", request.request_id, matched)
             return matched - num_computed_tokens, False

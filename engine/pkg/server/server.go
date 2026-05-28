@@ -362,6 +362,9 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read disk engine stats BEFORE the request
+	diskRetrievedBefore := s.fetchGoEngineBlocksRetrieved(detail.Info.IP)
+
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -392,18 +395,37 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read disk engine stats (cumulative)
-	diskRetrieved := s.fetchGoEngineBlocksRetrieved(detail.Info.IP)
+	// Read disk engine stats AFTER the request
+	diskRetrievedAfter := s.fetchGoEngineBlocksRetrieved(detail.Info.IP)
 	diskStored := s.fetchGoEngineBlocksStored(detail.Info.IP)
+	diskBlocks := diskRetrievedAfter - diskRetrievedBefore
+	if diskBlocks < 0 {
+		diskBlocks = 0
+	}
+	// Each block = 16 tokens (vLLM default block size)
+	hitTokens := diskBlocks * 16
+	var promptTokens int64
 
 	// Try to embed cache info into the response JSON
 	var responseMap map[string]interface{}
 	if err := json.Unmarshal(respBody, &responseMap); err == nil {
+		// Read prompt_tokens from usage for hit rate calculation
+		if usage, ok := responseMap["usage"].(map[string]interface{}); ok {
+			if pt, ok := usage["prompt_tokens"].(float64); ok {
+				promptTokens = int64(pt)
+			}
+		}
+		hitRate := float64(0)
+		if promptTokens > 0 {
+			hitRate = float64(hitTokens) / float64(promptTokens) * 100
+		}
 		responseMap["_cache"] = map[string]interface{}{
-			"hit_tokens":          0,
-			"queried_tokens":      0,
-			"disk_blocks_retrieved": diskRetrieved,
-			"disk_blocks_stored":   diskStored,
+			"hit_tokens":          hitTokens,
+			"prompt_tokens":       promptTokens,
+			"hit_rate":            hitRate,
+			"disk_blocks":         diskBlocks,
+			"disk_blocks_total":   diskRetrievedAfter,
+			"disk_blocks_stored":  diskStored,
 		}
 		respBody, _ = json.Marshal(responseMap)
 	}

@@ -80,24 +80,24 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 	// Prepare log file
 	logDir := filepath.Join(opts.WorkDir, "logs")
 	os.MkdirAll(logDir, 0755)
-	logName := strings.ReplaceAll(filepath.Base(opts.Model), "/", "-")
+	logName := filepath.Base(opts.Model)
 	logFile := filepath.Join(logDir, "vllm-"+logName+".log")
 	f, err := os.Create(logFile)
 	if err != nil {
 		return "", fmt.Errorf("create log file: %w", err)
 	}
-
-	// Build vLLM args (use vllm CLI script directly)
-	args := []string{"serve", opts.Model}
+	// Build vLLM args — model is just the name, prepend local models dir
+	localModel := opts.Model
+	if opts.WorkDir != "" && !strings.HasPrefix(opts.Model, "/") {
+		localModel = filepath.Join(opts.WorkDir, "models", opts.Model)
+	}
+	args := []string{"serve", localModel}
 	args = append(args, "--gpu-memory-utilization", opts.GPUUtil)
 	if opts.Quantization != "" {
 		args = append(args, "--quantization", opts.Quantization)
 		if opts.Quantization == "awq" {
 			args = append(args, "--dtype", "float16")
 		}
-	}
-	if opts.PrefixCaching {
-		args = append(args, "--enable-prefix-caching")
 	}
 	// Disk cache: ensure cache dir exists; connector configured via launch wrapper
 	if opts.DiskCache {

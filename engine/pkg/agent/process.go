@@ -10,6 +10,18 @@ import (
 	"sync"
 )
 
+// vllmBinary returns the path to the vllm binary.
+func vllmBinary() string {
+	for _, p := range []string{
+		"/root/cascade/.venv-cascade/bin/vllm",
+		"vllm",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "vllm"
+}
 // pythonBin returns the venv Python interpreter path.
 func pythonBin() string {
 	for _, p := range []string{
@@ -23,6 +35,7 @@ func pythonBin() string {
 	return "python3"
 }
 
+// StartOptions holds parameters for starting vLLM.
 // StartOptions holds parameters for starting vLLM.
 type StartOptions struct {
 	Model         string
@@ -74,22 +87,25 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 		return "", fmt.Errorf("create log file: %w", err)
 	}
 
-	// Build vLLM args
-	args := []string{"-m", "vllm.entrypoints.cli.main", "serve", opts.Model}
+	// Build vLLM args (use vllm CLI script directly)
+	args := []string{"serve", opts.Model}
 	args = append(args, "--gpu-memory-utilization", opts.GPUUtil)
 	if opts.Quantization != "" {
 		args = append(args, "--quantization", opts.Quantization)
+		if opts.Quantization == "awq" {
+			args = append(args, "--dtype", "float16")
+		}
 	}
 	if opts.PrefixCaching {
 		args = append(args, "--enable-prefix-caching")
 	}
 	if opts.DiskCache {
-		diskCachePath := filepath.Join(opts.WorkDir, "cache")
 		args = append(args, "--kv-connector", "DiskCacheConnector")
-		args = append(args, "--kv-connector-extra-config", fmt.Sprintf(`{"disk_cache_path": %q}`, diskCachePath))
+		diskCachePath := filepath.Join(opts.WorkDir, "cache")
+		args = append(args, "--disk-cache-path", diskCachePath)
 	}
 
-	pm.cmd = exec.Command(pythonBin(), args...)
+	pm.cmd = exec.Command(vllmBinary(), args...)
 	pm.cmd.Stdout = f
 	pm.cmd.Stderr = f
 
@@ -157,7 +173,7 @@ func (pm *ProcessManager) StartRaw(raw, workDir string) (string, error) {
 		return "", fmt.Errorf("create log file: %w", err)
 	}
 
-	pm.cmd = exec.Command(pythonBin(), args...)
+	pm.cmd = exec.Command(vllmBinary(), args...)
 	pm.cmd.Stdout = f
 	pm.cmd.Stderr = f
 

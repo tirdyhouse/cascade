@@ -237,6 +237,12 @@ class DiskCacheConnector(KVConnectorBase_V1):
         result = self._go_match(token_ids, mm_hashes)
         if result and result.get("matched_tokens", 0) > num_computed_tokens:
             matched = result["matched_tokens"]
+            # Mooncake-compatible guard: leave at least 1 token for vLLM to compute,
+            # otherwise scheduler assert num_new_tokens > 0 fails.
+            if matched >= num_to_check:
+                matched = num_to_check - self._block_size
+                if matched <= num_computed_tokens:
+                    return 0, False
             logger.info("Disk cache HIT for request %s (%d tokens)", request.request_id, matched)
             return matched - num_computed_tokens, False
         return 0, False

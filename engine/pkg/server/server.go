@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -241,6 +242,7 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/nodes/{id}/vllm/chat", s.apiNodeVLLMChat)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/vllm/models", s.apiNodeVLLMModels)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/cache/stats", s.apiNodeCacheStats)
+	mux.HandleFunc("GET /api/v1/nodes/{id}/vllm/metrics", s.apiNodeVLLMMetrics)
 }
 
 func jsonResp(w http.ResponseWriter, data interface{}) {
@@ -286,7 +288,37 @@ func (s *Server) apiModels(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, s.models.List())
 }
 
-// apiNodeVLLMChat proxies a chat completion request to the node's vLLM instance.
+// fetchVLLMMetric parses a single float64 value from vLLM's Prometheus /metrics.
+func (s *Server) fetchVLLMMetric(nodeIP, metricName string) float64 {
+	target := fmt.Sprintf("http://%s:8000/metrics", nodeIP)
+	resp, err := s.httpClient.Get(target)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0
+	}
+	prefix := metricName + "{"
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, metricName+" ") || strings.HasPrefix(line, prefix) {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				if v, err := strconv.ParseFloat(parts[len(parts)-1], 64); err == nil {
+					return v
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// apiNodeVLLMChat proxies a chat completion request to the node's vLLM instance,
+// returning cache hit info alongside the vLLM response.
 func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	detail := s.registry.NodeDetail(id)
@@ -294,6 +326,11 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"node not found"}`, 404)
 		return
 	}
+
+	// Read vLLM prefix cache counters BEFORE the request
+	hitsBefore := s.fetchVLLMMetric(detail.Info.IP, "vllm:prefix_cache_hits_total")
+	queriesBefore := s.fetchVLLMMetric(detail.Info.IP, "vllm:prefix_cache_queries_total")
+
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -317,12 +354,37 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Copy headers
-	for k, v := range resp.Header {
-		w.Header()[k] = v
+	// Read vLLM prefix cache counters AFTER the request
+	hitsAfter := s.fetchVLLMMetric(detail.Info.IP, "vllm:prefix_cache_hits_total")
+	queriesAfter := s.fetchVLLMMetric(detail.Info.IP, "vllm:prefix_cache_queries_total")
+
+	hitTokens := int64(math.Max(0, hitsAfter-hitsBefore))
+	queriedTokens := int64(math.Max(0, queriesAfter-queriesBefore))
+
+	// Read the vLLM response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, `{"error":"read vLLM response: `+err.Error()+`"}`, 502)
+		return
 	}
+
+	// Try to embed cache info into the response JSON
+	var responseMap map[string]interface{}
+	if err := json.Unmarshal(respBody, &responseMap); err == nil {
+		responseMap["_cache"] = map[string]interface{}{
+			"hit_tokens":    hitTokens,
+			"queried_tokens": queriedTokens,
+		}
+		// Also add cache info to usage.prompt_tokens_details if present
+		if usage, ok := responseMap["usage"].(map[string]interface{}); ok {
+			usage["cached_tokens"] = hitTokens
+		}
+		respBody, _ = json.Marshal(responseMap)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	w.Write(respBody)
 }
 
 // apiNodeVLLMModels proxies a model list request to the node's vLLM instance.
@@ -367,6 +429,58 @@ func (s *Server) apiNodeCacheStats(w http.ResponseWriter, r *http.Request) {
 		"cache_evicted":   detail.Status.CacheEvicted,
 		"cache_hit_rate":  detail.Status.CacheHitRate,
 	})
+}
+
+// apiNodeVLLMMetrics proxies to vLLM's /metrics and returns cache-related values.
+func (s *Server) apiNodeVLLMMetrics(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	detail := s.registry.NodeDetail(id)
+	if detail == nil || detail.Info == nil {
+		http.Error(w, `{"error":"node not found"}`, 404)
+		return
+	}
+
+	target := fmt.Sprintf("http://%s:8000/metrics", detail.Info.IP)
+	resp, err := s.httpClient.Get(target)
+	if err != nil {
+		http.Error(w, `{"error":"vLLM metrics proxy: `+err.Error()+`"}`, 502)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, `{"error":"read metrics: `+err.Error()+`"}`, 502)
+		return
+	}
+
+	// Parse key cache metrics from Prometheus text format
+	metrics := map[string]float64{
+		"prefix_cache_queries_total":      0,
+		"prefix_cache_hits_total":         0,
+		"external_prefix_cache_queries_total": 0,
+		"kv_cache_usage_perc":            0,
+	}
+	lines := strings.Split(string(body), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		for key := range metrics {
+			prefix := key + "{"
+			if strings.HasPrefix(line, key+" ") || strings.HasPrefix(line, prefix) {
+				parts := strings.Fields(line)
+				if len(parts) >= 2 {
+					if v, err := strconv.ParseFloat(parts[len(parts)-1], 64); err == nil {
+						metrics[key] = v
+					}
+				}
+				break
+			}
+		}
+	}
+
+	jsonResp(w, metrics)
 }
 
 func (s *Server) apiNodeLogs(w http.ResponseWriter, r *http.Request) {

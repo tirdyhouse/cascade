@@ -237,6 +237,17 @@ func (a *Agent) executeCommand(cmd *cluster.Command) {
 }
 
 func (a *Agent) executeStartVLLM(cmd *cluster.Command) {
+	// Guard: don't start if vLLM is already running
+	if st := a.process.Status(); st == "running" || st == "loading" {
+		log.Printf("[agent] vLLM already %s, ignoring start command", st)
+		a.reportResult(&cluster.CmdResult{
+			CmdID: cmd.CmdID, NodeID: a.config.NodeID,
+			Status: "failed", Error: "vLLM already " + st,
+		})
+		return
+	}
+
+
 	// If raw_args is provided, use it directly as the full command line
 	if raw := cmd.Params["raw_args"]; raw != "" {
 		output, err := a.process.StartRaw(raw, a.config.WorkDir)

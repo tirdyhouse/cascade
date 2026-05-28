@@ -1,4 +1,4 @@
-.PHONY: build-engine build-so build-server build-agent clean test deps all run-server run-agent
+.PHONY: build-engine build-so build-server build-agent clean test test-smoke deps all run-server run-agent
 
 # Build Go engine binary
 build-engine:
@@ -11,6 +11,10 @@ build-so:
 # Run all tests
 test:
 	cd engine && go test ./pkg/...
+
+# Run local disk-cache HTTP smoke test
+test-smoke:
+	bash scripts/smoke_disk_cache.sh
 
 # Build S端 cluster-server
 build-server:

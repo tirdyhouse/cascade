@@ -351,22 +351,6 @@ func (s *Server) fetchGoEngineBlocksStored(nodeIP string) int64 {
 	return stats.BlocksStored
 }
 
-// fetchGoEngineLastMatch returns the most recent adjusted match value set by the connector.
-func (s *Server) fetchGoEngineLastMatch(nodeIP string) int64 {
-	target := fmt.Sprintf("http://%s:9100/last_match", nodeIP)
-	resp, err := s.httpClient.Get(target)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-	var result struct {
-		MatchedTokens int `json:"matched_tokens"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0
-	}
-	return int64(result.MatchedTokens)
-}
 
 
 // apiNodeVLLMChat proxies a chat completion request to the node's vLLM instance,
@@ -378,7 +362,7 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read disk engine stats BEFORE the request
+	// Read stats BEFORE the request
 	diskRetrievedBefore := s.fetchGoEngineBlocksRetrieved(detail.Info.IP)
 
 	// Read the request body
@@ -411,17 +395,27 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read disk engine stats AFTER the request
+	// Read stats AFTER the request
 	diskRetrievedAfter := s.fetchGoEngineBlocksRetrieved(detail.Info.IP)
 	diskStored := s.fetchGoEngineBlocksStored(detail.Info.IP)
 	diskBlocks := diskRetrievedAfter - diskRetrievedBefore
 	if diskBlocks < 0 {
 		diskBlocks = 0
 	}
-	// Embed cache info into the response JSON
+
+	// Extract cached_tokens from vLLM's API response (enabled via --enable-prompt-tokens-details)
+	hitTokens := int64(0)
 	var responseMap map[string]interface{}
 	if err := json.Unmarshal(respBody, &responseMap); err == nil {
+		if usage, ok := responseMap["usage"].(map[string]interface{}); ok {
+			if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
+				if ct, ok := details["cached_tokens"].(float64); ok {
+					hitTokens = int64(ct)
+				}
+			}
+		}
 		responseMap["_cache"] = map[string]interface{}{
+			"hit_tokens":          hitTokens,
 			"disk_blocks":         diskBlocks,
 			"disk_blocks_total":   diskRetrievedAfter,
 			"disk_blocks_stored":  diskStored,

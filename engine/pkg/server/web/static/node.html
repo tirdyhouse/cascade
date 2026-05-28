@@ -1443,12 +1443,17 @@ async function doChat() {
       : '—';
 
     // Build metrics bar
+    const blockSize = 16; // vLLM default block size (tokens per block)
     const cacheIcon = cacheHit ? '✅' : '❌';
-    const cacheLabel = cacheHit ? 'HIT +' + cacheDelta : 'MISS';
+    const cacheLabel = cacheHit ? 'HIT' : 'MISS';
+    const hitTokens = cacheDelta * blockSize;
+    const hitRate = promptTokens > 0 ? ((hitTokens / promptTokens) * 100).toFixed(1) : '—';
     const metricsHtml = '<div style="margin-top:4px;font-size:0.7rem;color:var(--text-3);display:flex;gap:16px;flex-wrap:wrap;">'
       + '<span>⚡ TTFT: <strong style="color:var(--accent);">' + ttft + 's</strong></span>'
       + '<span>📝 Output: <strong style="color:var(--green);">' + tokPerSec + ' tok/s</strong></span>'
-      + '<span>' + cacheIcon + ' Cache: <strong style="color:' + (cacheHit ? 'var(--green)' : 'var(--red)') + ';">' + cacheLabel + '</strong></span>'
+      + '<span>' + cacheIcon + ' Cache: <strong style="color:' + (cacheHit ? 'var(--green)' : 'var(--red)') + ';">' + cacheLabel + '</strong>'
+      + (cacheHit ? ' <span style="color:var(--text-3);font-size:0.65rem;">+' + cacheDelta + ' blk · ' + hitTokens + ' tok · ' + hitRate + '%</span>' : '')
+      + '</span>'
       + '<span>🔤 P:<strong>' + promptTokens + '</strong> · C:<strong>' + completionTokens + '</strong> · T:<strong>' + totalTokens + '</strong></span>'
       + '</div>';
 

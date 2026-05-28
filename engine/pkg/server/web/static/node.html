@@ -1344,7 +1344,7 @@ async function loadChatModels() {
     const sel = document.getElementById('chat-model');
     if (!sel) return;
     const models = data.data || [];
-    sel.innerHTML = models.map(m => `<option value="${esc(m.id)}">${esc(m.id.replace(/^.*\\//, ''))}</option>`).join('');
+    sel.innerHTML = models.map(m => `<option value="${esc(m.id)}">${esc(m.id.replace(/^.*\//, ''))}</option>`).join('');
     if (models.length === 0) {
       sel.innerHTML = '<option value="">No models loaded</option>';
     }

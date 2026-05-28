@@ -1431,14 +1431,14 @@ async function doChat() {
 
     // Build metrics bar
     const cacheIcon = cacheHit ? '✅' : '❌';
-    const cacheLabel = cacheHit ? 'HIT' : 'MISS';
+    const hitLabel = cacheHit ? 'HIT' : 'MISS';
     const metricsHtml = '<div style="margin-top:4px;font-size:0.7rem;color:var(--text-3);display:flex;gap:16px;flex-wrap:wrap;">'
-      + '<span>⚡ TTFT: <strong style="color:var(--accent);">' + ttft + 's</strong></span>'
-      + '<span>📝 Output: <strong style="color:var(--green);">' + tokPerSec + ' tok/s</strong></span>'
-      + '<span>' + cacheIcon + ' Cache: <strong style="color:' + (cacheHit ? 'var(--green)' : 'var(--red)') + ';">' + cacheLabel + '</strong>'
-      + (cacheHit ? ' <span style="color:var(--text-3);font-size:0.65rem;">+' + hitTokens + ' tok · ' + hitRate + '%</span>' : '')
+      + '<span>⚡ Time to First Token: <strong style="color:var(--accent);">' + ttft + 's</strong></span>'
+      + '<span>📝 Generation Speed: <strong style="color:var(--green);">' + tokPerSec + ' tokens/s</strong></span>'
+      + '<span>' + cacheIcon + ' KV Cache: <strong style="color:' + (cacheHit ? 'var(--green)' : 'var(--red)') + ';">' + hitLabel + '</strong>'
+      + (cacheHit ? ' <span style="color:var(--text-3);font-size:0.65rem;">' + hitTokens + '/' + queriedTokens + ' tokens from cache · hit rate ' + hitRate + '%</span>' : '')
       + '</span>'
-      + '<span>🔤 P:<strong>' + promptTokens + '</strong> · C:<strong>' + completionTokens + '</strong> · T:<strong>' + totalTokens + '</strong></span>'
+      + '<span>📄 Prompt: <strong>' + promptTokens + '</strong> · Completion: <strong>' + completionTokens + '</strong> · Total: <strong>' + totalTokens + '</strong></span>'
       + '</div>';
 
     box.innerHTML += '<div style="margin-bottom:12px;">'

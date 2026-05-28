@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -317,6 +316,42 @@ func (s *Server) fetchVLLMMetric(nodeIP, metricName string) float64 {
 	return 0
 }
 
+
+// fetchGoEngineBlocksRetrieved queries the node's Go disk-cache engine /stats for BlocksRetrieved.
+func (s *Server) fetchGoEngineBlocksRetrieved(nodeIP string) int64 {
+	target := fmt.Sprintf("http://%s:9100/stats", nodeIP)
+	resp, err := s.httpClient.Get(target)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	var stats struct {
+		BlocksRetrieved int64 `json:"BlocksRetrieved"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return 0
+	}
+	return stats.BlocksRetrieved
+}
+
+// fetchGoEngineBlocksStored queries the node's Go disk-cache engine /stats for BlocksStored.
+func (s *Server) fetchGoEngineBlocksStored(nodeIP string) int64 {
+	target := fmt.Sprintf("http://%s:9100/stats", nodeIP)
+	resp, err := s.httpClient.Get(target)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	var stats struct {
+		BlocksStored int64 `json:"BlocksStored"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return 0
+	}
+	return stats.BlocksStored
+}
+
+
 // apiNodeVLLMChat proxies a chat completion request to the node's vLLM instance,
 // returning cache hit info alongside the vLLM response.
 func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
@@ -354,13 +389,6 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Read vLLM prefix cache counters AFTER the request
-	hitsAfter := s.fetchVLLMMetric(detail.Info.IP, "vllm:prefix_cache_hits_total")
-	queriesAfter := s.fetchVLLMMetric(detail.Info.IP, "vllm:prefix_cache_queries_total")
-
-	hitTokens := int64(math.Max(0, hitsAfter-hitsBefore))
-	queriedTokens := int64(math.Max(0, queriesAfter-queriesBefore))
-
 	// Read the vLLM response body
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -368,12 +396,29 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read vLLM prefix cache counters AFTER the request
+	hitsAfter := s.fetchVLLMMetric(detail.Info.IP, "vllm:prefix_cache_hits_total")
+	queriesAfter := s.fetchVLLMMetric(detail.Info.IP, "vllm:prefix_cache_queries_total")
+	// Read disk engine stats (cumulative BlocksRetrieved)
+	diskRetrieved := s.fetchGoEngineBlocksRetrieved(detail.Info.IP)
+
+	hitTokens := int64(hitsAfter - hitsBefore)
+	if hitTokens < 0 {
+		hitTokens = 0
+	}
+	queriedTokens := int64(queriesAfter - queriesBefore)
+	if queriedTokens < 0 {
+		queriedTokens = 0
+	}
+
 	// Try to embed cache info into the response JSON
 	var responseMap map[string]interface{}
 	if err := json.Unmarshal(respBody, &responseMap); err == nil {
 		responseMap["_cache"] = map[string]interface{}{
-			"hit_tokens":    hitTokens,
-			"queried_tokens": queriedTokens,
+			"hit_tokens":          hitTokens,
+			"queried_tokens":      queriedTokens,
+			"disk_blocks_retrieved": diskRetrieved,
+			"disk_blocks_stored":   s.fetchGoEngineBlocksStored(detail.Info.IP),
 		}
 		// Also add cache info to usage.prompt_tokens_details if present
 		if usage, ok := responseMap["usage"].(map[string]interface{}); ok {

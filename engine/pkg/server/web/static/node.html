@@ -1372,6 +1372,8 @@ async function doChat() {
   box.innerHTML += '<div id="' + loadId + '" style="margin-bottom:8px;"><span style="background:var(--bg-3);color:var(--text-2);padding:8px 14px;border-radius:12px 12px 12px 4px;display:inline-block;">thinking...</span></div>';
   box.scrollTop = box.scrollHeight;
 
+  const startTime = performance.now();
+
   try {
     const r = await fetch('/api/v1/nodes/' + encodeURIComponent(id) + '/vllm/chat', {
       method: 'POST',
@@ -1384,17 +1386,40 @@ async function doChat() {
       })
     });
     const data = await r.json();
+    const elapsed = performance.now() - startTime;
 
     // Remove loading indicator
     const loadingEl = document.getElementById(loadId);
     if (loadingEl) loadingEl.remove();
 
     const reply = data?.choices?.[0]?.message?.content || 'Error: ' + (data?.error?.message || JSON.stringify(data));
-    box.innerHTML += '<div style="margin-bottom:8px;"><span style="background:var(--bg-3);color:var(--text-1);padding:8px 14px;border-radius:12px 12px 12px 4px;display:inline-block;max-width:80%;word-break:break-word;white-space:pre-wrap;">' + esc(reply) + '</span></div>';
+
+    // Compute metrics
+    const usage = data?.usage || {};
+    const promptTokens = usage.prompt_tokens || 0;
+    const completionTokens = usage.completion_tokens || 0;
+    const totalTokens = usage.total_tokens || 0;
+    const ttft = (elapsed / 1000).toFixed(2);
+    const tokPerSec = completionTokens > 0 && elapsed > 0
+      ? ((completionTokens / (elapsed / 1000))).toFixed(1)
+      : '—';
+
+    // Build metrics bar
+    const metricsHtml = '<div style="margin-top:4px;font-size:0.7rem;color:var(--text-3);display:flex;gap:16px;flex-wrap:wrap;">'
+      + '<span>⚡ TTFT: <strong style="color:var(--accent);">' + ttft + 's</strong></span>'
+      + '<span>📝 Output: <strong style="color:var(--green);">' + tokPerSec + ' tok/s</strong></span>'
+      + '<span>🔤 Prompt: <strong>' + promptTokens + '</strong> · Completion: <strong>' + completionTokens + '</strong> · Total: <strong>' + totalTokens + '</strong></span>'
+      + '</div>';
+
+    box.innerHTML += '<div style="margin-bottom:12px;">'
+      + '<span style="background:var(--bg-3);color:var(--text-1);padding:8px 14px;border-radius:12px 12px 12px 4px;display:inline-block;max-width:80%;word-break:break-word;white-space:pre-wrap;">' + esc(reply) + '</span>'
+      + metricsHtml
+      + '</div>';
     box.scrollTop = box.scrollHeight;
   } catch(e) {
     const loadingEl = document.getElementById(loadId);
     if (loadingEl) loadingEl.remove();
+    const elapsed = performance.now() - startTime;
     box.innerHTML += '<div style="margin-bottom:8px;"><span style="background:rgba(239,68,68,0.15);color:var(--red);padding:8px 14px;border-radius:12px;display:inline-block;">Error: ' + esc(e.message) + '</span></div>';
     box.scrollTop = box.scrollHeight;
   }

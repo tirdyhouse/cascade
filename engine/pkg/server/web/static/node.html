@@ -1199,6 +1199,7 @@ async function doStart() {
       enable_disk_cache: document.getElementById('chk-disk')?.checked ? 'true' : 'false',
       quantization: quant || ''
     };
+  } else {
     params = { raw_args: document.getElementById('cmd-preview')?.value?.trim() || '' };
   }
 

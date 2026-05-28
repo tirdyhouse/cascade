@@ -245,8 +245,8 @@ class _CuFileHandle:
             return self._handle.write(ptr, nbytes, file_offset=file_offset,
                                       dev_offset=dev_offset)
 
-        # Low-level API takes (handle, ptr, nbytes, file_offset, dev_offset)
-        return self._binding.write(self._handle, ptr, nbytes,
+        # Low-level API takes (handle, gpu_addr, nbytes, file_offset, dev_offset)
+        return self._binding.write(self._handle, gpu_addr, nbytes,
                                    file_offset, dev_offset)
 
     def read(self, gpu_addr: int, nbytes: int,
@@ -258,7 +258,7 @@ class _CuFileHandle:
             return self._handle.read(ptr, nbytes, file_offset=file_offset,
                                      dev_offset=dev_offset)
 
-        return self._binding.read(self._handle, ptr, nbytes,
+        return self._binding.read(self._handle, gpu_addr, nbytes,
                                   file_offset, dev_offset)
 
 

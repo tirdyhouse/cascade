@@ -1,16 +1,21 @@
-import hashlib
-import json
 import socket
-import struct
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING
 
-import safetensors.torch
 import torch
 
-from adapter.storage import StorageBackend, create_storage_backend
+from adapter.storage import create_storage_backend
+from adapter.vllm.chunking import cached_file_path, chunk_file_path, chunk_ranges
+from adapter.vllm.go_client import DiskCacheGoClient
+from adapter.vllm.hashing import (
+    align_to_block_size,
+    compute_prompt_hash,
+    hash_token_count,
+    layer_hash,
+    prefix_key,
+)
+from adapter.vllm.tensor_ops import extract_kv_from_layer, inject_kv_into_layer
 
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
@@ -31,50 +36,6 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 logger = init_logger('vllm.disk_cache')
-
-
-def align_to_block_size(num_tokens: int, block_size: int) -> int:
-    if num_tokens < 1:
-        return 0
-    return (num_tokens - 1) // block_size * block_size
-
-
-def hash_token_count(num_tokens: int, block_size: int) -> int:
-    aligned = align_to_block_size(num_tokens, block_size)
-    return max(aligned, 1)
-
-
-def compute_prompt_hash(token_ids, num_tokens, mm_hashes):
-    import struct
-    h = hashlib.sha256()
-    for tid in token_ids[:num_tokens]:
-        h.update(struct.pack(">I", tid))
-    for mh in mm_hashes:
-        h.update(mh.encode())
-    return h.hexdigest()[:32]
-
-
-def inject_kv_into_layer(dst, src, slot_mapping, attn_metadata, block_size):
-    from vllm.v1.attention.backends.triton_attn import TritonAttentionMetadata
-    if isinstance(attn_metadata, TritonAttentionMetadata):
-        block_idxs = slot_mapping // block_size
-        offsets = slot_mapping % block_size
-        dst[block_idxs, :, offsets] = src
-    else:
-        num_pages = dst.shape[1]
-        page_size = dst.shape[2]
-        dst_flat = dst.reshape(2, num_pages * page_size, -1)
-        dst_flat[:, slot_mapping, ...] = src
-
-
-def extract_kv_from_layer(layer, slot_mapping, attn_metadata, block_size):
-    from vllm.v1.attention.backends.triton_attn import TritonAttentionMetadata
-    if isinstance(attn_metadata, TritonAttentionMetadata):
-        block_idxs = slot_mapping // block_size
-        offsets = slot_mapping % block_size
-        return layer[block_idxs, :, offsets]
-    num_pages, page_size = layer.shape[1], layer.shape[2]
-    return layer.reshape(2, num_pages * page_size, -1)[:, slot_mapping, ...]
 
 
 @dataclass
@@ -106,6 +67,7 @@ class DiskCacheConnector(KVConnectorBase_V1):
         extra = vllm_config.kv_transfer_config.kv_connector_extra_config or {}
         self.cache_root = Path(extra.get("disk_cache_path", "/tmp/disk-cache"))
         self.go_addr = extra.get("disk_cache_engine_addr", "http://localhost:9100")
+        self._go = DiskCacheGoClient(self.go_addr)
         self.target_device = extra.get("target_device", "auto")
         self._block_size = vllm_config.cache_config.block_size
         self.node_id = socket.gethostname()
@@ -303,140 +265,67 @@ class DiskCacheConnector(KVConnectorBase_V1):
         return max(1, 2 * num_heads * head_dim * 2)
 
     def _chunk_ranges(self, num_tokens):
-        """Generate (chunk_idx, start, end) for chunk splitting."""
-        tpc = self._tokens_per_chunk
-        chunk_idx = 0
-        while chunk_idx * tpc < num_tokens:
-            start = chunk_idx * tpc
-            end = min(start + tpc, num_tokens)
-            yield chunk_idx, start, end
-            chunk_idx += 1
+        yield from chunk_ranges(num_tokens, self._tokens_per_chunk)
 
     def _prefix_key(self, token_ids):
-        """Prefix shared across same-prefix requests. SHA-256 of first block_size tokens."""
-        n = min(self._block_size, len(token_ids))
-        h = hashlib.sha256()
-        for tid in token_ids[:n]:
-            h.update(struct.pack(">I", tid))
-        return h.hexdigest()[:32]
+        return prefix_key(token_ids, self._block_size)
 
     def _chunk_file_path(self, prefix_key, layer_name, chunk_idx):
-        """{root}/{pk[0:2]}/{pk[2:4]}/{pk}/{layer}/{idx}.safetensors"""
-        pk = prefix_key
-        return self.cache_root / pk[:2] / pk[2:4] / pk / layer_name / f"{chunk_idx}.safetensors"
+        return chunk_file_path(self.cache_root, prefix_key, layer_name, chunk_idx)
 
     def _go_chunk_put(self, prefix_key, layer_name, chunk_idx, num_tokens):
-        """Register a chunk file with Go engine."""
         if not self._connected:
             return
         try:
-            req = urllib.request.Request(
-                f"{self.go_addr}/chunk_put",
-                data=json.dumps({
-                    "prefix_key": prefix_key,
-                    "layer_name": layer_name,
-                    "chunk_index": chunk_idx,
-                    "num_tokens": num_tokens,
-                }).encode(),
-                headers={"Content-Type": "application/json"},
-            )
-            urllib.request.urlopen(req, timeout=5)
+            self._go.chunk_put(prefix_key, layer_name, chunk_idx, num_tokens)
         except Exception as e:
             logger.debug("Go ChunkPut failed: %s", e)
 
     def _go_chunk_list(self, prefix_key, layer_name):
-        """Get sorted list of existing chunk indices for a prefix+layer."""
         try:
-            resp = urllib.request.urlopen(
-                f"{self.go_addr}/chunk_list?prefix_key={prefix_key}&layer_name={layer_name}",
-                timeout=5,
-            )
-            return json.loads(resp.read()).get("chunks", [])
+            return self._go.chunk_list(prefix_key, layer_name)
         except Exception:
             return []
+
     def _layer_hash(self, prompt_hash, layer_name):
-        h = hashlib.sha256()
-        h.update(prompt_hash.encode())
-        h.update(layer_name.encode())
-        return h.hexdigest()[:32]
+        return layer_hash(prompt_hash, layer_name)
 
     def _cached_file_path(self, layer_hash):
-        return self.cache_root / layer_hash[:2] / layer_hash[2:4] / f"{layer_hash}.safetensors"
+        return cached_file_path(self.cache_root, layer_hash)
 
     def _go_match(self, token_ids, mm_hashes):
-        """Send token IDs to Go engine for cache hit detection (parallel)."""
         try:
-            req = urllib.request.Request(
-                f"{self.go_addr}/match",
-                data=json.dumps({
-                    "token_ids": token_ids,
-                    "mm_hashes": mm_hashes,
-                    "block_size": self._block_size,
-                }).encode(),
-                headers={"Content-Type": "application/json"},
-            )
-            resp = urllib.request.urlopen(req, timeout=5)
-            return json.loads(resp.read())
+            return self._go.match(token_ids, mm_hashes, self._block_size)
         except Exception as e:
             logger.debug("Go Match failed: %s", e)
             return None
 
     def _go_record(self, prompt_hash, num_tokens):
-        """Record a cache-complete sentinel in Go engine metadata."""
         try:
-            req = urllib.request.Request(
-                f"{self.go_addr}/record",
-                data=json.dumps({
-                    "prompt_hash": prompt_hash,
-                    "num_tokens": num_tokens,
-                }).encode(),
-                headers={"Content-Type": "application/json"},
-            )
-            urllib.request.urlopen(req, timeout=5)
+            self._go.record(prompt_hash, num_tokens)
         except Exception as e:
             logger.debug("Go Record failed: %s", e)
 
     def _go_record_batch(self, token_ids, mm_hashes, num_tokens):
-        """Record all sub-block sentinels via /record_batch.
-        Go engine computes incremental cumulative hashes and stores all prefix lengths."""
         try:
-            req = urllib.request.Request(
-                f"{self.go_addr}/record_batch",
-                data=json.dumps({
-                    "token_ids": token_ids[:num_tokens],
-                    "mm_hashes": mm_hashes,
-                    "block_size": self._block_size,
-                }).encode(),
-                headers={"Content-Type": "application/json"},
-            )
-            urllib.request.urlopen(req, timeout=5)
+            self._go.record_batch(token_ids[:num_tokens], mm_hashes, self._block_size)
         except Exception as e:
             logger.debug("Go RecordBatch failed: %s", e)
 
     def _go_put(self, hash_val, file_path, size):
         try:
-            req = urllib.request.Request(
-                f"{self.go_addr}/put",
-                data=json.dumps({"hash": hash_val, "file_path": file_path, "size": size}).encode(),
-                headers={"Content-Type": "application/json"},
-            )
-            urllib.request.urlopen(req, timeout=5)
+            self._go.put(hash_val, file_path, size)
         except Exception as e:
             logger.debug("Go Put failed: %s", e)
 
     def _go_get(self, hash_val):
         try:
-            resp = urllib.request.urlopen(f"{self.go_addr}/get?hash={hash_val:016x}", timeout=5)
-            return json.loads(resp.read())
+            return self._go.get(hash_val)
         except Exception:
             return None
 
     def _health_check(self):
-        try:
-            urllib.request.urlopen(f"{self.go_addr}/stats", timeout=3)
-            return True
-        except Exception:
-            return False
+        return self._go.health_check()
 
 
 KVConnectorClass = DiskCacheConnector

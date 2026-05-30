@@ -1,17 +1,18 @@
 # A100 Storage Backend Benchmark
 
 This document records a reproducible POSIX vs GDS storage-backend benchmark run
-for Predict. Regenerate with:
+for Predict. Regenerate on the A100 validation host with:
 
 ```bash
-PYTHONPATH=. /root/cascade/.venv-cascade/bin/python scripts/benchmark_storage_backend.py \
-  --backends posix,gds \
-  --device cuda:0 \
-  --shape 4096,4096 \
-  --dtype float16 \
-  --iterations 3 \
-  --warmup 1 \
-  --markdown docs/storage-benchmark-a100.md
+STORAGE_BENCH_BACKENDS=posix,gds \
+STORAGE_BENCH_DEVICE=cuda:0 \
+STORAGE_BENCH_SHAPE=4096,4096 \
+STORAGE_BENCH_DTYPE=float16 \
+STORAGE_BENCH_ITERATIONS=3 \
+STORAGE_BENCH_WARMUP=1 \
+STORAGE_BENCH_MARKDOWN=docs/storage-benchmark-a100.md \
+PYTHON=/root/cascade/.venv-cascade/bin/python \
+make bench-storage
 # The script updates only the benchmark-results marker block when markers exist.
 ```
 

@@ -1,8 +1,10 @@
 package cache
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -148,6 +150,81 @@ func TestMissingChunkDoesNotChangeRetrievedCount(t *testing.T) {
 	}
 	if len(chunks) != 1 || chunks[0] != 0 {
 		t.Fatalf("ListChunks() = %v, want [0]", chunks)
+	}
+}
+
+func TestConcurrentRequestsKeepMetadataAndStatsConsistent(t *testing.T) {
+	eng := newTestEngine(t, 1<<30)
+	const (
+		workers         = 8
+		blocksPerWorker = 25
+	)
+
+	var wg sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := 0; index < blocksPerWorker; index++ {
+				hash := uint64(worker*blocksPerWorker + index + 1)
+				if err := eng.Put(hash, fmt.Sprintf("worker-%d/block-%d.bin", worker, index), 64); err != nil {
+					t.Errorf("Put(%d, %d) error = %v", worker, index, err)
+					return
+				}
+				if meta, err := eng.Get(hash); err != nil || meta == nil {
+					t.Errorf("Get(%d, %d) = (%+v, %v), want metadata", worker, index, meta, err)
+					return
+				}
+
+				tokens := []int64{int64(worker), int64(index), int64(worker + index), int64(worker*index + 1)}
+				if err := eng.RecordAll(tokens, nil, 2); err != nil {
+					t.Errorf("RecordAll(%d, %d) error = %v", worker, index, err)
+					return
+				}
+				match := eng.Match(tokens, nil, 2)
+				if match.MatchedTokens != 4 || match.PromptHash == "" {
+					t.Errorf("Match(%d, %d) = %+v, want full hit", worker, index, match)
+					return
+				}
+				if err := eng.PutChunk(match.PromptHash, "layer.0", index, 2); err != nil {
+					t.Errorf("PutChunk(%d, %d) error = %v", worker, index, err)
+					return
+				}
+				chunks, err := eng.ListChunks(match.PromptHash, "layer.0")
+				if err != nil {
+					t.Errorf("ListChunks(%d, %d) error = %v", worker, index, err)
+					return
+				}
+				if len(chunks) != 1 || chunks[0] != index {
+					t.Errorf("ListChunks(%d, %d) = %v, want [%d]", worker, index, chunks, index)
+					return
+				}
+				eng.RecordRetrieved(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	expected := int64(workers * blocksPerWorker)
+	stats := eng.Stats()
+	if stats.BlockEntries != expected || stats.ChunkEntries != expected || stats.SentinelEntries != expected*2 {
+		t.Fatalf("Stats() inventory = %+v, want block/chunk entries=%d sentinel entries=%d", stats, expected, expected*2)
+	}
+	if stats.PutRequests != expected || stats.GetRequests != expected || stats.GetHits != expected || stats.GetMisses != 0 {
+		t.Fatalf("Stats() block counters = %+v, want put/get/getHits=%d getMisses=0", stats, expected)
+	}
+	if stats.RecordBatchCalls != expected || stats.MatchRequests != expected || stats.MatchHits != expected || stats.MatchedTokens != expected*4 {
+		t.Fatalf("Stats() match counters = %+v, want record/match=%d matchedTokens=%d", stats, expected, expected*4)
+	}
+	if stats.ChunkPutRequests != expected || stats.ChunksStored != expected || stats.ChunkListRequests != expected || stats.ChunkListHits != expected {
+		t.Fatalf("Stats() chunk counters = %+v, want chunk put/list=%d", stats, expected)
+	}
+	if stats.ChunksRetrieved != expected {
+		t.Fatalf("ChunksRetrieved = %d, want %d", stats.ChunksRetrieved, expected)
+	}
+	if stats.BlocksRetrieved != expected*2 {
+		t.Fatalf("BlocksRetrieved = %d, want %d (Get hits + explicit retrieved records)", stats.BlocksRetrieved, expected*2)
 	}
 }
 

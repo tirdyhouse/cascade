@@ -74,6 +74,83 @@ func TestPutGetStatsAndRemove(t *testing.T) {
 	}
 }
 
+func TestRestartRestoresMetadataAndCounts(t *testing.T) {
+	root := t.TempDir()
+	cfg := Config{
+		CachePath:      filepath.Join(root, "blocks"),
+		MetadataPath:   filepath.Join(root, "meta"),
+		MaxSizeBytes:   1024,
+		EvictionPolicy: "lru",
+	}
+	eng1, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := eng1.Put(0x111, "one.bin", 10); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	tokens := []int64{1, 2, 3, 4, 5, 6}
+	if err := eng1.RecordAll(tokens, nil, 2); err != nil {
+		t.Fatalf("RecordAll() error = %v", err)
+	}
+	if err := eng1.PutChunk("prompt-a", "layer.0", 0, 3); err != nil {
+		t.Fatalf("PutChunk() error = %v", err)
+	}
+	if err := eng1.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	eng2, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() reopen error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := eng2.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	stats := eng2.Stats()
+	if stats.BlockEntries != 1 || stats.ChunkEntries != 1 || stats.SentinelEntries != 3 {
+		t.Fatalf("Stats() after reopen = %+v, want block/chunk entries=1 and 3 sentinels", stats)
+	}
+	if got := eng2.Exists(0x111); !got {
+		t.Fatal("Exists() after reopen = false, want true")
+	}
+	match := eng2.Match(tokens, nil, 2)
+	if match.MatchedTokens != 6 || match.PromptHash == "" {
+		t.Fatalf("Match() after reopen = %+v, want matched tokens=6 with prompt hash", match)
+	}
+	chunks, err := eng2.ListChunks("prompt-a", "layer.0")
+	if err != nil {
+		t.Fatalf("ListChunks() after reopen error = %v", err)
+	}
+	if !reflect.DeepEqual(chunks, []int{0}) {
+		t.Fatalf("ListChunks() after reopen = %v, want [0]", chunks)
+	}
+}
+
+func TestMissingChunkDoesNotChangeRetrievedCount(t *testing.T) {
+	eng := newTestEngine(t, 1024)
+	if err := eng.RecordAll([]int64{1, 2, 3, 4, 5, 6}, nil, 2); err != nil {
+		t.Fatalf("RecordAll() error = %v", err)
+	}
+	if err := eng.PutChunk("prompt-a", "layer.0", 0, 3); err != nil {
+		t.Fatalf("PutChunk() error = %v", err)
+	}
+	before := eng.Stats().BlocksRetrieved
+	chunks, err := eng.ListChunks("prompt-a", "layer.0")
+	if err != nil {
+		t.Fatalf("ListChunks() error = %v", err)
+	}
+	if got := eng.Stats().BlocksRetrieved - before; got != 0 {
+		t.Fatalf("ListChunks() retrieved delta = %d, want 0", got)
+	}
+	if len(chunks) != 1 || chunks[0] != 0 {
+		t.Fatalf("ListChunks() = %v, want [0]", chunks)
+	}
+}
+
 func TestEvictRemovesLeastRecentlyUsedBlocks(t *testing.T) {
 	eng := newTestEngine(t, 200)
 

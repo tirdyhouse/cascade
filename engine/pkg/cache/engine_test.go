@@ -129,11 +129,20 @@ func TestRecordAllMatchAndChunks(t *testing.T) {
 	if err := eng.PutChunk(match.PromptHash, "layer.0", 1, 2); err != nil {
 		t.Fatalf("PutChunk(1) error = %v", err)
 	}
+	before := eng.Stats().BlocksRetrieved
 	chunks, err := eng.ListChunks(match.PromptHash, "layer.0")
 	if err != nil {
 		t.Fatalf("ListChunks() error = %v", err)
 	}
 	if !reflect.DeepEqual(chunks, []int{0, 1}) {
 		t.Fatalf("ListChunks() = %v, want [0 1]", chunks)
+	}
+	if got := eng.Stats().BlocksRetrieved - before; got != 0 {
+		t.Fatalf("ListChunks() retrieval stats delta = %d, want 0", got)
+	}
+
+	eng.RecordRetrieved(int64(len(chunks)))
+	if got := eng.Stats().BlocksRetrieved - before; got != int64(len(chunks)) {
+		t.Fatalf("RecordRetrieved() stats delta = %d, want %d", got, len(chunks))
 	}
 }

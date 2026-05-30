@@ -20,8 +20,8 @@ type diskEngine struct {
 	meta *metadata.Store
 	pol  eviction.Policy
 
-	mu            sync.Mutex
-	totalBytes    int64 // tracked by eviction policy
+	mu              sync.Mutex
+	totalBytes      int64 // tracked by eviction policy
 	blocksStored    atomic.Int64
 	blocksEvicted   atomic.Int64
 	blocksRetrieved atomic.Int64
@@ -38,7 +38,7 @@ func New(cfg Config) (Engine, error) {
 	pol := eviction.NewLRU(maxBytes)
 
 	eng := &diskEngine{
-		cfg: cfg,
+		cfg:  cfg,
 		meta: meta,
 		pol:  pol,
 	}
@@ -177,6 +177,14 @@ func (e *diskEngine) ListChunks(prefixKey, layerName string) ([]int, error) {
 	return e.meta.ListChunks(prefixKey, layerName)
 }
 
+// RecordRetrieved records successful external cache chunk or block retrievals.
+func (e *diskEngine) RecordRetrieved(count int64) {
+	if count <= 0 {
+		return
+	}
+	e.blocksRetrieved.Add(count)
+}
+
 // RecordAll computes all block-aligned cumulative hashes for a prompt
 // and records them as sentinels in a single Pebble batch.
 // numTokens is the actual number of KV tokens cached (aligned to block_size).
@@ -227,8 +235,9 @@ func (e *diskEngine) RecordAll(tokenIDs []int64, mmHashes []string, blockSize in
 }
 
 // Match finds the largest cache hit:
-//   1. Incremental SHA-256: scan token_ids once, collect cumulative hashes.
-//   2. Binary search (since sentinels are monotonic: if hash[k] exists, hash[0..k-1] also exist).
+//  1. Incremental SHA-256: scan token_ids once, collect cumulative hashes.
+//  2. Binary search (since sentinels are monotonic: if hash[k] exists, hash[0..k-1] also exist).
+//
 // Returns matched token count and the corresponding prompt hash.
 func (e *diskEngine) Match(tokenIDs []int64, mmHashes []string, blockSize int) MatchResult {
 	if len(tokenIDs) < 2 || blockSize < 1 {

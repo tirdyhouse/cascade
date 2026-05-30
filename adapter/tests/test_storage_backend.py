@@ -253,21 +253,26 @@ class TestNvFileBackendMocked:
                 self.close()
             def close(self):
                 pass
+            @staticmethod
+            def _ptr_addr(ptr):
+                if isinstance(ptr, int):
+                    return ptr
+                return ptr.value
+
             def write(self, ptr, nbytes, file_offset=0, dev_offset=0):
                 import ctypes
-                addr = int(ptr) if not isinstance(ptr, int) else ptr
-                buf = (ctypes.c_byte * nbytes).from_address(addr)
+                buf = (ctypes.c_byte * nbytes).from_address(self._ptr_addr(ptr))
                 with open(self.path, "r+b") as f:
                     f.seek(file_offset)
                     f.write(bytes(buf))
                 return nbytes
+
             def read(self, ptr, nbytes, file_offset=0, dev_offset=0):
                 import ctypes
-                addr = int(ptr) if not isinstance(ptr, int) else ptr
                 with open(self.path, "rb") as f:
                     f.seek(file_offset)
                     data = f.read(nbytes)
-                buf = (ctypes.c_byte * nbytes).from_address(addr)
+                buf = (ctypes.c_byte * nbytes).from_address(self._ptr_addr(ptr))
                 buf[:] = data
                 return nbytes
         class _MockBinding:

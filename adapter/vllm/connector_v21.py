@@ -106,47 +106,60 @@ class DiskCacheConnector(KVConnectorBase_V1):
         for req in meta.requests:
             if req.is_store:
                 continue
-            num_tokens = req.num_tokens
-            block_offsets = torch.arange(0, req.block_size)
-            slot_mapping = (
-                block_offsets.view(1, req.block_size)
-                + torch.tensor(req.block_ids).view(len(req.block_ids), 1) * req.block_size
-            ).flatten()[:num_tokens]
-            prefix_key = self._prefix_key(req.token_ids)
-            for layer_name in forward_context.no_compile_layers:
-                layer = forward_context.no_compile_layers[layer_name]
-                kv_cache_layer = getattr(layer, "kv_cache", None)
-                if kv_cache_layer is None:
-                    continue
-                chunks = sorted(self._go_chunk_list(prefix_key, layer_name))
-                if not chunks:
-                    continue
-                try:
-                    # Load all chunks directly to target device via storage backend
-                    kv_parts = []
-                    target_device = self._resolve_device(kv_cache_layer)
-                    for chunk_idx in chunks:
-                        fp = self._chunk_file_path(prefix_key, layer_name, chunk_idx)
-                        if not fp.exists():
-                            logger.warning("Chunk %d missing for %s/%s", chunk_idx, prefix_key, layer_name)
-                            continue
-                        loaded = self._storage.load(fp, device=target_device)
-                        kv_parts.append(loaded)
-                        self._go_record_retrieved()
-                    if not kv_parts:
-                        continue
-                    kv_cache = torch.cat(kv_parts, dim=1)  # concat along token dim
-                    kv_cache = kv_cache[:, :num_tokens, :]  # take only needed tokens
-                    target_dtype = kv_cache_layer.dtype
-                    if kv_cache.dtype != target_dtype:
-                        kv_cache = kv_cache.to(target_dtype)
-                    layer_attn = attn_metadata.get(layer_name, attn_metadata) if isinstance(attn_metadata, dict) else attn_metadata
-                    inject_kv_into_layer(kv_cache_layer, kv_cache, slot_mapping, layer_attn, self._block_size)
-                except Exception as e:
-                    logger.warning("Failed to load KV for %s: %s", layer_name, e)
+            self._load_request_kv(req, forward_context, attn_metadata)
 
     def wait_for_layer_load(self, layer_name):
         pass
+
+    def _load_request_kv(self, req, forward_context, attn_metadata):
+        num_tokens = req.num_tokens
+        block_offsets = torch.arange(0, req.block_size)
+        slot_mapping = (
+            block_offsets.view(1, req.block_size)
+            + torch.tensor(req.block_ids).view(len(req.block_ids), 1) * req.block_size
+        ).flatten()[:num_tokens]
+        prefix_key = self._prefix_key(req.token_ids)
+        for layer_name in forward_context.no_compile_layers:
+            layer = forward_context.no_compile_layers[layer_name]
+            kv_cache_layer = getattr(layer, "kv_cache", None)
+            if kv_cache_layer is None:
+                continue
+            self._load_layer_chunks(
+                prefix_key,
+                layer_name,
+                kv_cache_layer,
+                slot_mapping,
+                num_tokens,
+                attn_metadata,
+            )
+
+    def _load_layer_chunks(self, prefix_key, layer_name, kv_cache_layer, slot_mapping, num_tokens, attn_metadata):
+        chunks = sorted(self._go_chunk_list(prefix_key, layer_name))
+        if not chunks:
+            return
+        try:
+            # Load all chunks directly to target device via storage backend
+            kv_parts = []
+            target_device = self._resolve_device(kv_cache_layer)
+            for chunk_idx in chunks:
+                fp = self._chunk_file_path(prefix_key, layer_name, chunk_idx)
+                if not fp.exists():
+                    logger.warning("Chunk %d missing for %s/%s", chunk_idx, prefix_key, layer_name)
+                    continue
+                loaded = self._storage.load(fp, device=target_device)
+                kv_parts.append(loaded)
+                self._go_record_retrieved()
+            if not kv_parts:
+                return
+            kv_cache = torch.cat(kv_parts, dim=1)  # concat along token dim
+            kv_cache = kv_cache[:, :num_tokens, :]  # take only needed tokens
+            target_dtype = kv_cache_layer.dtype
+            if kv_cache.dtype != target_dtype:
+                kv_cache = kv_cache.to(target_dtype)
+            layer_attn = attn_metadata.get(layer_name, attn_metadata) if isinstance(attn_metadata, dict) else attn_metadata
+            inject_kv_into_layer(kv_cache_layer, kv_cache, slot_mapping, layer_attn, self._block_size)
+        except Exception as e:
+            logger.warning("Failed to load KV for %s: %s", layer_name, e)
 
     def save_kv_layer(self, layer_name, kv_layer, attn_metadata, **kwargs):
         if not self._connected:

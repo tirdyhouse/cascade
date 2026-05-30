@@ -43,6 +43,7 @@ type Engine interface {
 	RecordAll(tokenIDs []int64, mmHashes []string, blockSize int) error
 	PutChunk(prefixKey, layerName string, chunkIndex, numTokens int) error
 	ListChunks(prefixKey, layerName string) ([]int, error)
+	RecordRetrieved(count int64)
 	Close() error
 }
 

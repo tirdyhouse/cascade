@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"predict/engine/pkg/cache"
+	"strconv"
 )
 
 var (
@@ -54,7 +54,6 @@ func parseSize(s string) (int64, error) {
 
 var eng cache.Engine
 
-
 func main() {
 	flag.Parse()
 
@@ -86,6 +85,7 @@ func main() {
 	mux.HandleFunc("/match", handleMatch)
 	mux.HandleFunc("/record", handleRecord)
 	mux.HandleFunc("/record_batch", handleRecordBatch)
+	mux.HandleFunc("/retrieved", handleRetrieved)
 	mux.HandleFunc("/chunk_put", handleChunkPut)
 	mux.HandleFunc("/chunk_list", handleChunkList)
 
@@ -126,7 +126,9 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRemove(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Hash uint64 `json:"hash"` }
+	var req struct {
+		Hash uint64 `json:"hash"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
 	eng.Remove(req.Hash)
 	w.WriteHeader(200)
@@ -138,12 +140,13 @@ func handleExists(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleEvict(w http.ResponseWriter, r *http.Request) {
-	var req struct{ TargetBytes int64 `json:"target_bytes"` }
+	var req struct {
+		TargetBytes int64 `json:"target_bytes"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
 	metas := eng.Evict(req.TargetBytes)
 	json.NewEncoder(w).Encode(metas)
 }
-
 
 // ── /record_batch: records all sub-block sentinels ──
 
@@ -175,6 +178,25 @@ func handleRecordBatch(w http.ResponseWriter, r *http.Request) {
 }
 func handleStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(eng.Stats())
+}
+
+// RetrievedReq records successful external cache retrievals.
+type RetrievedReq struct {
+	Count int64 `json:"count"`
+}
+
+func handleRetrieved(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", 400)
+		return
+	}
+	var req RetrievedReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	eng.RecordRetrieved(req.Count)
+	w.WriteHeader(200)
 }
 
 // handleMatch receives token IDs and returns the best cache hit.
@@ -211,6 +233,7 @@ func handleRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(200)
 }
+
 // ── Chunk handlers ──
 
 type ChunkPutReq struct {

@@ -115,3 +115,7 @@ class TestDiskCacheGoClient:
                 "/chunk_list",
                 {"prefix_key": "prefix", "layer_name": "layer.0"},
             )
+
+        with mock.patch.object(client, "post") as post:
+            client.record_retrieved(3)
+            post.assert_called_once_with("/retrieved", {"count": 3})

@@ -132,7 +132,7 @@ class DiskCacheConnector(KVConnectorBase_V1):
                             continue
                         loaded = self._storage.load(fp, device=target_device)
                         kv_parts.append(loaded)
-                        self._go_get(int(prefix_key[:16], 16))
+                        self._go_record_retrieved()
                     if not kv_parts:
                         continue
                     kv_cache = torch.cat(kv_parts, dim=1)  # concat along token dim
@@ -318,11 +318,11 @@ class DiskCacheConnector(KVConnectorBase_V1):
         except Exception as e:
             logger.debug("Go Put failed: %s", e)
 
-    def _go_get(self, hash_val):
+    def _go_record_retrieved(self, count=1):
         try:
-            return self._go.get(hash_val)
-        except Exception:
-            return None
+            self._go.record_retrieved(count)
+        except Exception as e:
+            logger.debug("Go Retrieved failed: %s", e)
 
     def _health_check(self):
         return self._go.health_check()

@@ -20,11 +20,14 @@ These tests need ``cufile`` or ``hipfile`` installed.  Skipped by default.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import struct
+import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -176,6 +179,63 @@ class TestPosixBackendWithGPU:
         assert torch.equal(tensor, original)
 
 
+
+@contextlib.contextmanager
+def _mock_nvfile_backend():
+    class _MockCuFile:
+        def __init__(self, path, mode, use_direct_io=False):
+            self.path = path
+            self.mode = mode
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+        def close(self):
+            pass
+
+        @staticmethod
+        def _ptr_addr(ptr):
+            if isinstance(ptr, int):
+                return ptr
+            return ptr.value
+
+        def write(self, ptr, nbytes, file_offset=0, dev_offset=0):
+            import ctypes
+            buf = (ctypes.c_byte * nbytes).from_address(self._ptr_addr(ptr))
+            with open(self.path, "r+b") as f:
+                f.seek(file_offset)
+                f.write(bytes(buf))
+            return nbytes
+
+        def read(self, ptr, nbytes, file_offset=0, dev_offset=0):
+            import ctypes
+            with open(self.path, "rb") as f:
+                f.seek(file_offset)
+                data = f.read(nbytes)
+            buf = (ctypes.c_byte * nbytes).from_address(self._ptr_addr(ptr))
+            buf[:] = data
+            return nbytes
+
+    class _MockBinding:
+        name = "cufile (mock)"
+        _mod = mock.MagicMock()
+        _mod.CuFile = _MockCuFile
+
+        def driver_open(self):
+            pass
+
+        def driver_close(self):
+            pass
+
+    from adapter.storage.nvfile_backend import NvFileBackend
+
+    with mock.patch("adapter.storage.nvfile_backend._detect_binding",
+                    return_value=_MockBinding()):
+        yield NvFileBackend()
+
 # ═══════════════════════════════════════════════════════════════════
 # Level 3 — GDS mock tests (no real driver needed)
 # ═══════════════════════════════════════════════════════════════════
@@ -243,49 +303,7 @@ class TestNvFileBackendMocked:
 
     @pytest.fixture
     def backend(self):
-        class _MockCuFile:
-            def __init__(self, path, mode, use_direct_io=False):
-                self.path = path
-                self.mode = mode
-            def __enter__(self):
-                return self
-            def __exit__(self, *args):
-                self.close()
-            def close(self):
-                pass
-            @staticmethod
-            def _ptr_addr(ptr):
-                if isinstance(ptr, int):
-                    return ptr
-                return ptr.value
-
-            def write(self, ptr, nbytes, file_offset=0, dev_offset=0):
-                import ctypes
-                buf = (ctypes.c_byte * nbytes).from_address(self._ptr_addr(ptr))
-                with open(self.path, "r+b") as f:
-                    f.seek(file_offset)
-                    f.write(bytes(buf))
-                return nbytes
-
-            def read(self, ptr, nbytes, file_offset=0, dev_offset=0):
-                import ctypes
-                with open(self.path, "rb") as f:
-                    f.seek(file_offset)
-                    data = f.read(nbytes)
-                buf = (ctypes.c_byte * nbytes).from_address(self._ptr_addr(ptr))
-                buf[:] = data
-                return nbytes
-        class _MockBinding:
-            name = "cufile (mock)"
-            _mod = mock.MagicMock()
-            _mod.CuFile = _MockCuFile
-            def driver_open(self): pass
-            def driver_close(self): pass
-
-        with mock.patch("adapter.storage.nvfile_backend._detect_binding",
-                        return_value=_MockBinding()):
-            from adapter.storage.nvfile_backend import NvFileBackend
-            backend = NvFileBackend()
+        with _mock_nvfile_backend() as backend:
             yield backend
 
     def test_save_and_load_cpu_as_gpu(self, backend, tmp_path):
@@ -400,3 +418,166 @@ class TestRealGdsBackend:
         assert loaded.dtype == tensor.dtype
         assert loaded.shape == tensor.shape
         assert torch.equal(loaded.cpu(), tensor.cpu())
+
+
+class TestNvFileBackendInternals:
+    """Focused unit tests for GDS binding/handle edge cases."""
+
+    def test_cufile_handle_low_level_registers_and_deregisters_fd(self, tmp_path):
+        from adapter.storage.nvfile_backend import _CuFileHandle
+
+        path = tmp_path / "raw.bin"
+        path.write_bytes(b"\x00" * 32)
+
+        class LowLevelBinding:
+            name = "low-level-mock"
+
+            def __init__(self):
+                self.registered_fd = None
+                self.deregistered = []
+                self.writes = []
+                self.reads = []
+
+            def handle_register(self, fd):
+                self.registered_fd = fd
+                return "handle-1"
+
+            def handle_deregister(self, handle):
+                self.deregistered.append(handle)
+
+            def write(self, handle, gpu_ptr, size, file_offset, dev_offset):
+                self.writes.append((handle, gpu_ptr, size, file_offset, dev_offset))
+                return size
+
+            def read(self, handle, gpu_ptr, size, file_offset, dev_offset):
+                self.reads.append((handle, gpu_ptr, size, file_offset, dev_offset))
+                return size
+
+        binding = LowLevelBinding()
+        with _CuFileHandle(binding, str(path), "r+") as handle:
+            assert binding.registered_fd is not None
+            assert binding.registered_fd >= 0
+            assert handle.write(12345, 7, file_offset=4, dev_offset=2) == 7
+            assert handle.read(67890, 5, file_offset=8, dev_offset=3) == 5
+
+        assert binding.deregistered == ["handle-1"]
+        assert binding.writes == [("handle-1", 12345, 7, 4, 2)]
+        assert binding.reads == [("handle-1", 67890, 5, 8, 3)]
+        assert handle._fd is None
+        assert handle._handle is None
+
+    def test_cufile_handle_high_level_passes_c_void_p_and_offsets(self, tmp_path):
+        from adapter.storage.nvfile_backend import _CuFileHandle
+
+        path = tmp_path / "raw.bin"
+        path.write_bytes(b"\x00" * 32)
+        calls = []
+
+        class MockCuFile:
+            def __init__(self, path_arg, mode_arg):
+                self.path = path_arg
+                self.mode = mode_arg
+                self.closed = False
+
+            def write(self, ptr, nbytes, file_offset=0, dev_offset=0):
+                calls.append(("write", ptr.value, nbytes, file_offset, dev_offset))
+                return nbytes
+
+            def read(self, ptr, nbytes, file_offset=0, dev_offset=0):
+                calls.append(("read", ptr.value, nbytes, file_offset, dev_offset))
+                return nbytes
+
+            def close(self):
+                self.closed = True
+
+        class HighLevelBinding:
+            name = "high-level-mock"
+            _mod = mock.Mock(CuFile=MockCuFile)
+
+        with _CuFileHandle(HighLevelBinding(), str(path), "r+") as handle:
+            assert handle.write(0xABC, 11, file_offset=6, dev_offset=1) == 11
+            assert handle.read(0xDEF, 13, file_offset=9, dev_offset=2) == 13
+
+        assert calls == [
+            ("write", 0xABC, 11, 6, 1),
+            ("read", 0xDEF, 13, 9, 2),
+        ]
+        assert handle._handle is None
+
+    def test_detect_binding_prefers_cuda_bindings_when_available(self, monkeypatch):
+        from adapter.storage import nvfile_backend
+
+        fake_cufile = mock.Mock()
+        fake_cufile.driver_open.return_value = None
+        fake_cufile.driver_close.return_value = None
+        fake_cufile.handle_register.return_value = "handle"
+        fake_cufile.handle_deregister.return_value = None
+        fake_cufile.read.return_value = 1
+        fake_cufile.write.return_value = 1
+
+        cuda_module = SimpleNamespace()
+        bindings_module = SimpleNamespace(cufile=fake_cufile)
+        monkeypatch.setitem(sys.modules, "cuda", cuda_module)
+        monkeypatch.setitem(sys.modules, "cuda.bindings", bindings_module)
+        monkeypatch.setitem(sys.modules, "cuda.bindings.cufile", fake_cufile)
+
+        binding = nvfile_backend._detect_binding()
+
+        assert binding is not None
+        assert binding.name == "cuda.bindings.cufile"
+        fake_cufile.driver_open.assert_called_once()
+
+    def test_nvfile_backend_raises_clear_error_when_no_binding(self):
+        from adapter.storage.nvfile_backend import NvFileBackend
+
+        with mock.patch("adapter.storage.nvfile_backend._detect_binding", return_value=None):
+            with pytest.raises(RuntimeError, match="No GDS library found"):
+                NvFileBackend()
+
+    def test_save_raises_on_short_gds_write_and_cleans_tmp(self, tmp_path):
+        from adapter.storage.nvfile_backend import _CuFileHandle
+
+        with _mock_nvfile_backend() as backend:
+            original_write = _CuFileHandle.write
+
+            def short_write(self, gpu_addr, nbytes, **kwargs):
+                return nbytes - 1
+
+            _CuFileHandle.write = short_write
+            try:
+                path = tmp_path / "short-write.kvcache"
+                tensor = torch.arange(8, dtype=torch.float32)
+                with pytest.raises(RuntimeError, match="GDS write: expected"):
+                    backend.save(path, tensor)
+                assert not path.exists()
+                assert list(tmp_path.glob("*.tmp*")) == []
+            finally:
+                _CuFileHandle.write = original_write
+
+    def test_load_raises_on_short_gds_read(self, tmp_path):
+        from adapter.storage.nvfile_backend import _CuFileHandle
+
+        with _mock_nvfile_backend() as backend:
+            path = tmp_path / "short-read.kvcache"
+            tensor = torch.arange(8, dtype=torch.float32)
+            backend.save(path, tensor)
+
+            original_read = _CuFileHandle.read
+
+            def short_read(self, gpu_addr, nbytes, **kwargs):
+                return nbytes - 1
+
+            _CuFileHandle.read = short_read
+            try:
+                with pytest.raises(RuntimeError, match="GDS read: expected"):
+                    backend.load(path, device="cpu")
+            finally:
+                _CuFileHandle.read = original_read
+
+    def test_forced_gds_unavailable_falls_back_to_posix(self):
+        from adapter.storage import backend as storage_backend
+
+        with mock.patch("adapter.storage.backend._try_gds", return_value=None):
+            result = storage_backend.create_storage_backend(prefer="gds")
+
+        assert isinstance(result, PosixBackend)

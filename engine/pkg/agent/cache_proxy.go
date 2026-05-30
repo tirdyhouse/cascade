@@ -17,10 +17,15 @@ type CacheProxy struct {
 
 // CacheStats is the response from the local disk-cache /stats endpoint.
 type CacheStats struct {
-	BlocksStored    int64   `json:"BlocksStored"`
-	BlocksRetrieved int64   `json:"BlocksRetrieved"`
-	BlocksEvicted   int64   `json:"BlocksEvicted"`
-	DiskUsedBytes   int64   `json:"DiskUsedBytes"`
+	BlocksStored    int64 `json:"BlocksStored"`
+	BlocksRetrieved int64 `json:"BlocksRetrieved"`
+	BlocksEvicted   int64 `json:"BlocksEvicted"`
+	DiskUsedBytes   int64 `json:"DiskUsedBytes"`
+	ChunksStored    int64 `json:"ChunksStored"`
+	ChunksRetrieved int64 `json:"ChunksRetrieved"`
+	MatchRequests   int64 `json:"MatchRequests"`
+	MatchHits       int64 `json:"MatchHits"`
+	MatchedTokens   int64 `json:"MatchedTokens"`
 	// HitRate is computed from retrieved / (retrieved + stored) during Stats().
 	HitRate float64 `json:"-"`
 }

@@ -1,4 +1,4 @@
-.PHONY: build-engine build-so build-server build-agent clean test test-smoke test-storage test-vllm-cache deps all run-server run-agent
+.PHONY: build-engine build-so build-server build-agent clean test test-smoke test-storage bench-storage test-vllm-cache deps all run-server run-agent
 
 # Build Go engine binary
 build-engine:
@@ -19,6 +19,10 @@ test-smoke:
 # Run storage backend smoke/diagnostics (override STORAGE_BACKEND/DEVICE/SHAPE/DTYPE)
 test-storage:
 	PYTHONPATH=. python3 scripts/validate_storage_backend.py
+
+# Benchmark storage backends (requires adapter deps; defaults to GPU/GDS-oriented settings)
+bench-storage:
+	PYTHONPATH=. python3 scripts/benchmark_storage_backend.py
 
 # Run real vLLM + disk-cache validation (requires MODEL_PATH, GPU, and vLLM)
 test-vllm-cache:

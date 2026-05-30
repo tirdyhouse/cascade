@@ -168,11 +168,12 @@ def test_load_layer_chunks_records_only_successful_loads(tmp_path):
     inject.assert_called_once_with(kv_cache_layer, injected_kv, slot_mapping, "layer-attn", conn._block_size)
 
 
-def test_build_connector_meta_adds_store_and_load_then_clears(tmp_path):
+def test_build_connector_meta_adds_store_and_load_then_clears_for_partial_hit(tmp_path):
     conn = DummyConnector(tmp_path)
     conn._requests_need_load["req-1"] = SimpleNamespace(
         all_token_ids=[1, 2, 3, 4, 5, 6],
         mm_features=[],
+        disk_cache_loaded_aligned_tokens=2,
     )
     new_req = SimpleNamespace(
         req_id="req-1",
@@ -191,6 +192,32 @@ def test_build_connector_meta_adds_store_and_load_then_clears(tmp_path):
         (True, [7, 8], 4),
         (False, [7, 8], 4),
         (False, [9, 10], 4),
+    ]
+    assert conn._requests_need_load == {}
+
+
+def test_build_connector_meta_skips_store_when_disk_cache_fully_covers_request(tmp_path):
+    conn = DummyConnector(tmp_path)
+    conn._requests_need_load["req-1"] = SimpleNamespace(
+        all_token_ids=[1, 2, 3, 4, 5, 6],
+        mm_features=[],
+        disk_cache_loaded_aligned_tokens=4,
+    )
+    new_req = SimpleNamespace(
+        req_id="req-1",
+        prompt_token_ids=[1, 2, 3, 4, 5, 6],
+        mm_features=[],
+        block_ids=[[7, 8]],
+    )
+    scheduler_output = SimpleNamespace(
+        scheduled_new_reqs=[new_req],
+        scheduled_cached_reqs=SimpleNamespace(req_ids=[], new_block_ids=[]),
+    )
+
+    meta = conn.build_connector_meta(scheduler_output)
+
+    assert [(req.is_store, req.block_ids, req.num_tokens) for req in meta.requests] == [
+        (False, [7, 8], 4),
     ]
     assert conn._requests_need_load == {}
 

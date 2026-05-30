@@ -20,11 +20,28 @@ type diskEngine struct {
 	meta *metadata.Store
 	pol  eviction.Policy
 
-	mu              sync.Mutex
-	totalBytes      int64 // tracked by eviction policy
-	blocksStored    atomic.Int64
-	blocksEvicted   atomic.Int64
-	blocksRetrieved atomic.Int64
+	mu sync.Mutex
+
+	totalBytes        int64 // tracked by eviction policy
+	blocksStored      atomic.Int64
+	blocksEvicted     atomic.Int64
+	blocksRetrieved   atomic.Int64
+	chunksStored      atomic.Int64
+	chunksRetrieved   atomic.Int64
+	putRequests       atomic.Int64
+	getRequests       atomic.Int64
+	getHits           atomic.Int64
+	getMisses         atomic.Int64
+	matchRequests     atomic.Int64
+	matchHits         atomic.Int64
+	matchedTokens     atomic.Int64
+	recordRequests    atomic.Int64
+	recordBatchCalls  atomic.Int64
+	chunkPutRequests  atomic.Int64
+	chunkListRequests atomic.Int64
+	chunkListHits     atomic.Int64
+	removeRequests    atomic.Int64
+	evictRequests     atomic.Int64
 }
 
 // New creates a new disk cache engine.
@@ -62,6 +79,7 @@ func (e *diskEngine) rebuild() error {
 // Put records a newly cached block.
 // Python calls this after writing the file.
 func (e *diskEngine) Put(hash uint64, filePath string, size int64) error {
+	e.putRequests.Add(1)
 	// Check space and evict if needed
 	e.evictIfNeeded(size)
 
@@ -80,14 +98,14 @@ func (e *diskEngine) Put(hash uint64, filePath string, size int64) error {
 	return nil
 }
 
-// Get returns metadata for a cached block.
-// Python calls this before reading.
 func (e *diskEngine) Get(hash uint64) (*BlockMeta, error) {
+	e.getRequests.Add(1)
 	m, err := e.meta.Get(hash)
 	if err != nil {
 		return nil, err
 	}
 	if m == nil {
+		e.getMisses.Add(1)
 		return nil, nil
 	}
 
@@ -96,6 +114,7 @@ func (e *diskEngine) Get(hash uint64) (*BlockMeta, error) {
 	e.meta.Put(m)
 	e.pol.Record(hexKey(hash), m.Size)
 	e.blocksRetrieved.Add(1)
+	e.getHits.Add(1)
 
 	return &BlockMeta{
 		Hash:       m.Hash,
@@ -108,6 +127,7 @@ func (e *diskEngine) Get(hash uint64) (*BlockMeta, error) {
 
 // Remove deletes a block from metadata and eviction tracker.
 func (e *diskEngine) Remove(hash uint64) error {
+	e.removeRequests.Add(1)
 	if err := e.meta.Delete(hash); err != nil {
 		return err
 	}
@@ -123,6 +143,7 @@ func (e *diskEngine) Exists(hash uint64) bool {
 
 // Evict returns blocks to delete to free targetBytes.
 func (e *diskEngine) Evict(targetBytes int64) []BlockMeta {
+	e.evictRequests.Add(1)
 	keys := e.pol.Evict(targetBytes)
 	var metas []BlockMeta
 	for _, k := range keys {
@@ -150,11 +171,34 @@ func (e *diskEngine) evictIfNeeded(needed int64) {
 
 // Stats returns engine statistics.
 func (e *diskEngine) Stats() Stats {
+	blockEntries, _ := e.meta.Count()
+	sentinelEntries, _ := e.meta.CountSentinels()
+	chunkEntries, _ := e.meta.CountChunks()
+
 	return Stats{
-		BlocksStored:    e.blocksStored.Load(),
-		BlocksRetrieved: e.blocksRetrieved.Load(),
-		BlocksEvicted:   e.blocksEvicted.Load(),
-		DiskUsedBytes:   e.pol.TotalBytes(),
+		BlocksStored:      e.blocksStored.Load(),
+		BlocksRetrieved:   e.blocksRetrieved.Load(),
+		BlocksEvicted:     e.blocksEvicted.Load(),
+		DiskUsedBytes:     e.pol.TotalBytes(),
+		BlockEntries:      int64(blockEntries),
+		SentinelEntries:   int64(sentinelEntries),
+		ChunkEntries:      int64(chunkEntries),
+		PutRequests:       e.putRequests.Load(),
+		GetRequests:       e.getRequests.Load(),
+		GetHits:           e.getHits.Load(),
+		GetMisses:         e.getMisses.Load(),
+		MatchRequests:     e.matchRequests.Load(),
+		MatchHits:         e.matchHits.Load(),
+		MatchedTokens:     e.matchedTokens.Load(),
+		RecordRequests:    e.recordRequests.Load(),
+		RecordBatchCalls:  e.recordBatchCalls.Load(),
+		ChunkPutRequests:  e.chunkPutRequests.Load(),
+		ChunkListRequests: e.chunkListRequests.Load(),
+		ChunkListHits:     e.chunkListHits.Load(),
+		ChunksStored:      e.chunksStored.Load(),
+		ChunksRetrieved:   e.chunksRetrieved.Load(),
+		RemoveRequests:    e.removeRequests.Load(),
+		EvictRequests:     e.evictRequests.Load(),
 	}
 }
 
@@ -162,6 +206,7 @@ func (e *diskEngine) Stats() Stats {
 
 // RecordSentinel stores a single sentinel marker.
 func (e *diskEngine) RecordSentinel(promptHash string, numTokens int) error {
+	e.recordRequests.Add(1)
 	return e.meta.RecordSentinel(promptHash, numTokens)
 }
 
@@ -169,12 +214,25 @@ func (e *diskEngine) RecordSentinel(promptHash string, numTokens int) error {
 
 // PutChunk records a chunk file for a layer.
 func (e *diskEngine) PutChunk(prefixKey, layerName string, chunkIndex, numTokens int) error {
-	return e.meta.PutChunk(prefixKey, layerName, chunkIndex, numTokens)
+	e.chunkPutRequests.Add(1)
+	if err := e.meta.PutChunk(prefixKey, layerName, chunkIndex, numTokens); err != nil {
+		return err
+	}
+	e.chunksStored.Add(1)
+	return nil
 }
 
 // ListChunks returns chunk indices for a layer under a prefix key.
 func (e *diskEngine) ListChunks(prefixKey, layerName string) ([]int, error) {
-	return e.meta.ListChunks(prefixKey, layerName)
+	e.chunkListRequests.Add(1)
+	chunks, err := e.meta.ListChunks(prefixKey, layerName)
+	if err != nil {
+		return nil, err
+	}
+	if len(chunks) > 0 {
+		e.chunkListHits.Add(1)
+	}
+	return chunks, nil
 }
 
 // RecordRetrieved records successful external cache chunk or block retrievals.
@@ -183,12 +241,14 @@ func (e *diskEngine) RecordRetrieved(count int64) {
 		return
 	}
 	e.blocksRetrieved.Add(count)
+	e.chunksRetrieved.Add(count)
 }
 
 // RecordAll computes all block-aligned cumulative hashes for a prompt
 // and records them as sentinels in a single Pebble batch.
 // numTokens is the actual number of KV tokens cached (aligned to block_size).
 func (e *diskEngine) RecordAll(tokenIDs []int64, mmHashes []string, blockSize int) error {
+	e.recordBatchCalls.Add(1)
 	if blockSize <= 0 || len(tokenIDs) == 0 {
 		return nil
 	}
@@ -240,6 +300,7 @@ func (e *diskEngine) RecordAll(tokenIDs []int64, mmHashes []string, blockSize in
 //
 // Returns matched token count and the corresponding prompt hash.
 func (e *diskEngine) Match(tokenIDs []int64, mmHashes []string, blockSize int) MatchResult {
+	e.matchRequests.Add(1)
 	if len(tokenIDs) < 2 || blockSize < 1 {
 		return MatchResult{}
 	}
@@ -287,6 +348,8 @@ func (e *diskEngine) Match(tokenIDs []int64, mmHashes []string, blockSize int) M
 		return MatchResult{}
 	}
 	matched := (hi + 1) * blockSize
+	e.matchHits.Add(1)
+	e.matchedTokens.Add(int64(matched))
 	return MatchResult{MatchedTokens: matched, PromptHash: hashes[hi]}
 }
 

@@ -55,6 +55,16 @@ func TestPutGetStatsAndRemove(t *testing.T) {
 	if stats.BlocksStored != 1 || stats.BlocksRetrieved != 1 || stats.DiskUsedBytes != 128 {
 		t.Fatalf("Stats() = %+v, want stored=1 retrieved=1 used=128", stats)
 	}
+	if stats.PutRequests != 1 || stats.GetRequests != 1 || stats.GetHits != 1 || stats.GetMisses != 0 || stats.BlockEntries != 1 {
+		t.Fatalf("Stats() = %+v, want put/get counters and one block entry", stats)
+	}
+
+	if missing, err := eng.Get(0xdef); err != nil || missing != nil {
+		t.Fatalf("Get(missing) = (%+v, %v), want nil, nil", missing, err)
+	}
+	if stats := eng.Stats(); stats.GetRequests != 2 || stats.GetMisses != 1 {
+		t.Fatalf("Stats() after missing get = %+v, want get requests=2 misses=1", stats)
+	}
 
 	if err := eng.Remove(0xabc); err != nil {
 		t.Fatalf("Remove() error = %v", err)
@@ -92,8 +102,8 @@ func TestEvictRemovesLeastRecentlyUsedBlocks(t *testing.T) {
 	}
 
 	stats := eng.Stats()
-	if stats.BlocksEvicted != 1 || stats.DiskUsedBytes != 100 {
-		t.Fatalf("Stats() = %+v, want evicted=1 used=100", stats)
+	if stats.BlocksEvicted != 1 || stats.DiskUsedBytes != 100 || stats.EvictRequests != 1 {
+		t.Fatalf("Stats() = %+v, want evicted=1 used=100 evictRequests=1", stats)
 	}
 }
 
@@ -111,6 +121,10 @@ func TestRecordAllMatchAndChunks(t *testing.T) {
 	}
 	if match.PromptHash == "" {
 		t.Fatal("Match().PromptHash is empty")
+	}
+	stats := eng.Stats()
+	if stats.RecordBatchCalls != 1 || stats.MatchRequests != 1 || stats.MatchHits != 1 || stats.MatchedTokens != 6 || stats.SentinelEntries != 3 {
+		t.Fatalf("Stats() after match = %+v, want record/match counters and 3 sentinel entries", stats)
 	}
 
 	partial := eng.Match(tokens[:5], mmHashes, 2)
@@ -137,12 +151,20 @@ func TestRecordAllMatchAndChunks(t *testing.T) {
 	if !reflect.DeepEqual(chunks, []int{0, 1}) {
 		t.Fatalf("ListChunks() = %v, want [0 1]", chunks)
 	}
-	if got := eng.Stats().BlocksRetrieved - before; got != 0 {
+	stats = eng.Stats()
+	if stats.ChunkPutRequests != 2 || stats.ChunksStored != 2 || stats.ChunkEntries != 2 || stats.ChunkListRequests != 1 || stats.ChunkListHits != 1 {
+		t.Fatalf("Stats() after chunk ops = %+v, want chunk counters", stats)
+	}
+	if got := stats.BlocksRetrieved - before; got != 0 {
 		t.Fatalf("ListChunks() retrieval stats delta = %d, want 0", got)
 	}
 
 	eng.RecordRetrieved(int64(len(chunks)))
-	if got := eng.Stats().BlocksRetrieved - before; got != int64(len(chunks)) {
+	stats = eng.Stats()
+	if got := stats.BlocksRetrieved - before; got != int64(len(chunks)) {
 		t.Fatalf("RecordRetrieved() stats delta = %d, want %d", got, len(chunks))
+	}
+	if stats.ChunksRetrieved != int64(len(chunks)) {
+		t.Fatalf("ChunksRetrieved = %d, want %d", stats.ChunksRetrieved, len(chunks))
 	}
 }

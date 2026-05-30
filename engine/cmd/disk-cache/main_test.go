@@ -65,8 +65,12 @@ func TestChunkListDoesNotCountAsRetrieved(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("handleChunkList status = %d, body=%s", rr.Code, rr.Body.String())
 		}
-		if got := statsResponse(t)["BlocksRetrieved"]; got != 0 {
+		stats := statsResponse(t)
+		if got := stats["BlocksRetrieved"]; got != 0 {
 			t.Fatalf("BlocksRetrieved after chunk_list = %d, want 0", got)
+		}
+		if stats["ChunkPutRequests"] != 1 || stats["ChunksStored"] != 1 || stats["ChunkEntries"] != 1 || stats["ChunkListRequests"] != 1 || stats["ChunkListHits"] != 1 {
+			t.Fatalf("stats after chunk_list = %+v, want chunk counters", stats)
 		}
 	})
 }
@@ -78,8 +82,12 @@ func TestRetrievedEndpointCountsSuccessfulLoads(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("handleRetrieved status = %d, body=%s", rr.Code, rr.Body.String())
 		}
-		if got := statsResponse(t)["BlocksRetrieved"]; got != 3 {
+		stats := statsResponse(t)
+		if got := stats["BlocksRetrieved"]; got != 3 {
 			t.Fatalf("BlocksRetrieved after /retrieved = %d, want 3", got)
+		}
+		if got := stats["ChunksRetrieved"]; got != 3 {
+			t.Fatalf("ChunksRetrieved after /retrieved = %d, want 3", got)
 		}
 
 		rr = httptest.NewRecorder()
@@ -87,8 +95,12 @@ func TestRetrievedEndpointCountsSuccessfulLoads(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("handleRetrieved zero status = %d, body=%s", rr.Code, rr.Body.String())
 		}
-		if got := statsResponse(t)["BlocksRetrieved"]; got != 3 {
+		stats = statsResponse(t)
+		if got := stats["BlocksRetrieved"]; got != 3 {
 			t.Fatalf("BlocksRetrieved after zero /retrieved = %d, want 3", got)
+		}
+		if got := stats["ChunksRetrieved"]; got != 3 {
+			t.Fatalf("ChunksRetrieved after zero /retrieved = %d, want 3", got)
 		}
 	})
 }

@@ -55,7 +55,7 @@ The key insight: **latency and bandwidth of NVMe are viable for KV cache**, and 
 │  │                                                       │    │
 │  │  ┌────────────────────────────────────────────────┐  │    │
 │  │  │  Storage Backends                               │  │    │
-│  │  │  POSIX │ io_uring │ GPUDirect Storage (future)  │  │    │
+│  │  │  POSIX │ GDS │ io_uring/RDMA (planned)         │  │    │
 │  │  └────────────────────────────────────────────────┘  │    │
 │  └─────────────────────────────────────────────────────┘    │
 │                                                              │
@@ -101,13 +101,37 @@ cascade/
 | vLLM connector | ✅ **Done** | Full KVConnectorBase_V1 implementation (~185 LOC) |
 | Disk I/O benchmarks | ✅ **Done** | Sequential/random read-write, latency profiling |
 | Benchmark suite | ✅ **Done** | Compare native vLLM vs LMCache vs DiskCache |
-| GDS / RDMA | 📋 **Planned** | C storage primitives scaffolded |
+| GDS storage backend | ✅ **Done** | POSIX/GDS backend abstraction with automatic fallback |
 | GPU-aware scheduler | 📋 **Planned** | Per-GPU VRAM/task monitoring + smart dispatching |
 | Pooled SSD cluster | 📋 **Planned** | Cross-node RDMA shared storage pool |
 | SGLang adapter | 📋 **Planned** | Directory structure ready |
 | Helm deployment | 📋 **Planned** | Chart scaffolded |
 
 ---
+
+## Validation and CI targets
+
+```bash
+# Fast local Go coverage
+make test-go
+
+# Python adapter/helper coverage (requires adapter deps)
+make test-adapter
+
+# CI-friendly bundle: Go + adapter tests + POSIX storage smoke
+make ci
+
+# GPU storage validation: CI bundle + POSIX/GDS benchmark
+make ci-gpu
+
+# Real vLLM + disk-cache validation (requires MODEL_PATH, GPU, and vLLM)
+make test-vllm-cache
+```
+
+- `make test-storage` wraps `scripts/validate_storage_backend.py`; override `STORAGE_BACKEND`, `STORAGE_DEVICE`, `STORAGE_SHAPE`, or `STORAGE_DTYPE` for POSIX/GDS/cuda smoke runs.
+- `make bench-storage` wraps `scripts/benchmark_storage_backend.py`; override `STORAGE_BENCH_*` variables or set `STORAGE_BENCH_MARKDOWN=docs/storage-benchmark-a100.md` to refresh the marker-wrapped report.
+- `make test-vllm-cache` wraps `scripts/validate_vllm_disk_cache.sh`, starts an isolated disk-cache + vLLM service, and verifies cache-hit stats.
+- `engine/pkg/cache/Stats` includes both legacy counters and finer-grained metadata/event counters for diagnostics.
 
 ## Quick Start
 
@@ -131,17 +155,27 @@ make build-engine
 ### 3. Start vLLM with DiskCache Connector
 
 ```bash
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
 vllm serve deepseek-ai/DeepSeek-V4-Flash \
+    --no-enable-prefix-caching \
     --tensor-parallel-size 8 \
     --max-model-len 100000 \
     --kv-transfer-config '{
-        "kv_connector": "disk-cache",
+        "kv_connector": "DiskCacheConnector",
+        "kv_role": "kv_both",
+        "kv_connector_module_path": "adapter.vllm.connector_v21",
         "kv_connector_extra_config": {
             "disk_cache_path": "/mnt/nvme/kv-cache",
-            "disk_cache_engine_addr": "http://localhost:9100"
+            "disk_cache_engine_addr": "http://localhost:9100",
+            "target_device": "auto",
+            "storage_backend": "auto",
+            "disk_cache_chunk_size_mb": 128
         }
     }'
 ```
+
+For a reproducible real-vLLM smoke run, prefer `make test-vllm-cache`; it builds the
+engine, starts isolated services, and checks retrieval stats.
 
 ### 4. Verify
 
@@ -149,8 +183,11 @@ vllm serve deepseek-ai/DeepSeek-V4-Flash \
 # Engine stats
 curl http://localhost:9100/stats
 
-# Run benchmark
-python3 test/scripts/run_bench.py --mode diskcache
+# Local CI-friendly checks
+make ci
+
+# Optional: refresh the A100 POSIX/GDS benchmark report on a GPU host
+STORAGE_BENCH_MARKDOWN=docs/storage-benchmark-a100.md make bench-storage
 ```
 
 ---
@@ -199,13 +236,14 @@ python3 scripts/disk-bench.py /mnt/nvme
 # 2. Run the cache engine benchmark
 python3 scripts/disk-bench-cache.py http://localhost:9100
 
-# 3. Compare inference engines
-python3 test/scripts/run_bench.py --mode native
-python3 test/scripts/run_bench.py --mode diskcache
-python3 test/scripts/gen_report.py
+# 3. Compare storage backend throughput on a GPU host
+make bench-storage
+
+# 4. Refresh the checked-in A100 POSIX/GDS report
+STORAGE_BENCH_MARKDOWN=docs/storage-benchmark-a100.md make bench-storage
 ```
 
-Results are stored in `test/results/`. See `docs/benchmark-plan.md` for detailed methodology.
+See `docs/benchmark-plan.md` for inference benchmark methodology and `docs/storage-benchmark-a100.md` for the latest A100 storage-backend report.
 
 ---
 

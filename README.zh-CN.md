@@ -55,7 +55,7 @@ LLM 推理本质上是显存受限的。GPU HBM（每张 H100 约 80 GB）限制
 │  │                                                       │    │
 │  │  ┌────────────────────────────────────────────────┐  │    │
 │  │  │  存储后端                                       │  │    │
-│  │  │  POSIX │ io_uring │ GPUDirect Storage (未来)    │  │    │
+│  │  │  POSIX │ GDS │ io_uring/RDMA（计划）               │  │    │
 │  │  └────────────────────────────────────────────────┘  │    │
 │  └─────────────────────────────────────────────────────┘    │
 │                                                              │
@@ -101,13 +101,37 @@ cascade/
 | vLLM 连接器 | ✅ **完成** | 完整 KVConnectorBase_V1 实现 (~185 行) |
 | 磁盘 I/O 基准测试 | ✅ **完成** | 顺序/随机读写、延迟分析 |
 | 基准测试套件 | ✅ **完成** | 对比原生 vLLM vs LMCache vs Cascade |
-| GDS / RDMA | 📋 **计划中** | C 存储原语已建目录 |
+| GDS 存储后端 | ✅ **完成** | POSIX/GDS 后端抽象，支持自动降级 |
 | GPU 感知调度 | 📋 **计划中** | 每卡显存/任务监控 + 智能分发 |
 | 池化 SSD 集群 | 📋 **计划中** | 跨节点 RDMA 共享存储池 |
 | SGLang 适配器 | 📋 **计划中** | 目录结构已就绪 |
 | Helm 部署 | 📋 **计划中** | Chart 脚手架已就绪 |
 
 ---
+
+## 验证与 CI targets
+
+```bash
+# 快速本地 Go 覆盖
+make test-go
+
+# Python adapter/helper 覆盖（需要 adapter 依赖）
+make test-adapter
+
+# CI 友好组合：Go + adapter 测试 + POSIX 存储 smoke
+make ci
+
+# GPU 存储验证：CI 组合 + POSIX/GDS 基准测试
+make ci-gpu
+
+# 真实 vLLM + disk-cache 验证（需要 MODEL_PATH、GPU 和 vLLM）
+make test-vllm-cache
+```
+
+- `make test-storage` 封装 `scripts/validate_storage_backend.py`；可覆盖 `STORAGE_BACKEND`、`STORAGE_DEVICE`、`STORAGE_SHAPE` 或 `STORAGE_DTYPE` 执行 POSIX/GDS/cuda smoke。
+- `make bench-storage` 封装 `scripts/benchmark_storage_backend.py`；可覆盖 `STORAGE_BENCH_*` 变量，或设置 `STORAGE_BENCH_MARKDOWN=docs/storage-benchmark-a100.md` 刷新带 marker 的报告。
+- `make test-vllm-cache` 封装 `scripts/validate_vllm_disk_cache.sh`，启动隔离的 disk-cache + vLLM 服务并检查命中统计。
+- `engine/pkg/cache/Stats` 同时保留旧字段和更细粒度的元数据/事件计数，便于诊断。
 
 ## 快速开始
 
@@ -131,17 +155,27 @@ make build-engine
 ### 3. 启动 vLLM 并启用 DiskCache 连接器
 
 ```bash
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
 vllm serve deepseek-ai/DeepSeek-V4-Flash \
+    --no-enable-prefix-caching \
     --tensor-parallel-size 8 \
     --max-model-len 100000 \
     --kv-transfer-config '{
-        "kv_connector": "disk-cache",
+        "kv_connector": "DiskCacheConnector",
+        "kv_role": "kv_both",
+        "kv_connector_module_path": "adapter.vllm.connector_v21",
         "kv_connector_extra_config": {
             "disk_cache_path": "/mnt/nvme/kv-cache",
-            "disk_cache_engine_addr": "http://localhost:9100"
+            "disk_cache_engine_addr": "http://localhost:9100",
+            "target_device": "auto",
+            "storage_backend": "auto",
+            "disk_cache_chunk_size_mb": 128
         }
     }'
 ```
+
+如需可复现的真实 vLLM smoke，优先使用 `make test-vllm-cache`；它会构建
+engine、启动隔离服务并检查 retrieval 统计。
 
 ### 4. 验证
 
@@ -149,8 +183,11 @@ vllm serve deepseek-ai/DeepSeek-V4-Flash \
 # 引擎状态
 curl http://localhost:9100/stats
 
-# 运行基准测试
-python3 test/scripts/run_bench.py --mode diskcache
+# 本地 CI 友好检查
+make ci
+
+# 可选：在 GPU 主机刷新 A100 POSIX/GDS 基准报告
+STORAGE_BENCH_MARKDOWN=docs/storage-benchmark-a100.md make bench-storage
 ```
 
 ---
@@ -186,7 +223,6 @@ python3 test/scripts/run_bench.py --mode diskcache
 - [ ] 管理面板
 - [ ] 多租户
 - [ ] 完整文档和示例
-- [ ] 完整文档和示例
 
 ---
 
@@ -199,13 +235,14 @@ python3 scripts/disk-bench.py /mnt/nvme
 # 2. 运行缓存引擎基准测试
 python3 scripts/disk-bench-cache.py http://localhost:9100
 
-# 3. 对比推理引擎
-python3 test/scripts/run_bench.py --mode native
-python3 test/scripts/run_bench.py --mode diskcache
-python3 test/scripts/gen_report.py
+# 3. 在 GPU 主机对比存储后端吞吐
+make bench-storage
+
+# 4. 刷新仓库内 A100 POSIX/GDS 报告
+STORAGE_BENCH_MARKDOWN=docs/storage-benchmark-a100.md make bench-storage
 ```
 
-结果保存在 `test/results/` 目录。详细方法见 `docs/benchmark-plan.md`。
+推理 benchmark 方法见 `docs/benchmark-plan.md`，最新 A100 存储后端报告见 `docs/storage-benchmark-a100.md`。
 
 ---
 

@@ -113,11 +113,7 @@ class DiskCacheConnector(KVConnectorBase_V1):
 
     def _load_request_kv(self, req, forward_context, attn_metadata):
         num_tokens = req.num_tokens
-        block_offsets = torch.arange(0, req.block_size)
-        slot_mapping = (
-            block_offsets.view(1, req.block_size)
-            + torch.tensor(req.block_ids).view(len(req.block_ids), 1) * req.block_size
-        ).flatten()[:num_tokens]
+        slot_mapping = self._build_slot_mapping(req)
         prefix_key = self._prefix_key(req.token_ids)
         for layer_name in forward_context.no_compile_layers:
             layer = forward_context.no_compile_layers[layer_name]
@@ -168,29 +164,31 @@ class DiskCacheConnector(KVConnectorBase_V1):
         for req in meta.requests:
             if not req.is_store:
                 continue
-            num_blocks = len(req.block_ids)
-            block_offsets = torch.arange(0, req.block_size)
-            slot_mapping = (
-                block_offsets.view(1, req.block_size)
-                + torch.tensor(req.block_ids).view(num_blocks, 1) * req.block_size
-            ).flatten()[:req.num_tokens]
-            kv_cache = extract_kv_from_layer(kv_layer, slot_mapping, attn_metadata, self._block_size)
-            num_tokens = req.num_tokens
-            prefix_key = self._prefix_key(req.token_ids)
-            existing_chunks = set(self._go_chunk_list(prefix_key, layer_name))
+            self._save_request_kv(req, layer_name, kv_layer, attn_metadata)
 
-            for chunk_idx, start, end in self._chunk_ranges(num_tokens):
-                is_full = (end - start) >= self._tokens_per_chunk
-                if is_full and chunk_idx in existing_chunks:
-                    continue  # immutable full chunk, skip
-                chunk_kv = kv_cache[:, start:end, :]  # still on GPU
-                file_path = self._chunk_file_path(prefix_key, layer_name, chunk_idx)
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                self._storage.save(file_path, chunk_kv)
-                chunk_tokens = end - start
-                self._go_chunk_put(prefix_key, layer_name, chunk_idx, chunk_tokens)
-                go_hash = int(prefix_key[:16], 16)
-                self._go_put(go_hash, str(file_path.relative_to(self.cache_root)), file_path.stat().st_size)
+    def _save_request_kv(self, req, layer_name, kv_layer, attn_metadata):
+        slot_mapping = self._build_slot_mapping(req)
+        kv_cache = extract_kv_from_layer(kv_layer, slot_mapping, attn_metadata, self._block_size)
+        num_tokens = req.num_tokens
+        prefix_key = self._prefix_key(req.token_ids)
+        existing_chunks = set(self._go_chunk_list(prefix_key, layer_name))
+        self._save_layer_chunks(prefix_key, layer_name, kv_cache, num_tokens, existing_chunks)
+
+    def _save_layer_chunks(self, prefix_key, layer_name, kv_cache, num_tokens, existing_chunks):
+        for chunk_idx, start, end in self._chunk_ranges(num_tokens):
+            is_full = (end - start) >= self._tokens_per_chunk
+            if is_full and chunk_idx in existing_chunks:
+                continue  # immutable full chunk, skip
+            chunk_kv = kv_cache[:, start:end, :]  # still on GPU
+            self._save_chunk(prefix_key, layer_name, chunk_idx, chunk_kv, end - start)
+
+    def _save_chunk(self, prefix_key, layer_name, chunk_idx, chunk_kv, chunk_tokens):
+        file_path = self._chunk_file_path(prefix_key, layer_name, chunk_idx)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        self._storage.save(file_path, chunk_kv)
+        self._go_chunk_put(prefix_key, layer_name, chunk_idx, chunk_tokens)
+        go_hash = int(prefix_key[:16], 16)
+        self._go_put(go_hash, str(file_path.relative_to(self.cache_root)), file_path.stat().st_size)
 
     def wait_for_save(self):
         """Called after all layers are written. Records all sub-block sentinels
@@ -274,6 +272,13 @@ class DiskCacheConnector(KVConnectorBase_V1):
 
 
     # ── Chunk storage ──
+
+    def _build_slot_mapping(self, req):
+        block_offsets = torch.arange(0, req.block_size)
+        return (
+            block_offsets.view(1, req.block_size)
+            + torch.tensor(req.block_ids).view(len(req.block_ids), 1) * req.block_size
+        ).flatten()[:req.num_tokens]
 
     def _kv_tokensize(self):
         """Bytes per KV token: 2(K+V) × num_heads × head_dim × 2(bf16)."""

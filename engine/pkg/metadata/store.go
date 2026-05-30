@@ -100,6 +100,32 @@ func (s *Store) Count() (int, error) {
 	return count, iter.Error()
 }
 
+// CountSentinels returns the number of prompt sentinel markers.
+func (s *Store) CountSentinels() (int, error) {
+	return s.countByPrefix(0x01)
+}
+
+// CountChunks returns the number of chunk metadata entries.
+func (s *Store) CountChunks() (int, error) {
+	return s.countByPrefix(0x02)
+}
+
+func (s *Store) countByPrefix(prefix byte) (int, error) {
+	iter, err := s.db.NewIter(nil)
+	if err != nil {
+		return 0, err
+	}
+	defer iter.Close()
+	count := 0
+	for iter.First(); iter.Valid(); iter.Next() {
+		key := iter.Key()
+		if len(key) > 0 && key[0] == prefix {
+			count++
+		}
+	}
+	return count, iter.Error()
+}
+
 // IterateAll calls fn for each block metadata entry (skips sentinel keys).
 func (s *Store) IterateAll(fn func(*BlockMeta) error) error {
 	iter, err := s.db.NewIter(nil)
@@ -160,7 +186,6 @@ func (s *Store) GetSentinel(promptHash string) (int, bool) {
 func (s *Store) DeleteSentinel(promptHash string) error {
 	return s.db.Delete(sentinelKey(promptHash), pebble.Sync)
 }
-
 
 // ── Chunk metadata (prefix 0x02) ──
 // Key format: 0x02{prefix_key 32 hex}{layer_name}{chunk_index 8 bytes BE}

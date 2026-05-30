@@ -17,10 +17,34 @@ type BlockMeta struct {
 
 // Stats exposes cache engine metrics.
 type Stats struct {
+	// Legacy counters kept for compatibility with existing agents and dashboards.
 	BlocksStored    int64
 	BlocksRetrieved int64
 	BlocksEvicted   int64
 	DiskUsedBytes   int64
+
+	// Current metadata inventory.
+	BlockEntries    int64
+	SentinelEntries int64
+	ChunkEntries    int64
+
+	// Event counters for finer-grained observability.
+	PutRequests       int64
+	GetRequests       int64
+	GetHits           int64
+	GetMisses         int64
+	MatchRequests     int64
+	MatchHits         int64
+	MatchedTokens     int64
+	RecordRequests    int64
+	RecordBatchCalls  int64
+	ChunkPutRequests  int64
+	ChunkListRequests int64
+	ChunkListHits     int64
+	ChunksStored      int64
+	ChunksRetrieved   int64
+	RemoveRequests    int64
+	EvictRequests     int64
 }
 
 // MatchResult is the result of a cache match query.

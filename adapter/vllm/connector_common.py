@@ -179,7 +179,12 @@ class DiskCacheConnectorCommonMixin:
 
     def update_state_after_alloc(self, request, blocks, num_external_tokens):
         if num_external_tokens > 0:
+            # vLLM passes the externally matched token count in the same
+            # block-aligned token units used by build_connector_meta's
+            # num_to_check. Store it on the request only to avoid duplicate
+            # writes when disk cache already fully covers the request.
             self._requests_need_load[request.request_id] = request
+            self._requests_need_load[request.request_id].disk_cache_loaded_aligned_tokens = num_external_tokens
 
     def build_connector_meta(self, scheduler_output):
         meta = DiskCacheMeta()
@@ -189,8 +194,10 @@ class DiskCacheConnectorCommonMixin:
             num_to_check = align_to_block_size(len(token_ids) - 1, self._block_size) if len(token_ids) > 1 else 0
             hash_n = hash_token_count(len(token_ids) - 1, self._block_size) if len(token_ids) > 1 else 0
             prompt_hash = compute_prompt_hash(token_ids, hash_n, mm_hashes) if hash_n > 0 else ""
-            # Always store for disk cache, regardless of vLLM internal prefix hits
-            if num_to_check > 0:
+            loaded_tokens = getattr(self._requests_need_load.get(new_req.req_id), "disk_cache_loaded_aligned_tokens", 0)
+            should_store = num_to_check > 0 and loaded_tokens < num_to_check
+            # Store only when this request is not already fully covered by disk cache.
+            if should_store:
                 meta.add(token_ids=token_ids, block_ids=new_req.block_ids[0],
                          block_size=self._block_size, is_store=True,
                          mm_hashes=mm_hashes, num_tokens=num_to_check, prompt_hash=prompt_hash)

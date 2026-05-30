@@ -76,6 +76,9 @@ class DiskCacheGoClient:
             {"token_ids": token_ids, "mm_hashes": mm_hashes, "block_size": block_size},
         )
 
+    def record_retrieved(self, count: int = 1) -> None:
+        self.post("/retrieved", {"count": count})
+
     def put(self, hash_val: int, file_path: str, size: int) -> None:
         self.post("/put", {"hash": hash_val, "file_path": file_path, "size": size})
 

@@ -2,327 +2,318 @@
   🇬🇧 <a href="README.md">English</a> | 🇨🇳 <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-# Cascade
+<h1 align="center">Cascade</h1>
 
-> **Extend LLM inference context windows beyond GPU memory limits with a high-performance disk-backed KV cache layer.**
+<p align="center">
+  <strong>Disk-backed KV cache for long-context LLM inference.</strong><br>
+  Extend vLLM beyond GPU memory with a Go metadata engine, POSIX/GDS storage backends, and a roadmap toward pooled NVMe clusters.
+</p>
 
-[![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go)](https://golang.org)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue)](#license)
-[![vLLM](https://img.shields.io/badge/vLLM-Compatible-8A2BE2)](https://github.com/vllm-project/vllm)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](#contributing)
+<p align="center">
+  <a href="https://golang.org"><img alt="Go" src="https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go"></a>
+  <a href="https://github.com/vllm-project/vllm"><img alt="vLLM" src="https://img.shields.io/badge/vLLM-0.21%20validated-8A2BE2"></a>
+  <img alt="A100" src="https://img.shields.io/badge/A100-validated-76B900?logo=nvidia">
+  <img alt="GDS" src="https://img.shields.io/badge/GDS-backend-0B7285">
+  <a href="#license"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0%20%2B%20Commercial-blue"></a>
+</p>
 
 ---
 
-## Vision
+## Why Cascade
 
-LLM inference is fundamentally memory-bound. GPU HBM (~80 GB per H100) constrains how many tokens a model can process, forcing operators to choose between context length and batch size.
+LLM serving is increasingly constrained by KV cache memory. GPU HBM is fast but expensive and finite; long prompts, agentic workloads, and repeated retrieval-heavy conversations quickly turn context length into an infrastructure problem.
 
-**Cascade** decouples KV cache from GPU memory by adding a high-performance, distributed disk cache layer underneath existing inference engines. The result: longer context windows, higher throughput, and dramatically lower cost per token — without modifying the model or buying more GPUs.
+**Cascade** treats local NVMe as a first-class KV cache tier. It keeps the inference engine API surface small, moves metadata and eviction into a compact Go service, and lets the Python vLLM connector save/load KV tensors through pluggable storage backends:
+
+- **POSIX backend** for portable CPU-bounce-buffer storage.
+- **GPUDirect Storage (GDS) backend** for GPU↔NVMe transfer on supported hosts.
+- **Cluster roadmap** for RDMA-accessible pooled SSD and GPU-aware scheduling.
+
+The goal is simple: **make long-context inference cheaper and more elastic without changing the model.**
 
 ### Why disk?
 
 | | GPU HBM | Local NVMe | Remote NVMe (RDMA) |
-|---|---|---|---|
-| Capacity | 80 GB | 2–30 TB | ∞ (cluster) |
-| Latency | ~1 µs | ~10 µs | ~100 µs |
-| Bandwidth | 2000 GB/s | 7 GB/s | 100–500 GB/s |
-| Cost/GB | ~$100 | ~$0.10 | ~$0.05 |
+|---|---:|---:|---:|
+| Capacity | ~80 GB / GPU | 2–30 TB / node | Cluster-scale |
+| Latency | ~1 µs | ~10–100 µs | ~100 µs+ |
+| Bandwidth | ~2 TB/s | ~7 GB/s | 100–500 GB/s |
+| Cost/GB | High | Low | Lower at scale |
 
-The key insight: **latency and bandwidth of NVMe are viable for KV cache**, and the cost advantage is overwhelming. By keeping hot data on GPU and seamlessly tiering cold data to disk, we enable practical 1M+ token contexts without rebuilding infrastructure.
+NVMe is not a replacement for hot GPU KV. It is a high-capacity tier for cold or reusable KV blocks, enabling operators to trade a small amount of storage latency for a large reduction in HBM pressure.
+
+---
+
+## What works today
+
+| Area | Status | Notes |
+|---|---|---|
+| vLLM integration | ✅ Working | `KVConnectorBase_V1` connector for vLLM 0.21-style V1 execution. |
+| DiskCache engine | ✅ Working | Go service with HTTP API, Pebble metadata, LRU eviction, and persistent block/chunk indexes. |
+| Storage backends | ✅ Working | POSIX backend plus GDS/NvFile backend with automatic fallback. |
+| Cache-hit validation | ✅ Working | Isolated script starts disk-cache + vLLM and checks retrieved block counters and cached token stats. |
+| A100 validation | ✅ Working | Real A100 run with Qwen2.5-7B-Instruct and vLLM 0.21.0. |
+| Cluster scheduling | 🚧 Roadmap | GPU-aware dispatch, RDMA pooled NVMe, and multi-node coordination are planned. |
+
+---
+
+## Validation snapshot
+
+Observed on the project A100 validation host. These numbers are environment samples, not universal performance guarantees.
+
+### Real vLLM + disk-cache smoke
+
+| Item | Value |
+|---|---|
+| GPU | NVIDIA A100-PCIE-40GB |
+| vLLM | 0.21.0 |
+| Model | Qwen2.5-7B-Instruct |
+| Prompt size | 6,629 prompt tokens (`REQUEST_REPETITIONS=200`, `max_model_len=8192`) |
+| First request | `1.704s`, retrieved blocks `0` |
+| Second request | `0.199s`, retrieved blocks `28`, cached tokens `6624` |
+
+See [release notes](./docs/release-notes.md) for the full validation command and environment notes.
+
+### POSIX vs GDS storage backend benchmark
+
+| Backend | Selected implementation | Save median | Load median |
+|---|---|---:|---:|
+| POSIX | `PosixBackend` | `0.066639s` / `480.20 MiB/s` | `0.009055s` / `3534.14 MiB/s` |
+| GDS | `NvFileBackend` | `0.020430s` / `1566.36 MiB/s` | `0.005160s` / `6202.14 MiB/s` |
+
+See [A100 storage benchmark](./docs/storage-benchmark-a100.md) for the reproducible marker-aware report.
 
 ---
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                  Inference Engine (vLLM)                     │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │            DiskCache KVConnector (Python)            │    │
-│  │  • Scheduler hooks: cache-hit detection, eviction    │    │
-│  │  • Worker hooks:   save/load KV tensors to disk     │    │
-│  └───────────────────────┬─────────────────────────────┘    │
-│                          │ HTTP / local filesystem           │
-├──────────────────────────┼──────────────────────────────────┤
-│                          ▼                                  │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │              Go DiskCache Engine                      │    │
-│  │                                                       │    │
-│  │  ┌──────────────┐  ┌──────────────┐                  │    │
-│  │  │  Metadata     │  │  Eviction    │                  │    │
-│  │  │  (Pebble/LSM) │  │  LRU         │                  │    │
-│  │  └──────────────┘  └──────────────┘                  │    │
-│  │                                                       │    │
-│  │  ┌────────────────────────────────────────────────┐  │    │
-│  │  │  Storage Backends                               │  │    │
-│  │  │  POSIX │ GDS │ io_uring/RDMA (planned)         │  │    │
-│  │  └────────────────────────────────────────────────┘  │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                                                              │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │              Cluster Manager (future)                 │    │
-│  │  • GPU resource monitoring (VRAM, task count, load)  │    │
-│  │  • GPU-aware request dispatching                     │    │
-│  │  • Pooled SSD: RDMA shared NVMe across all nodes     │    │
-│  │  • Dynamic role assignment (prefill/decode/storage)  │    │
-│  └─────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
+```text
+┌──────────────────────────────────────────────────────────────────────┐
+│                            vLLM / LLM Engine                         │
+│                                                                      │
+│   ┌──────────────────────────────────────────────────────────────┐   │
+│   │ DiskCache KVConnector (Python)                               │   │
+│   │ - scheduler-side prefix/cache-hit lookup                     │   │
+│   │ - worker-side KV tensor save/load                            │   │
+│   │ - POSIX/GDS backend selection                                │   │
+│   └───────────────────────────────┬──────────────────────────────┘   │
+└───────────────────────────────────┼──────────────────────────────────┘
+                                    │ HTTP metadata + local file I/O
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                         Go DiskCache Engine                           │
+│                                                                      │
+│   ┌────────────────────┐   ┌────────────────────┐   ┌────────────┐  │
+│   │ Pebble metadata    │   │ LRU eviction        │   │ HTTP stats │  │
+│   │ blocks/sentinels   │   │ capacity control    │   │ diagnostics│  │
+│   └────────────────────┘   └────────────────────┘   └────────────┘  │
+│                                                                      │
+│   ┌──────────────────────────────────────────────────────────────┐   │
+│   │ Storage layer                                                │   │
+│   │ POSIX today | GDS today | io_uring/RDMA planned              │   │
+│   └──────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                        Cluster layer (roadmap)                        │
+│ GPU-aware request routing | pooled SSD | RDMA | node registry         │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-### Project Structure
+### Project layout
 
-```
+```text
 cascade/
 ├── adapter/           # Inference engine adapters
 │   └── vllm/          # vLLM KVConnector implementation
-├── engine/            # Go core engine
-│   ├── cmd/           # Entry points (disk-cache daemon)
-│   └── pkg/           # Core libraries
-│       ├── cache/     # Cache engine (Pebble metadata + LRU)
-│       ├── eviction/  # Eviction policies
-│       ├── metadata/  # Block metadata store
-│       └── storage/   # Storage backends
-├── csrc/              # C storage primitives (GDS, RDMA, io_uring)
-├── deploy/            # Deployment (Helm charts)
-├── docs/              # Documentation
-├── scripts/           # Benchmarking & utility scripts
-└── test/              # Integration & benchmark tests
+├── engine/            # Go disk-cache engine
+│   ├── cmd/           # disk-cache, c-agent, cluster-server entry points
+│   └── pkg/           # cache, metadata, server, storage, cluster packages
+├── docs/              # Design docs, benchmark plans, release notes
+├── scripts/           # Validation and benchmark scripts
+├── test/              # Integration and benchmark helpers
+└── images/            # README/community assets
 ```
 
 ---
 
-## Current Status
+## Quick start
 
-> **Phase 1 — Local Disk Cache MVP** ✅
-
-| Component | Status | Description |
-|---|---|---|
-| Go engine core | ✅ **Done** | Pebble-backed metadata store, LRU eviction, HTTP API |
-| vLLM connector | ✅ **Done** | Full KVConnectorBase_V1 implementation (~185 LOC) |
-| Disk I/O benchmarks | ✅ **Done** | Sequential/random read-write, latency profiling |
-| Benchmark suite | ✅ **Done** | Compare native vLLM vs LMCache vs DiskCache |
-| GDS storage backend | ✅ **Done** | POSIX/GDS backend abstraction with automatic fallback |
-| GPU-aware scheduler | 📋 **Planned** | Per-GPU VRAM/task monitoring + smart dispatching |
-| Pooled SSD cluster | 📋 **Planned** | Cross-node RDMA shared storage pool |
-| SGLang adapter | 📋 **Planned** | Directory structure ready |
-| Helm deployment | 📋 **Planned** | Chart scaffolded |
-
----
-
-## Validation and CI targets
-
-```bash
-# Fast local Go coverage
-make test-go
-
-# Python adapter/helper coverage (requires adapter deps)
-make test-adapter
-
-# CI-friendly bundle: Go + adapter tests + POSIX storage smoke
-make ci
-
-# GPU storage validation: CI bundle + POSIX/GDS benchmark
-make ci-gpu
-
-# Real vLLM + disk-cache validation (requires MODEL_PATH, GPU, and vLLM)
-make test-vllm-cache
-```
-
-- `make test-storage` wraps `scripts/validate_storage_backend.py`; override `STORAGE_BACKEND`, `STORAGE_DEVICE`, `STORAGE_SHAPE`, or `STORAGE_DTYPE` for POSIX/GDS/cuda smoke runs.
-- `make bench-storage` wraps `scripts/benchmark_storage_backend.py`; override `STORAGE_BENCH_*` variables or set `STORAGE_BENCH_MARKDOWN=docs/storage-benchmark-a100.md` to refresh the marker-wrapped report.
-- `make test-vllm-cache` wraps `scripts/validate_vllm_disk_cache.sh`, starts an isolated disk-cache + vLLM service, and verifies cache-hit stats.
-- `engine/pkg/cache/Stats` includes both legacy counters and finer-grained metadata/event counters for diagnostics.
-
-## Quick Start
-
-### 1. Build the Go Engine
+### 1. Build the engine
 
 ```bash
 make build-engine
 # Output: bin/disk-cache
 ```
 
-### 2. Start the DiskCache Daemon
+### 2. Run the disk-cache service
 
 ```bash
 ./bin/disk-cache \
-    --cache-path /mnt/nvme/kv-cache \
-    --metadata-path /tmp/disk-cache-meta \
-    --max-size 100GB \
-    --listen :9100
+  -cache-path /mnt/nvme/kv-cache \
+  -metadata-path /tmp/disk-cache-meta \
+  -max-size 100GB \
+  -listen :9100
 ```
 
-### 3. Start vLLM with DiskCache Connector
+### 3. Prefer the reproducible vLLM smoke
+
+On a GPU host with vLLM and a local model path:
+
+```bash
+MODEL_PATH=/tmp/models/Qwen2.5-7B-Instruct \
+VLLM_EXTRA_ARGS='--tensor-parallel-size 1 --max-model-len 8192' \
+REQUEST_REPETITIONS=200 \
+MAX_TOKENS=8 \
+make test-vllm-cache
+```
+
+The script builds the engine, starts isolated disk-cache and vLLM services, sends two repeated prompts, and fails if the second request does not retrieve cached KV chunks.
+
+### 4. Manual vLLM integration
 
 ```bash
 PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
-vllm serve deepseek-ai/DeepSeek-V4-Flash \
-    --no-enable-prefix-caching \
-    --tensor-parallel-size 8 \
-    --max-model-len 100000 \
-    --kv-transfer-config '{
-        "kv_connector": "DiskCacheConnector",
-        "kv_role": "kv_both",
-        "kv_connector_module_path": "adapter.vllm.connector_v21",
-        "kv_connector_extra_config": {
-            "disk_cache_path": "/mnt/nvme/kv-cache",
-            "disk_cache_engine_addr": "http://localhost:9100",
-            "target_device": "auto",
-            "storage_backend": "auto",
-            "disk_cache_chunk_size_mb": 128
-        }
-    }'
+vllm serve /path/to/model \
+  --no-enable-prefix-caching \
+  --tensor-parallel-size 1 \
+  --max-model-len 8192 \
+  --kv-transfer-config '{
+    "kv_connector": "DiskCacheConnector",
+    "kv_role": "kv_both",
+    "kv_connector_module_path": "adapter.vllm.connector_v21",
+    "kv_connector_extra_config": {
+      "disk_cache_path": "/mnt/nvme/kv-cache",
+      "disk_cache_engine_addr": "http://localhost:9100",
+      "target_device": "auto",
+      "storage_backend": "auto",
+      "disk_cache_chunk_size_mb": 128
+    }
+  }'
 ```
 
-For a reproducible real-vLLM smoke run, prefer `make test-vllm-cache`; it builds the
-engine, starts isolated services, and checks retrieval stats.
+Use `target_device=auto` for multi-GPU safety: the connector saves/loads to the actual KV tensor device unless an explicit device override is required.
 
-### 4. Verify
+---
+
+## Validation and CI targets
 
 ```bash
-# Engine stats
-curl http://localhost:9100/stats
+# Go packages and engine tests
+make test-go
 
-# Local CI-friendly checks
+# Python adapter/helper tests
+make test-adapter
+
+# CI-friendly bundle: Go + adapter tests + POSIX storage smoke
 make ci
 
-# Optional: refresh the A100 POSIX/GDS benchmark report on a GPU host
-STORAGE_BENCH_MARKDOWN=docs/storage-benchmark-a100.md make bench-storage
+# GPU host validation: CI bundle + POSIX/GDS benchmark
+make ci-gpu
+
+# Real vLLM + disk-cache smoke
+make test-vllm-cache
+```
+
+Useful overrides:
+
+```bash
+# Storage smoke on a specific backend/device
+STORAGE_BACKEND=gds STORAGE_DEVICE=cuda:0 make test-storage
+
+# Storage backend benchmark
+STORAGE_BENCH_BACKENDS=posix,gds \
+STORAGE_BENCH_DEVICE=cuda:0 \
+STORAGE_BENCH_MARKDOWN=docs/storage-benchmark-a100.md \
+make bench-storage
 ```
 
 ---
 
 ## Roadmap
 
-### Phase 1: Local Disk Cache MVP ✅ *(current)*
-- [x] Go engine: Pebble metadata + LRU eviction + HTTP API
-- [x] vLLM KVConnector: save/load KV tensors to disk
-- [x] Benchmark suite: compare native / LMCache / DiskCache
-- [x] Disk I/O profiling tools
+### Done
 
-### Phase 2: GPUDirect Storage Acceleration 🚀 *(done)*
-- [x] Python storage backend abstraction (GDS + POSIX fallback)
-- [x] NvFileBackend: GPU↔NVMe zero-copy via cuFile/nvfile/hipfile API
-- [x] PosixBackend: automatic fallback (cudaMemcpy + safetensors)
-- [x] Auto-select: GDS → POSIX fallback (configurable via `storage_backend`)
-- [x] Level 1+2 tests: mock / GPU fallback (17 tests, pass without GDS hardware)
+- [x] Go DiskCache engine: Pebble metadata, LRU eviction, HTTP API, stats.
+- [x] vLLM `KVConnectorBase_V1` integration for save/load of KV tensors.
+- [x] Persistent prefix/chunk metadata with sentinel entries and hit diagnostics.
+- [x] POSIX storage backend using safetensors-compatible CPU bounce path.
+- [x] GDS/NvFile backend with automatic POSIX fallback.
+- [x] A100 validation workflow and marker-aware storage benchmark report.
 
-### Phase 3: GPU-Aware Cluster Scheduling 📋
-- [ ] **GPU resource monitoring**: per-GPU VRAM usage, running task count, utilization
-- [ ] **GPU-aware request dispatching**: route requests based on VRAM capacity and GPU load, not blind round-robin
-- [ ] **Pooled SSD storage**: RDMA-accessible shared NVMe pool across all nodes
-- [ ] **VRAM admission control**: if no GPU has enough VRAM, evict cold KV blocks to pooled SSD to make room
-- [ ] **Dynamic role assignment**: nodes auto-switch between prefill/decode/storage based on real-time load
-- [ ] **Multi-GPU gang scheduling**: reserve N GPUs simultaneously for tensor-parallel models
-- [ ] **etcd-based node registry & discovery**
-- [ ] **SGLang adapter**
-- [ ] **Fault tolerance & data migration**
+### Next
 
-### Phase 4: Production Hardening 📋
-- [ ] Helm chart (Kubernetes deployment)
-- [ ] Prometheus / Grafana metrics
-- [ ] Admin dashboard
-- [ ] Multi-tenancy
-- [ ] Extensive documentation & examples
+- [ ] Better operator-facing docs and deployment examples.
+- [ ] GPU-aware scheduling: VRAM/task/load monitoring and smarter dispatch.
+- [ ] Pooled SSD design: RDMA-accessible shared NVMe across nodes.
+- [ ] Async disk I/O experiments (`io_uring`) and larger benchmark matrix.
+- [ ] SGLang adapter and additional inference-engine integration points.
+
+### Later
+
+- [ ] Cluster manager with node registry/discovery.
+- [ ] Multi-GPU gang scheduling for tensor-parallel models.
+- [ ] Fault tolerance, data migration, and production observability.
+- [ ] Helm chart and managed deployment patterns.
 
 ---
 
 ## Benchmarking
 
 ```bash
-# 1. Profile your NVMe drive first
+# 1. Profile a local NVMe drive
 python3 scripts/disk-bench.py /mnt/nvme
 
-# 2. Run the cache engine benchmark
+# 2. Exercise the cache engine over HTTP
 python3 scripts/disk-bench-cache.py http://localhost:9100
 
-# 3. Compare storage backend throughput on a GPU host
+# 3. Compare POSIX/GDS storage backends on a GPU host
 make bench-storage
 
-# 4. Refresh the checked-in A100 POSIX/GDS report
+# 4. Refresh the checked-in A100 benchmark report
 STORAGE_BENCH_MARKDOWN=docs/storage-benchmark-a100.md make bench-storage
 ```
 
-See `docs/benchmark-plan.md` for inference benchmark methodology and `docs/storage-benchmark-a100.md` for the latest A100 storage-backend report.
+See [Benchmark Plan](./docs/benchmark-plan.md) for inference benchmarking methodology and [A100 Storage Backend Benchmark](./docs/storage-benchmark-a100.md) for the latest checked-in storage report.
 
 ---
 
 ## Comparison
 
-### Design Philosophy
-| | LMCache | Mooncake | **Cascade** |
+| Dimension | LMCache | Mooncake | **Cascade** |
 |---|---|---|---|
-| **Role** | Tiered cache engine | Distributed KV transport engine | **Cluster disk cache** |
-| **Disk role** | Warm data tier (CPU→Disk) | Eviction overflow target | **🎯 Primary storage layer** |
-| **Data path** | GPU → CPU → Disk | GPU memory ↔ RDMA → peer GPU | **GPU → NVMe (GDS) → cluster (RDMA)** |
-| **Storage node** | ❌ Must have GPU | ❌ Must have GPU | **✅ Pure disk node planned** |
+| Primary role | Tiered KV cache | Distributed KV transfer | **Disk-backed KV cache + future pooled SSD** |
+| Disk role | Warm tier | Overflow/offload target | **Primary high-capacity KV tier** |
+| Metadata | Python/in-memory paths | Master/etcd service | **Pebble-backed Go engine** |
+| vLLM integration | Deep integration | Integration plugin | **KVConnectorBase_V1** |
+| GPU↔NVMe path | GDS backend exists | Not the main design center | **POSIX + GDS backend abstraction** |
+| Cluster direction | Cache tiering | RDMA transfer | **GPU-aware scheduling + pooled NVMe roadmap** |
 
-### Current Implementation (Phase 1 MVP)
-
-| Feature | LMCache | Mooncake | **Cascade** |
-|---|---|---|---|
-| **Disk cache** | ✅ LocalDiskBackend | ✅ FileStorage (SSD offload) | **✅ Core design** |
-| **KV data I/O** | Python `open/write` | C++ io_uring / POSIX | **Python StorageBackend: GDS (cuFile) / POSIX fallback** |
-| **Metadata store** | In-memory Python dict | etcd + Master Service | **Pebble (LSM tree)** |
-| **Metadata persistent** | ❌ Lost on restart | ✅ etcd | **✅ Pebble** |
-| **Eviction policy** | ✅ LRU / LFU / FIFO / MRU | ✅ LRU / FIFO | **✅ LRU** |
-| **Prefix matching** | ✅ TokenDatabase | ❌ Opaque key only | **✅ SHA-256 incremental + sentinel** |
-| **vLLM integration** | ✅ Deep integration | ✅ mooncake-integration | **✅ KVConnectorBase_V1** |
-| **Codebase (core engine)** | ~79K lines Python | ~220K lines C++ | **~400 lines Go** |
-
-> *Phase 1: Python safetensors via CPU bounce buffer (temporary path).
-> Phase 2: Python StorageBackend abstraction with GPU↔NVMe zero-copy (GDS) and automatic fallback.
-
-### Planned Architecture (Design Target)
-
-| Feature | LMCache | Mooncake | **Cascade** |
-|---|---|---|---|
-| **I/O stack** | Python native | C++ native | **Python connector → Go engine → C backend** |
-| **GPU↔NVMe** | ✅ GdsBackend (partial) | ❌ Not supported | **✅ GPUDirect Storage (cuFile/nvfile)** |
-| **Cross-node transfer** | ❌ No RDMA | ✅ RDMA (core competency) | **📋 RDMA (ibverbs)** |
-| **Async disk I/O** | ❌ Not supported | ✅ io_uring | **📋 io_uring** |
-| **GPU resource scheduling** | ❌ None | ❌ Manual role only | **📋 GPU-aware: VRAM/task monitoring + smart dispatching** |
-| **Cluster manager** | ❌ P2P only (ZMQ) | ✅ Master + etcd + HA | **📋 ClusterManager + etcd** |
-| **Pooled SSD storage** | ❌ No | ❌ Local offload only | **📋 RDMA shared NVMe pool** |
-| **Pure storage node** | ❌ No such concept | ❌ GPU required | **📋 GPU-free storage node** |
-| **SGLang adapter** | ❌ Not available | ✅ Supported | **📋 Scaffolded** |
-
-### Architecture Evolution
-
-```
-Phase 1 (done)      Python safetensors writes/reads disk via CPU bounce buffer
-                    Go engine manages metadata (Pebble) + eviction (LRU) via HTTP
-
-Phase 2 (done)      Python StorageBackend abstraction
-                      ├── NvFileBackend: GPU↔NVMe zero-copy (cuFile/nvfile)
-                      └── PosixBackend: CPU bounce buffer fallback (safetensors)
-                    Auto-select: GDS → POSIX, no code changes needed
-
-Phase 3 (planned)   GPU-aware cluster: per-GPU VRAM/task monitoring
-                    Pooled SSD: RDMA shared NVMe across all nodes
-                    io_uring async disk I/O
-                    SGLang adapter
-```
+Cascade is intentionally small and infrastructure-oriented: keep the Python connector thin, keep metadata durable, make storage backends explicit, and evolve from one-node NVMe to pooled SSD clusters.
 
 ---
 
 ## Documentation
 
-- [Design Document](./DESIGN.md) — Detailed architecture and rationale
-- [Benchmark Plan](./docs/benchmark-plan.md) — Testing methodology
-- [vLLM Baseline Setup](./docs/baseline-vllm-deepseek-v4.md) — Reference deployment
+- [Design Document](./DESIGN.md) — architecture and rationale.
+- [Benchmark Plan](./docs/benchmark-plan.md) — benchmarking methodology.
+- [A100 Storage Backend Benchmark](./docs/storage-benchmark-a100.md) — reproducible POSIX/GDS sample report.
+- [Release Notes](./docs/release-notes.md) — latest validation notes.
+- [vLLM Baseline Setup](./docs/baseline-vllm-deepseek-v4.md) — reference deployment notes.
 
 ---
 
 ## Contributing
 
-Contributions are welcome! This project is in active early development, so there are many opportunities to make an impact:
+Cascade is early and practical. Good contributions include:
 
-- **Engineers**: Help implement GDS, RDMA, cluster manager, or storage backends
-- **ML practitioners**: Run benchmarks, report results, suggest optimizations
-- **Infrastructure folks**: Improve deployment, monitoring, and observability
+- Running the validation scripts on different GPUs, SSDs, filesystems, and vLLM versions.
+- Improving storage backends, cache-hit diagnostics, or benchmark coverage.
+- Hardening deployment, observability, and operational docs.
+- Prototyping cluster scheduling, RDMA transfer, or SGLang integration.
 
-Please open an issue or pull request. For major changes, start with a discussion.
+Please open an issue or pull request. For major design changes, start with a short proposal.
 
 ---
 
@@ -330,8 +321,8 @@ Please open an issue or pull request. For major changes, start with a discussion
 
 Cascade is **dual-licensed**:
 
-- **Apache 2.0** — Free for open-source projects, individual developers, and non-commercial use.
-- **Commercial License** — Required for embedding in hardware appliances, proprietary products, or commercial solutions.
+- **Apache 2.0** — free for open-source projects, individual developers, and non-commercial use.
+- **Commercial License** — required for embedding in hardware appliances, proprietary products, or commercial solutions.
 
 See [COMMERCIAL_LICENSE.md](./COMMERCIAL_LICENSE.md) for details.
 
@@ -340,15 +331,15 @@ See [COMMERCIAL_LICENSE.md](./COMMERCIAL_LICENSE.md) for details.
 ---
 
 <p align="center">
-  <b>LLM inference shouldn't be memory-bound.</b><br>
-  Cascade — extending context, one NVMe at a time.</p>
+  <strong>LLM inference should not be memory-bound.</strong><br>
+  Cascade — stretch context with NVMe, one cache block at a time.
+</p>
 
 ---
 
-## 爱好者交流群
+## Community
 
 <p align="center">
-  <img src="./images/qr-community.jpg" width="280" alt="微信爱好者交流群" /><br>
-  <em>扫码加入 Cascade 爱好者交流群，讨论 KV cache、长上下文推理与大模型工程实践</em>
+  <img src="./images/qr-community.jpg" width="280" alt="WeChat Cascade community QR code" /><br>
+  <em>Scan to join the Cascade community and discuss KV cache, long-context inference, and LLM systems engineering.</em>
 </p>
-

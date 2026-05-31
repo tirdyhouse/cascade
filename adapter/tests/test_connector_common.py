@@ -168,6 +168,39 @@ def test_load_layer_chunks_records_only_successful_loads(tmp_path):
     inject.assert_called_once_with(kv_cache_layer, injected_kv, slot_mapping, "layer-attn", conn._block_size)
 
 
+def test_load_layer_chunks_uses_target_tensor_device_when_auto(tmp_path):
+    conn = DummyConnector(tmp_path)
+    prefix = "abcdef0123456789abcdef0123456789"
+    existing = conn._chunk_file_path(prefix, "layer.0", 0)
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"placeholder")
+    conn._go_chunk_list_result = [0]
+    conn._storage.load.return_value = torch.ones(2, 1, 2, dtype=torch.float32)
+    kv_cache_layer = SimpleNamespace(device=torch.device("cuda:3"), dtype=torch.float16)
+
+    with mock.patch("adapter.vllm.connector_common.inject_kv_into_layer"):
+        conn._load_layer_chunks(prefix, "layer.0", kv_cache_layer, torch.arange(1), 1, object())
+
+    conn._storage.load.assert_called_once_with(existing, device="cuda:3")
+
+
+def test_load_layer_chunks_honors_explicit_target_device(tmp_path):
+    conn = DummyConnector(tmp_path)
+    conn.target_device = "cuda:0"
+    prefix = "abcdef0123456789abcdef0123456789"
+    existing = conn._chunk_file_path(prefix, "layer.0", 0)
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"placeholder")
+    conn._go_chunk_list_result = [0]
+    conn._storage.load.return_value = torch.ones(2, 1, 2, dtype=torch.float32)
+    kv_cache_layer = SimpleNamespace(device=torch.device("cuda:3"), dtype=torch.float16)
+
+    with mock.patch("adapter.vllm.connector_common.inject_kv_into_layer"):
+        conn._load_layer_chunks(prefix, "layer.0", kv_cache_layer, torch.arange(1), 1, object())
+
+    conn._storage.load.assert_called_once_with(existing, device="cuda:0")
+
+
 def test_build_connector_meta_adds_store_and_load_then_clears_for_partial_hit(tmp_path):
     conn = DummyConnector(tmp_path)
     conn._requests_need_load["req-1"] = SimpleNamespace(

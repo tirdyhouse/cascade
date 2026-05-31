@@ -30,6 +30,7 @@ make bench-storage
 
 | Requested | Selected | Save median (s) | Save median (MiB/s) | Load median (s) | Load median (MiB/s) |
 |---|---|---:|---:|---:|---:|
-| posix | PosixBackend | 0.067491 | 474.14 | 0.009099 | 3516.77 |
-| gds | NvFileBackend | 0.019749 | 1620.33 | 0.005058 | 6326.58 |
+| posix | PosixBackend | 0.066639 | 480.20 | 0.009055 | 3534.14 |
+| gds | NvFileBackend | 0.020430 | 1566.36 | 0.005160 | 6202.14 |
+
 <!-- benchmark-results:end -->

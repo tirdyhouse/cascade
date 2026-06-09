@@ -61,9 +61,8 @@ body::before {
 }
 
 @keyframes bgPulse {
-  0%, 100% { transform: translate(0, 0) rotate(0deg); }
-  33% { transform: translate(-2%, 2%) rotate(1deg); }
-  66% { transform: translate(2%, -1%) rotate(-1deg); }
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-2%, 2%); }
 }
 
 .container {
@@ -294,6 +293,151 @@ nav {
   height: 240px;
   position: relative;
 }
+
+/* ─── GPU Monitor ─── */
+.gpu-monitor {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.gpu-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.gpu-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--cyan));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.gpu-card:hover {
+  border-color: var(--border-hover);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
+
+.gpu-card:hover::before {
+  opacity: 1;
+}
+
+.gpu-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.gpu-name {
+  font-weight: 600;
+  color: var(--text-0);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9rem;
+}
+
+.gpu-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.gpu-status.running {
+  background: rgba(16,185,129,0.15);
+  color: var(--green);
+}
+
+.gpu-status.loading {
+  background: rgba(245,158,11,0.15);
+  color: var(--orange);
+}
+
+.gpu-status.stopped {
+  background: rgba(239,68,68,0.15);
+  color: var(--red);
+}
+
+.gpu-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gpu-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bar-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+.bar-track {
+  height: 8px;
+  background: var(--bg-3);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 1s ease;
+  position: relative;
+}
+
+.bar-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+  animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.bar-fill.low { background: linear-gradient(90deg, var(--green), #34d399); }
+.bar-fill.mid { background: linear-gradient(90deg, var(--orange), #fbbf24); }
+.bar-fill.high { background: linear-gradient(90deg, var(--red), #f87171); }
+.hitrate-fill { height: 100%; border-radius: 4px; transition: width 1s ease; position: relative; }
+.hitrate-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+  animation: shimmer 2s infinite;
+}
+.hitrate-fill.high { background: linear-gradient(90deg, var(--green), #34d399); }
+.hitrate-fill.mid { background: linear-gradient(90deg, var(--orange), #fbbf24); }
+.hitrate-fill.low { background: linear-gradient(90deg, var(--red), #f87171); }
 
 /* ─── Nodes Table ─── */
 .panel {
@@ -589,6 +733,8 @@ tr:last-child td {
     <div class="nav-links">
       <a href="/" class="active">Dashboard</a>
       <a href="/nodes.html">Nodes</a>
+      <a href="/topology.html">Topology</a>
+      <a href="/performance.html">Performance</a>
       <a href="/cache.html">Cache</a>
     </div>
     <div class="nav-status">
@@ -646,6 +792,11 @@ tr:last-child td {
         <canvas id="distChart"></canvas>
       </div>
     </div>
+  </div>
+
+  <!-- GPU Monitor -->
+  <div class="gpu-monitor" id="gpu-monitor">
+    <!-- Dynamic GPU cards will be inserted here -->
   </div>
 
   <!-- Nodes Table -->
@@ -892,6 +1043,10 @@ function esc(s) {
   d.textContent = s || '';
   return d.innerHTML;
 }
+// Safe attribute escaping to prevent XSS
+function escAttr(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 function getGpuClass(util) {
   const pct = (util || 0) * 100;
@@ -949,10 +1104,64 @@ async function load() {
     document.getElementById('footer-time').textContent = time;
     
     // Update charts
-    updateCharts(d);
+    updateCharts(d);    
+    // Update GPU monitor cards
+    const gpuMonitor = document.getElementById('gpu-monitor');
+    if (nodes.length > 0) {
+      gpuMonitor.innerHTML = nodes.map(n => {
+        const gpuPct = ((n.gpu_util || 0) * 100).toFixed(0);
+        const memUsed = n.gpu_mem_used ? (n.gpu_mem_used / 1024).toFixed(1) : '0';
+        const memTotal = n.info?.gpu_mem_mb ? (n.info.gpu_mem_mb / 1024).toFixed(0) : '0';
+        const vllmStatus = n.vllm_status || 'stopped';
+        const statusClass = vllmStatus === 'running' ? 'running' : vllmStatus === 'loading' ? 'loading' : 'stopped';
+        
+        return `
+          <div class="gpu-card">
+            <div class="gpu-header">
+              <span class="gpu-name">${escAttr(n.node_id || 'GPU')}</span>
+              <span class="gpu-status ${statusClass}">
+                ${vllmStatus === 'running' ? '🟢' : vllmStatus === 'loading' ? '🟡' : '🔴'}
+                ${esc(vllmStatus)}
+              </span>
+            </div>
+            <div class="gpu-bars">
+              <div class="gpu-bar">
+                <div class="bar-header">
+                  <span>GPU Utilization</span>
+                  <span>${gpuPct}%</span>
+                </div>
+                <div class="bar-track">
+                  <div class="bar-fill ${gpuPct < 50 ? 'low' : gpuPct < 80 ? 'mid' : 'high'}" style="width: ${gpuPct}%"></div>
+                </div>
+              </div>
+              <div class="gpu-bar">
+                <div class="bar-header">
+                  <span>Memory Usage</span>
+                  <span>${memUsed}/${memTotal} GB</span>
+                </div>
+                <div class="bar-track">
+                  <div class="bar-fill ${memUsed/memTotal < 0.5 ? 'low' : memUsed/memTotal < 0.8 ? 'mid' : 'high'}" style="width: ${(memUsed/memTotal*100).toFixed(0)}%"></div>
+                </div>
+              </div>
+              <div class="gpu-bar">
+                <div class="bar-header">
+                  <span>Cache Hit Rate</span>
+                  <span>${(n.hit_rate || 0).toFixed(1)}%</span>
+                </div>
+                <div class="bar-track">
+                  <div class="hitrate-fill ${(n.hit_rate || 0) >= 70 ? 'high' : (n.hit_rate || 0) >= 40 ? 'mid' : 'low'}" style="width: ${n.hit_rate || 0}%"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    } else {
+      gpuMonitor.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: var(--text-3);">No GPU nodes detected</div>';
+    }
+
     
     // Update node count
-    const nodes = d.nodes || [];
     document.getElementById('node-count').textContent = nodes.length + ' nodes';
     
     // Update table

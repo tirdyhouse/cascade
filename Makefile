@@ -20,6 +20,9 @@ STORAGE_BENCH_MARKDOWN ?=
 
 # Default target
 all: build-engine
+# Deploy to remote test machine (rsync + remote build)
+deploy:
+	bash deploy-remote.sh
 
 # Build Go engine binary
 build-engine:

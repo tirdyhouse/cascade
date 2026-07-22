@@ -9,6 +9,7 @@ from adapter.vllm.chunking import cached_file_path, chunk_file_path, chunk_range
 from adapter.vllm.go_client import DiskCacheGoClient
 from adapter.vllm.hashing import (
     align_to_block_size,
+    block_hash,
     compute_prompt_hash,
     hash_token_count,
     layer_hash,
@@ -98,23 +99,63 @@ class DiskCacheConnectorCommonMixin:
     def wait_for_layer_load(self, layer_name):
         pass
 
-    def _load_request_kv(self, req, forward_context, attn_metadata):
+        def _load_request_kv(self, req, forward_context, attn_metadata):
         num_tokens = req.num_tokens
         slot_mapping = self._build_slot_mapping(req)
-        prefix_key = self._prefix_key(req.token_ids)
+        # Use block-level cumulative hashing for loading
+        # This matches the storage scheme used by _save_layer_chunks_with_block_hash
         for layer_name in forward_context.no_compile_layers:
             layer = forward_context.no_compile_layers[layer_name]
             kv_cache_layer = getattr(layer, "kv_cache", None)
             if kv_cache_layer is None:
                 continue
-            self._load_layer_chunks(
-                prefix_key,
+            self._load_layer_chunks_with_block_hash(
+                req.token_ids,
                 layer_name,
                 kv_cache_layer,
                 slot_mapping,
                 num_tokens,
                 attn_metadata,
             )
+    
+    def _load_layer_chunks_with_block_hash(self, token_ids, layer_name, kv_cache_layer, slot_mapping, num_tokens, attn_metadata):
+        """Load chunks using block-level cumulative hashing.
+        
+        Computes block hashes for the requested prefix and loads cached chunks.
+        """
+        try:
+            kv_parts = []
+            target_device = self._resolve_device(kv_cache_layer)
+            
+            # Load chunks for each block in the requested prefix
+            for chunk_idx, start, end in self._chunk_ranges(num_tokens):
+                block_idx = start // self._block_size
+                bh = block_hash(token_ids, self._block_size, block_idx)
+                
+                chunks = sorted(self._go_chunk_list(bh, layer_name))
+                if not chunks:
+                    continue
+                
+                for ci in chunks:
+                    fp = self._chunk_file_path(bh, layer_name, ci)
+                    if not fp.exists():
+                        logger.warning("Chunk %d missing for block_hash %s/%s", ci, bh, layer_name)
+                        continue
+                    loaded = self._storage.load(fp, device=target_device)
+                    kv_parts.append(loaded)
+                    self._go_record_retrieved()
+            
+            if not kv_parts:
+                return
+            kv_cache = torch.cat(kv_parts, dim=1)  # concat along token dim
+            kv_cache = kv_cache[:, :num_tokens, :]  # take only needed tokens
+            target_dtype = kv_cache_layer.dtype
+            if kv_cache.dtype != target_dtype:
+                kv_cache = kv_cache.to(target_dtype)
+            layer_attn = attn_metadata.get(layer_name, attn_metadata) if isinstance(attn_metadata, dict) else attn_metadata
+            inject_kv_into_layer(kv_cache_layer, kv_cache, slot_mapping, layer_attn, self._block_size)
+        except Exception as e:
+            logger.warning("Failed to load KV for %s: %s", layer_name, e)
 
     def _load_layer_chunks(self, prefix_key, layer_name, kv_cache_layer, slot_mapping, num_tokens, attn_metadata):
         chunks = sorted(self._go_chunk_list(prefix_key, layer_name))
@@ -144,13 +185,13 @@ class DiskCacheConnectorCommonMixin:
         except Exception as e:
             logger.warning("Failed to load KV for %s: %s", layer_name, e)
 
-    def _save_request_kv(self, req, layer_name, kv_layer, attn_metadata):
+        def _save_request_kv(self, req, layer_name, kv_layer, attn_metadata):
         slot_mapping = self._build_slot_mapping(req)
         kv_cache = extract_kv_from_layer(kv_layer, slot_mapping, attn_metadata, self._block_size)
         num_tokens = req.num_tokens
-        prefix_key = self._prefix_key(req.token_ids)
-        existing_chunks = set(self._go_chunk_list(prefix_key, layer_name))
-        self._save_layer_chunks(prefix_key, layer_name, kv_cache, num_tokens, existing_chunks)
+        # Use block-level cumulative hashing for chunk storage
+        # This ensures requests sharing the same prefix can reuse cached chunks
+        self._save_layer_chunks_with_block_hash(req.token_ids, layer_name, kv_cache, num_tokens)
 
     def _save_layer_chunks(self, prefix_key, layer_name, kv_cache, num_tokens, existing_chunks):
         for chunk_idx, start, end in self._chunk_ranges(num_tokens):
@@ -166,6 +207,35 @@ class DiskCacheConnectorCommonMixin:
         self._storage.save(file_path, chunk_kv)
         self._go_chunk_put(prefix_key, layer_name, chunk_idx, chunk_tokens)
         go_hash = int(prefix_key[:16], 16)
+        self._go_put(go_hash, str(file_path.relative_to(self.cache_root)), file_path.stat().st_size)
+
+    def _save_layer_chunks_with_block_hash(self, token_ids, layer_name, kv_cache, num_tokens):
+        """Save chunks using block-level cumulative hashing.
+        
+        Each block uses hash(tokens[0:block_end]) as its storage key.
+        This allows requests sharing the same prefix to reuse cached chunks.
+        """
+        for chunk_idx, start, end in self._chunk_ranges(num_tokens):
+            # Compute block hash for this chunk's position
+            block_idx = start // self._block_size
+            bh = block_hash(token_ids, self._block_size, block_idx)
+            
+            # Check if chunk already exists
+            existing_chunks = set(self._go_chunk_list(bh, layer_name))
+            is_full = (end - start) >= self._tokens_per_chunk
+            if is_full and chunk_idx in existing_chunks:
+                continue  # immutable full chunk, skip
+            
+            chunk_kv = kv_cache[:, start:end, :]
+            self._save_chunk_with_block_hash(bh, layer_name, chunk_idx, chunk_kv, end - start)
+    
+    def _save_chunk_with_block_hash(self, block_hash_key, layer_name, chunk_idx, chunk_kv, chunk_tokens):
+        """Save a single chunk using block hash as key."""
+        file_path = self._chunk_file_path(block_hash_key, layer_name, chunk_idx)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        self._storage.save(file_path, chunk_kv)
+        self._go_chunk_put(block_hash_key, layer_name, chunk_idx, chunk_tokens)
+        go_hash = int(block_hash_key[:16], 16)
         self._go_put(go_hash, str(file_path.relative_to(self.cache_root)), file_path.stat().st_size)
 
     def wait_for_save(self):

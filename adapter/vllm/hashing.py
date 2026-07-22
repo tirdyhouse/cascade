@@ -31,6 +31,21 @@ def compute_prompt_hash(
     return h.hexdigest()[:32]
 
 
+def block_hash(token_ids: Sequence[int], block_size: int, block_idx: int) -> str:
+    """Compute cumulative hash for block block_idx.
+    
+    block_hash_i = hash(tokens[0:(i+1)*block_size])
+    
+    This allows prefix caching: requests sharing the same prefix
+    will have the same block hashes for the shared blocks.
+    """
+    end = min((block_idx + 1) * block_size, len(token_ids))
+    h = hashlib.sha256()
+    for tid in token_ids[:end]:
+        h.update(struct.pack(">I", tid))
+    return h.hexdigest()[:32]
+
+
 def prefix_key(token_ids: Sequence[int], block_size: int) -> str:
     """Prefix shared across same-prefix requests."""
     n = min(block_size, len(token_ids))

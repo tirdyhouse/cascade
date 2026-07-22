@@ -82,5 +82,19 @@ class DiskCacheGoClient:
     def put(self, hash_val: int, file_path: str, size: int) -> None:
         self.post("/put", {"hash": hash_val, "file_path": file_path, "size": size})
 
-    def get(self, hash_val: int) -> Any:
+    
+    def batch_load(self, prefix_key: str, layers: list[str]) -> dict[str, list[int]]:
+        """Batch query chunk lists for multiple layers in one HTTP call."""
+        data = self.post(
+            "/batch_load",
+            {"prefix_key": prefix_key, "layers": layers},
+        )
+        result = json.loads(data)
+        return result.get("results", {})
+
+    def batch_retrieved(self, counts: dict[str, int]) -> None:
+        """Record retrieved counts for multiple layers at once."""
+        self.post("/batch_retrieved", {"counts": counts})
+
+def get(self, hash_val: int) -> Any:
         return self.get_json("/get", {"hash": f"{hash_val:016x}"})

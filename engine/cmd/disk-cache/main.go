@@ -88,6 +88,8 @@ func main() {
 	mux.HandleFunc("/retrieved", handleRetrieved)
 	mux.HandleFunc("/chunk_put", handleChunkPut)
 	mux.HandleFunc("/chunk_list", handleChunkList)
+	mux.HandleFunc("/batch_load", handleBatchLoad)
+	mux.HandleFunc("/batch_retrieved", handleBatchRetrieved)
 
 	if err := http.ListenAndServe(*listenAddr, mux); err != nil {
 		log.Fatalf("server error: %v", err)
@@ -242,6 +244,69 @@ type ChunkPutReq struct {
 	ChunkIndex int    `json:"chunk_index"`
 	NumTokens  int    `json:"num_tokens"`
 }
+// ── Batch API for reduced HTTP round-trips ──
+
+// BatchLoadReq requests chunk lists for multiple layers in one call.
+// This reduces HTTP round-trips from 28 (per layer) to 1.
+type BatchLoadReq struct {
+	PrefixKey string   `json:"prefix_key"`
+	Layers    []string `json:"layers"`
+}
+
+// BatchLoadResp returns chunk lists for all requested layers.
+type BatchLoadResp struct {
+	Results map[string][]int `json:"results"` // layer_name -> chunk_indices
+}
+
+func handleBatchLoad(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", 400)
+		return
+	}
+	var req BatchLoadReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	resp := BatchLoadResp{Results: make(map[string][]int)}
+	for _, layer := range req.Layers {
+		indices, err := eng.ListChunks(req.PrefixKey, layer)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		if indices == nil {
+			indices = []int{}
+		}
+		resp.Results[layer] = indices
+	}
+	json.NewEncoder(w).Encode(resp)
+}
+
+// BatchRetrievedReq records retrieved counts for multiple layers at once.
+type BatchRetrievedReq struct {
+	Counts map[string]int64 `json:"counts"` // layer_name -> count
+}
+
+func handleBatchRetrieved(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", 400)
+		return
+	}
+	var req BatchRetrievedReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	var total int64
+	for _, count := range req.Counts {
+		total += count
+	}
+	eng.RecordRetrieved(total)
+	w.WriteHeader(200)
+}
+
+
 
 func handleChunkPut(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {

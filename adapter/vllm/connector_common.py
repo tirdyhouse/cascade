@@ -235,9 +235,7 @@ class DiskCacheConnectorCommonMixin:
             logger.warning("Failed to load KV for %s: %s", layer_name, e)
 
     def _save_request_kv(self, req, layer_name, kv_layer, attn_metadata):
-    def _save_request_kv(self, req, layer_name, kv_layer, attn_metadata):
         slot_mapping = self._build_slot_mapping(req)
-        kv_cache = extract_kv_from_layer(kv_layer, slot_mapping, attn_metadata, self._block_size)
         num_tokens = req.num_tokens
         # Use block-level cumulative hashing for chunk storage
         # This ensures requests sharing the same prefix can reuse cached chunks

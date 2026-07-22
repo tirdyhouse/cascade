@@ -117,6 +117,7 @@ class DiskCacheConnectorCommonMixin:
                 num_tokens,
                 attn_metadata,
             )
+    
     def _load_layer_chunks_with_block_hash(self, token_ids, layer_name, kv_cache_layer, slot_mapping, num_tokens, attn_metadata):
         """Load chunks using block-level cumulative hashing.
         
@@ -180,11 +181,10 @@ class DiskCacheConnectorCommonMixin:
             if kv_cache.dtype != target_dtype:
                 kv_cache = kv_cache.to(target_dtype)
             layer_attn = attn_metadata.get(layer_name, attn_metadata) if isinstance(attn_metadata, dict) else attn_metadata
-            inject_kv_into_layer(kv_cache_layer, kv_cache, slot_mapping, layer_attn, self._block_size)
-        except Exception as e:
         except Exception as e:
             logger.warning("Failed to load KV for %s: %s", layer_name, e)
 
+    def _save_request_kv(self, req, layer_name, kv_layer, attn_metadata):
     def _save_request_kv(self, req, layer_name, kv_layer, attn_metadata):
         slot_mapping = self._build_slot_mapping(req)
         kv_cache = extract_kv_from_layer(kv_layer, slot_mapping, attn_metadata, self._block_size)

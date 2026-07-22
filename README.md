@@ -72,6 +72,19 @@ Observed on the project A100 validation host. These numbers are environment samp
 | First request | `1.704s`, retrieved blocks `0` |
 | Second request | `0.199s`, retrieved blocks `28`, cached tokens `6624` |
 
+### T4 + nvfile POSIX benchmark (2026-07-22)
+
+| Item | Value |
+|---|---|
+| GPU | NVIDIA Tesla T4 (16GB) |
+| vLLM | 0.25.1 |
+| Model | Qwen2.5-7B-Instruct-AWQ |
+| Storage | nvfile (自研高性能存储集群), POSIX backend |
+| Warmup TTFT | `8.105s` |
+| Query TTFT | `0.390s` |
+| Speedup | **20.8x** |
+| Cache hit rate | 96% |
+
 See [release notes](./docs/release-notes.md) for the full validation command and environment notes.
 
 ### POSIX vs GDS storage backend benchmark

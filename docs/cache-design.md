@@ -180,3 +180,84 @@ start_load_kv():
 | 查询匹配 | O(tokens) + O(log blocks) | O(tokens/16) | 增量 hash + 二分搜索 Pebble |
 | 读回 KV | O(tokens × hidden) | O(1) | safetensors 直接读 GPU |
 | 多轮追加写入 | O(新增 tokens) | O(新增 blocks) | 已存在的 sentinel 跳过 |
+---
+
+## 九、Chunk 存储：Block-level Cumulative Hashing
+
+### 问题：prefix_key 碰撞
+
+早期设计使用 `prefix_key = hash(tokens[0:16])` 作为 chunk 存储路径。这导致：
+
+- Chat template 使所有请求的前 16 个 token 相同（系统提示）
+- 所有请求共享同一个 prefix_key
+- Chunks 互相覆盖，命中率仅 47%
+
+### 解决方案：Block-level Cumulative Hashing
+
+每个 block 使用累积前缀 hash 作为存储 key：
+
+```python
+block_hash_i = hash(tokens[0 : (i+1) * block_size])
+```
+
+**优势**：
+1. 不同 block 有独立存储路径 → 不会覆盖
+2. 相同前缀的请求共享 block hash → 可以复用缓存
+3. Agent 会话每轮增长 → 前面的 block hash 相同 → 缓存命中
+
+**示例**：
+```
+Block 0: key = hash(tokens[0:16])   → /ab/cd/ab12.../
+Block 1: key = hash(tokens[0:32])   → /ef/01/ef34.../
+Block 2: key = hash(tokens[0:48])   → /56/78/5690.../
+```
+
+### 实现
+
+```python
+def block_hash(token_ids, block_size, block_idx):
+    end = min((block_idx + 1) * block_size, len(token_ids))
+    h = hashlib.sha256()
+    for tid in token_ids[:end]:
+        h.update(struct.pack(">I", tid))
+    return h.hexdigest()[:32]
+```
+
+存储和加载均使用 `block_hash` 而非 `prefix_key`。
+
+---
+
+## 十、性能基准
+
+### T4 + nvfile POSIX 测试
+
+| 指标 | 值 |
+|------|-----|
+| GPU | Tesla T4 (16GB) |
+| 存储 | nvfile (自研高性能存储集群) |
+| 后端 | POSIX |
+| 模型 | Qwen2.5-7B-Instruct-AWQ |
+| vLLM | 0.25.1 |
+
+| 阶段 | 平均 TTFT | 总耗时 | 成功率 |
+|------|:---------:|:------:|:------:|
+| Warmup (冷启动) | 8.105s | 83.7s | 10/10 |
+| Query (缓存命中) | **0.390s** | 6.6s | 10/10 |
+
+**加速比：20.8x**
+
+### 对比基准
+
+| 方案 | Query TTFT | 环境 | 说明 |
+|------|:----------:|------|------|
+| **Cascade** | **0.390s** | T4 + nvfile POSIX | 磁盘缓存 |
+| LMCache | 0.208s | T4 + CPU RAM | 内存缓存 |
+| Cascade (A100) | 0.199s | A100 + vLLM 0.21 | 早期验证 |
+
+### 命中率修复效果
+
+| 版本 | 命中率 | 说明 |
+|------|:------:|------|
+| 修复前 (prefix_key 16 tokens) | 47% | Chat template 导致碰撞 |
+| 修复后 (block-level hashing) | **96%** | 每个 block 独立存储 |
+

@@ -236,9 +236,9 @@ class DiskCacheConnectorCommonMixin:
 
     def _save_request_kv(self, req, layer_name, kv_layer, attn_metadata):
         slot_mapping = self._build_slot_mapping(req)
+        kv_cache = extract_kv_from_layer(kv_layer, slot_mapping, attn_metadata, self._block_size)
         num_tokens = req.num_tokens
         # Use block-level cumulative hashing for chunk storage
-        # This ensures requests sharing the same prefix can reuse cached chunks
         self._save_layer_chunks_with_block_hash(req.token_ids, layer_name, kv_cache, num_tokens)
 
     def _save_layer_chunks(self, prefix_key, layer_name, kv_cache, num_tokens, existing_chunks):

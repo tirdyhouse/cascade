@@ -100,6 +100,7 @@ class DiskCacheConnectorCommonMixin:
         pass
 
     def _load_request_kv(self, req, forward_context, attn_metadata):
+        num_tokens = req.num_tokens
         slot_mapping = self._build_slot_mapping(req)
         
         # Collect all layer names

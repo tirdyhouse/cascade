@@ -100,6 +100,7 @@ class DiskCacheConnectorCommonMixin:
         pass
 
     def _load_request_kv(self, req, forward_context, attn_metadata):
+        import time as _time
         num_tokens = req.num_tokens
         slot_mapping = self._build_slot_mapping(req)
         
@@ -115,14 +116,20 @@ class DiskCacheConnectorCommonMixin:
         if not layer_names:
             return
         
-        # Batch query: get all chunk lists in one HTTP call
-        # Compute a representative prefix_key for the batch query
-        # (all blocks share the same chunk structure)
-        first_block_idx = 0
-        first_bh = block_hash(req.token_ids, self._block_size, first_block_idx)
-        batch_results = self._go.batch_load(first_bh, layer_names)
+        # Step 1: Go engine match
+        t0 = _time.perf_counter()
+        first_bh = block_hash(req.token_ids, self._block_size, 0)
+        match_result = self._go_match(req.token_ids, [])
+        t_match = (_time.perf_counter() - t0) * 1000
         
-        # Load each layer using the batch results
+        # Step 2: Batch load chunk lists
+        t1 = _time.perf_counter()
+        batch_results = self._go.batch_load(first_bh, layer_names)
+        t_batch = (_time.perf_counter() - t1) * 1000
+        
+        # Step 3: Load KV data from disk + inject to GPU
+        t2 = _time.perf_counter()
+        loaded_layers = 0
         for layer_name in layer_names:
             layer = forward_context.no_compile_layers[layer_name]
             kv_cache_layer = getattr(layer, "kv_cache", None)
@@ -132,12 +139,22 @@ class DiskCacheConnectorCommonMixin:
                     req.token_ids, layer_name, kv_cache_layer,
                     slot_mapping, num_tokens, attn_metadata, chunks
                 )
+                loaded_layers += 1
+        t_load = (_time.perf_counter() - t2) * 1000
         
-        # Batch record retrieved
+        # Step 4: Batch record retrieved
+        t3 = _time.perf_counter()
         if batch_results:
             counts = {layer: len(chunks) for layer, chunks in batch_results.items() if chunks}
             if counts:
                 self._go.batch_retrieved(counts)
+        t_record = (_time.perf_counter() - t3) * 1000
+        
+        t_total = t_match + t_batch + t_load + t_record
+        logger.info(
+            "TIMING: match=%.1fms batch_load=%.1fms load_kv=%.1fms (%d layers) record=%.1fms total=%.1fms tokens=%d",
+            t_match, t_batch, t_load, loaded_layers, t_record, t_total, num_tokens
+        )
     
     def _load_layer_chunks_with_block_hash(self, token_ids, layer_name, kv_cache_layer, slot_mapping, num_tokens, attn_metadata):
         """Load chunks using block-level cumulative hashing.

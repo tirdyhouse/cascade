@@ -85,6 +85,11 @@ See [A100 storage benchmark](./docs/storage-benchmark-a100.md) for the reproduci
 
 ---
 
+
+> **⚠️ Important: Disable vLLM's built-in prefix caching when using Cascade.**
+>
+> You **must** start vLLM with `--no-enable-prefix-caching`. If vLLM's built-in prefix caching is enabled (the default), it will cache KV blocks in GPU memory and **completely bypass Cascade's match interface**, resulting in `External prefix cache hit rate: 0.0%`. The official validation script (`scripts/validate_vllm_disk_cache.sh`) sets `DISABLE_PREFIX_CACHING=1` by default for this reason.
+
 ## Architecture
 
 ```text

@@ -286,4 +286,33 @@ def block_hash(token_ids, block_size, block_idx):
 | 命中率 | 98% | 96% | 相当 |
 
 **GDS 的巨大优势在冷启动**：GPU 直接写磁盘，无需 CPU 参与，冷启动时间从 8 秒降到 0.38 秒。
+### LMCache + GDS 测试
+
+| 指标 | 值 |
+|------|-----|
+| GPU | Tesla T4 (16GB) |
+| 存储 | nvfile (自研高性能存储集群) |
+| 后端 | GDS (GPU Direct Storage) |
+| 模型 | Qwen2.5-7B-Instruct-AWQ |
+| vLLM | 0.25.1 |
+
+| 阶段 | 平均 TTFT | 总耗时 | 成功率 |
+|------|:---------:|:------:|:------:|
+| Warmup (冷启动) | 8.242s | 85.2s | 10/10 |
+| Query (缓存命中) | **0.092s** | 3.6s | 10/10 |
+
+### 完整对比：Cascade vs LMCache (GDS)
+
+| 指标 | Cascade GDS | LMCache GDS | 优势方 |
+|------|:----------:|:----------:|:------:|
+| Warmup TTFT | **0.381s** | 8.242s | Cascade (21x) |
+| Query TTFT | 0.389s | **0.092s** | LMCache (4.2x) |
+| 命中率 | 98% | - | - |
+
+**分析**：
+- **Cascade 冷启动更快**：Go 引擎元数据管理更轻量，无需 Python 层开销
+- **LMCache 缓存命中更快**：直接从 GDS 加载到 GPU，路径更短；Cascade 需经过 Go 引擎 HTTP 调用
+- **使用场景建议**：
+  - 频繁冷启动（新文档/新会话）→ Cascade GDS
+  - 高频重复查询（相同文档反复访问）→ LMCache GDS
 

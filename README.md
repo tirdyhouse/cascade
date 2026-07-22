@@ -96,6 +96,17 @@ Observed on the project A100 validation host. These numbers are environment samp
 | Query TTFT | `0.389s` |
 | Speedup (warmup) | **21x vs POSIX** |
 | Cache hit rate | 98% |
+### LMCache + GDS benchmark (2026-07-22)
+
+| Item | Value |
+|---|---|
+| GPU | NVIDIA Tesla T4 (16GB) |
+| vLLM | 0.25.1 |
+| Model | Qwen2.5-7B-Instruct-AWQ |
+| Storage | nvfile (自研高性能存储集群), GDS backend |
+| Warmup TTFT | `8.242s` |
+| Query TTFT | `0.092s` |
+| Speedup (query) | **4.2x vs Cascade GDS** |
 
 See [release notes](./docs/release-notes.md) for the full validation command and environment notes.
 

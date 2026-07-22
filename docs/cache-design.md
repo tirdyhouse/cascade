@@ -260,4 +260,30 @@ def block_hash(token_ids, block_size, block_idx):
 |------|:------:|------|
 | 修复前 (prefix_key 16 tokens) | 47% | Chat template 导致碰撞 |
 | 修复后 (block-level hashing) | **96%** | 每个 block 独立存储 |
+### T4 + nvfile GDS 测试
+
+| 指标 | 值 |
+|------|-----|
+| GPU | Tesla T4 (16GB) |
+| 存储 | nvfile (自研高性能存储集群) |
+| 后端 | GDS (GPU Direct Storage) |
+| 模型 | Qwen2.5-7B-Instruct-AWQ |
+| vLLM | 0.25.1 |
+
+| 阶段 | 平均 TTFT | 总耗时 | 成功率 |
+|------|:---------:|:------:|:------:|
+| Warmup (冷启动) | **0.381s** | 6.4s | 10/10 |
+| Query (缓存命中) | **0.389s** | 6.5s | 10/10 |
+
+**命中率：98%**
+
+### GDS vs POSIX 对比
+
+| 指标 | GDS | POSIX | 提升 |
+|------|:---:|:-----:|:----:|
+| Warmup TTFT | **0.381s** | 8.105s | **21x 更快** |
+| Query TTFT | 0.389s | 0.390s | 相当 |
+| 命中率 | 98% | 96% | 相当 |
+
+**GDS 的巨大优势在冷启动**：GPU 直接写磁盘，无需 CPU 参与，冷启动时间从 8 秒降到 0.38 秒。
 

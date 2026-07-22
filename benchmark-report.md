@@ -66,15 +66,14 @@
 | **加速比** | 20.8x |
 | **命中率** | 96% |
 
-### LMCache CPU RAM 版本（参考）
+### LMCache CPU RAM 版本（同参数验证）
 
 | 指标 | LMCache CPU RAM |
 |------|:----------:|
-| **Warmup TTFT** | 59.867s |
-| **Query TTFT** | 0.208s |
-| **命中率** | ~50% |
+| **Warmup TTFT** | 8.178s |
+| **Query TTFT** | **0.093s** |
 
-注：LMCache CPU RAM 测试使用不同参数（46 文档 × 10K tokens），数据仅供参考。
+注：使用相同参数（10文档×4K tokens）验证，LMCache CPU RAM 与 GDS 性能一致（93ms vs 92ms）。
 
 ---
 
@@ -85,7 +84,9 @@
 | **Cascade GDS** | 8.041s | 0.389s | 20.7x | 90% | GPU 直接读写 nvfile |
 | **Cascade POSIX** | 8.105s | 0.390s | 20.8x | 96% | CPU 绕路读写 nvfile |
 | **LMCache GDS** | 8.257s | **0.092s** | 89.8x | - | GPU 直接读写 nvfile |
-| **LMCache CPU RAM** | 59.867s | 0.208s | - | ~50% | CPU 内存缓存 |
+| **LMCache CPU RAM** | 8.178s | **0.093s** | 88.0x | - | CPU 内存缓存 |
+
+注：LMCache CPU RAM 使用相同参数（10文档×4K tokens）验证，与 GDS 性能一致。
 
 ---
 
@@ -111,13 +112,15 @@
 
 ### 4. Cascade vs LMCache 差距分析
 
-LMCache Query TTFT (0.092s) 比 Cascade (0.389s) 快 4.2 倍，原因：
+LMCache Query TTFT (~0.093s) 比 Cascade (~0.389s) 快 **4.2 倍**，原因：
 
 | 因素 | LMCache | Cascade |
 |------|---------|---------|
-| 数据路径 | GDS → GPU 直接加载 | GDS → Go 引擎 → GPU |
+| 数据路径 | GPU 直接加载 | Go 引擎 → 文件系统 → Python → GPU |
 | 元数据查询 | 内存 hash 表 | Pebble + HTTP API |
-| 语言开销 | Python + C++ | Go + HTTP + Python |
+| 语言开销 | Python + C++ (进程内) | Go + HTTP + Python (跨进程) |
+
+**关键洞察**：LMCache 无论 CPU RAM 还是 GDS 都是 ~93ms，说明瓶颈不在 I/O，而在 Cascade 的 Go 引擎 HTTP 调用开销。
 
 ---
 

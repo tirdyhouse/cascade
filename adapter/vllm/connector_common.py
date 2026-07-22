@@ -99,24 +99,45 @@ class DiskCacheConnectorCommonMixin:
     def wait_for_layer_load(self, layer_name):
         pass
 
-    def _load_request_kv(self, req, forward_context, attn_metadata):
+        def _load_request_kv(self, req, forward_context, attn_metadata):
         num_tokens = req.num_tokens
         slot_mapping = self._build_slot_mapping(req)
-        # Use block-level cumulative hashing for loading
-        # This matches the storage scheme used by _save_layer_chunks_with_block_hash
+        
+        # Collect all layer names
+        layer_names = []
         for layer_name in forward_context.no_compile_layers:
             layer = forward_context.no_compile_layers[layer_name]
             kv_cache_layer = getattr(layer, "kv_cache", None)
             if kv_cache_layer is None:
                 continue
-            self._load_layer_chunks_with_block_hash(
-                req.token_ids,
-                layer_name,
-                kv_cache_layer,
-                slot_mapping,
-                num_tokens,
-                attn_metadata,
-            )
+            layer_names.append(layer_name)
+        
+        if not layer_names:
+            return
+        
+        # Batch query: get all chunk lists in one HTTP call
+        # Compute a representative prefix_key for the batch query
+        # (all blocks share the same chunk structure)
+        first_block_idx = 0
+        first_bh = block_hash(req.token_ids, self._block_size, first_block_idx)
+        batch_results = self._go.batch_load(first_bh, layer_names)
+        
+        # Load each layer using the batch results
+        for layer_name in layer_names:
+            layer = forward_context.no_compile_layers[layer_name]
+            kv_cache_layer = getattr(layer, "kv_cache", None)
+            chunks = sorted(batch_results.get(layer_name, []))
+            if chunks:
+                self._load_layer_chunks_optimized(
+                    req.token_ids, layer_name, kv_cache_layer,
+                    slot_mapping, num_tokens, attn_metadata, chunks
+                )
+        
+        # Batch record retrieved
+        if batch_results:
+            counts = {layer: len(chunks) for layer, chunks in batch_results.items() if chunks}
+            if counts:
+                self._go.batch_retrieved(counts)
     
     def _load_layer_chunks_with_block_hash(self, token_ids, layer_name, kv_cache_layer, slot_mapping, num_tokens, attn_metadata):
         """Load chunks using block-level cumulative hashing.
@@ -149,6 +170,36 @@ class DiskCacheConnectorCommonMixin:
                 return
             kv_cache = torch.cat(kv_parts, dim=1)  # concat along token dim
             kv_cache = kv_cache[:, :num_tokens, :]  # take only needed tokens
+            target_dtype = kv_cache_layer.dtype
+            if kv_cache.dtype != target_dtype:
+                kv_cache = kv_cache.to(target_dtype)
+            layer_attn = attn_metadata.get(layer_name, attn_metadata) if isinstance(attn_metadata, dict) else attn_metadata
+            inject_kv_into_layer(kv_cache_layer, kv_cache, slot_mapping, layer_attn, self._block_size)
+        except Exception as e:
+            logger.warning("Failed to load KV for %s: %s", layer_name, e)
+
+    def _load_layer_chunks_optimized(self, token_ids, layer_name, kv_cache_layer, slot_mapping, num_tokens, attn_metadata, chunk_indices):
+        """Load chunks for a layer using pre-fetched chunk indices (avoids per-layer HTTP call)."""
+        try:
+            kv_parts = []
+            target_device = self._resolve_device(kv_cache_layer)
+            
+            for chunk_idx in chunk_indices:
+                # Compute block hash for this chunk's position
+                # chunk_idx corresponds to a chunk in the original storage
+                # We need to find the block hash that matches
+                for block_idx in range(num_tokens // self._block_size + 1):
+                    bh = block_hash(token_ids, self._block_size, block_idx)
+                    fp = self._chunk_file_path(bh, layer_name, chunk_idx)
+                    if fp.exists():
+                        loaded = self._storage.load(fp, device=target_device)
+                        kv_parts.append(loaded)
+                        break
+            
+            if not kv_parts:
+                return
+            kv_cache = torch.cat(kv_parts, dim=1)
+            kv_cache = kv_cache[:, :num_tokens, :]
             target_dtype = kv_cache_layer.dtype
             if kv_cache.dtype != target_dtype:
                 kv_cache = kv_cache.to(target_dtype)

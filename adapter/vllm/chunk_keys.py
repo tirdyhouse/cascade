@@ -141,8 +141,9 @@ class ChainChunkKeyStrategy(ChunkKeyStrategy):
             chunk_end = min(pos + self._tokens_per_chunk, end)
             h = hashlib.sha256()
             h.update(prev_digest)  # 32 raw bytes from previous round
-            for tid in token_ids[pos:chunk_end]:
-                h.update(struct.pack(">I", tid))
+            chunk_tokens = token_ids[pos:chunk_end]
+            # A single packed update preserves the existing >I wire format.
+            h.update(struct.pack(f">{len(chunk_tokens)}I", *chunk_tokens))
             digest: bytes = h.digest()       # 32 raw bytes → next prev
             key: str = h.hexdigest()         # full 64 hex chars → chunk key
 

@@ -2,6 +2,7 @@ package cache
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"predict/engine/pkg/metadata"
@@ -17,11 +18,16 @@ func v2PolicyKey(namespace, key, shard string) string {
 		len(shard), shard)
 }
 
+// v2PolicyIdentity is the comparable lookup key for an in-memory v2 entry.
+type v2PolicyIdentity struct {
+	namespace string
+	key       string
+	shard     string
+}
+
 // v2EntryInfo stores reverse-mapping data for a v2 LRU policy entry.
 type v2EntryInfo struct {
-	namespace   string
-	key         string
-	shard       string
+	policyKey   string
 	filePath    string
 	size        int64
 	index       int
@@ -29,18 +35,56 @@ type v2EntryInfo struct {
 	endTokens   int
 }
 
+func v2PolicyIdentityFor(namespace, key, shard string) v2PolicyIdentity {
+	return v2PolicyIdentity{namespace: namespace, key: key, shard: shard}
+}
+
 // parseV2PolicyKey decodes a policy key created by v2PolicyKey.
 func parseV2PolicyKey(pk string) (namespace, key, shard string, ok bool) {
 	if !strings.HasPrefix(pk, "v2:") {
 		return "", "", "", false
 	}
-	rest := pk[3:]
-	parts := strings.SplitN(rest, ":", 6)
-	if len(parts) != 6 {
+
+	remaining := pk[len("v2:"):]
+	readComponent := func(input string, final bool) (value, rest string, ok bool) {
+		separator := strings.IndexByte(input, ':')
+		if separator <= 0 {
+			return "", "", false
+		}
+		length, err := strconv.ParseUint(input[:separator], 16, 16)
+		if err != nil {
+			return "", "", false
+		}
+		start := separator + 1
+		end := start + int(length)
+		if end > len(input) {
+			return "", "", false
+		}
+		if final {
+			if end != len(input) {
+				return "", "", false
+			}
+			return input[start:end], "", true
+		}
+		if end >= len(input) || input[end] != ':' {
+			return "", "", false
+		}
+		return input[start:end], input[end+1:], true
+	}
+
+	namespace, remaining, ok = readComponent(remaining, false)
+	if !ok {
 		return "", "", "", false
 	}
-	// parts: nLenHex, namespace, kLenHex, key, sLenHex, shard
-	return parts[1], parts[3], parts[5], true
+	key, remaining, ok = readComponent(remaining, false)
+	if !ok {
+		return "", "", "", false
+	}
+	shard, _, ok = readComponent(remaining, true)
+	if !ok {
+		return "", "", "", false
+	}
+	return namespace, key, shard, true
 }
 
 // validateChunkObjects validates a batch of ChunkObject for CommitChunks.
@@ -51,7 +95,7 @@ func validateChunkObjects(objects []ChunkObject) error {
 	if len(objects) == 0 {
 		return invalid("empty objects")
 	}
-	seen := make(map[string]struct{}, len(objects))
+	seen := make(map[v2PolicyIdentity]struct{}, len(objects))
 	namespace := objects[0].Namespace
 	for i, obj := range objects {
 		if obj.Namespace == "" {
@@ -90,7 +134,7 @@ func validateChunkObjects(objects []ChunkObject) error {
 		if obj.Size <= 0 {
 			return invalid("objects[%d]: non-positive size (%d)", i, obj.Size)
 		}
-		identity := v2PolicyKey(obj.Namespace, obj.Key, obj.Shard)
+		identity := v2PolicyIdentityFor(obj.Namespace, obj.Key, obj.Shard)
 		if _, ok := seen[identity]; ok {
 			return invalid("objects[%d]: duplicate namespace/key/shard", i)
 		}
@@ -124,8 +168,8 @@ func (e *diskEngine) CommitChunks(objects []ChunkObject) error {
 			Size:        obj.Size,
 		}
 
-		pk := v2PolicyKey(obj.Namespace, obj.Key, obj.Shard)
-		if existing, ok := e.v2PolicyMap[pk]; ok {
+		identity := v2PolicyIdentityFor(obj.Namespace, obj.Key, obj.Shard)
+		if existing, ok := e.v2PolicyMap[identity]; ok {
 			if existing.filePath != obj.FilePath ||
 				existing.index != obj.Index ||
 				existing.startTokens != obj.StartTokens ||
@@ -153,10 +197,8 @@ func (e *diskEngine) CommitChunks(objects []ChunkObject) error {
 	for _, obj := range objects {
 		pk := v2PolicyKey(obj.Namespace, obj.Key, obj.Shard)
 		e.pol.Record(pk, obj.Size)
-		e.v2PolicyMap[pk] = &v2EntryInfo{
-			namespace:   obj.Namespace,
-			key:         obj.Key,
-			shard:       obj.Shard,
+		e.v2PolicyMap[v2PolicyIdentityFor(obj.Namespace, obj.Key, obj.Shard)] = &v2EntryInfo{
+			policyKey:   pk,
 			filePath:    obj.FilePath,
 			size:        obj.Size,
 			index:       obj.Index,
@@ -223,14 +265,14 @@ func (e *diskEngine) MatchChunks(namespace string, candidates []ChunkCandidate, 
 	matchedTokens := 0
 
 	for _, cand := range candidates {
-		// Verify ALL required shards exist with matching EndTokens
+		// Verify ALL required shards exist with matching EndTokens. The policy
+		// map is rebuilt from and updated with the same metadata store while
+		// holding e.mu, so it is the in-memory read index for this hot path.
 		allShardsMatch := true
 		for _, shard := range uniqueShards {
-			meta, err := e.v2.GetV2Chunk(namespace, cand.Key, shard)
-			if err != nil {
-				return ChunkMatchResult{}, fmt.Errorf("v2 store read error: %w", err)
-			}
-			if meta == nil || meta.EndTokens != cand.EndTokens {
+			identity := v2PolicyIdentityFor(namespace, cand.Key, shard)
+			info, ok := e.v2PolicyMap[identity]
+			if !ok || info.endTokens != cand.EndTokens {
 				allShardsMatch = false
 				break
 			}
@@ -242,13 +284,15 @@ func (e *diskEngine) MatchChunks(namespace string, candidates []ChunkCandidate, 
 
 		// Refresh LRU recency for all shards of this matched candidate
 		for _, shard := range uniqueShards {
-			pk := v2PolicyKey(namespace, cand.Key, shard)
-			// Get size from policy map to refresh with correct size
-			if info, ok := e.v2PolicyMap[pk]; ok {
-				e.pol.Record(pk, info.size)
+			identity := v2PolicyIdentityFor(namespace, cand.Key, shard)
+			if info, ok := e.v2PolicyMap[identity]; ok {
+				e.pol.Record(info.policyKey, info.size)
 			}
 		}
 
+		if matchedKeys == nil {
+			matchedKeys = make([]string, 0, len(candidates))
+		}
 		matchedChunks++
 		matchedTokens = cand.EndTokens
 		matchedKeys = append(matchedKeys, cand.Key)
@@ -291,29 +335,24 @@ func (e *diskEngine) ResolveChunks(namespace string, keys []string, shard string
 		if key == "" {
 			return nil, invalid("empty key in keys list")
 		}
-		meta, err := e.v2.GetV2Chunk(namespace, key, shard)
-		if err != nil {
-			return nil, fmt.Errorf("v2 store read error: %w", err)
-		}
-		if meta == nil {
+		identity := v2PolicyIdentityFor(namespace, key, shard)
+		info, ok := e.v2PolicyMap[identity]
+		if !ok {
 			return nil, fmt.Errorf("chunk not found: namespace=%q key=%q shard=%q", namespace, key, shard)
 		}
 		result = append(result, ChunkObject{
-			Namespace:   meta.Namespace,
-			Key:         meta.Key,
-			Shard:       meta.Shard,
-			FilePath:    meta.FilePath,
-			Index:       meta.Index,
-			StartTokens: meta.StartTokens,
-			EndTokens:   meta.EndTokens,
-			Size:        meta.Size,
+			Namespace:   namespace,
+			Key:         key,
+			Shard:       shard,
+			FilePath:    info.filePath,
+			Index:       info.index,
+			StartTokens: info.startTokens,
+			EndTokens:   info.endTokens,
+			Size:        info.size,
 		})
 
-		// Refresh LRU recency
-		pk := v2PolicyKey(namespace, key, shard)
-		if info, ok := e.v2PolicyMap[pk]; ok {
-			e.pol.Record(pk, info.size)
-		}
+		// Refresh LRU recency.
+		e.pol.Record(info.policyKey, info.size)
 	}
 	return result, nil
 }
@@ -338,8 +377,12 @@ func (e *diskEngine) InvalidateChunk(namespace, key, shard string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	pk := v2PolicyKey(namespace, key, shard)
-	if _, ok := e.v2PolicyMap[pk]; !ok {
+	identity := v2PolicyIdentityFor(namespace, key, shard)
+	info, ok := e.v2PolicyMap[identity]
+	policyKey := ""
+	if ok {
+		policyKey = info.policyKey
+	} else {
 		meta, err := e.v2.GetV2Chunk(namespace, key, shard)
 		if err != nil {
 			return fmt.Errorf("read v2 chunk before invalidation: %w", err)
@@ -347,13 +390,14 @@ func (e *diskEngine) InvalidateChunk(namespace, key, shard string) error {
 		if meta == nil {
 			return nil
 		}
+		policyKey = v2PolicyKey(namespace, key, shard)
 	}
 
 	if err := e.v2.DeleteV2Chunk(namespace, key, shard); err != nil {
 		return fmt.Errorf("delete v2 chunk metadata: %w", err)
 	}
-	delete(e.v2PolicyMap, pk)
-	e.pol.Remove(pk)
+	delete(e.v2PolicyMap, identity)
+	e.pol.Remove(policyKey)
 	return nil
 }
 
@@ -362,7 +406,13 @@ func (e *diskEngine) InvalidateChunk(namespace, key, shard string) error {
 // Must be called with e.mu held.
 // Only removes from policy map if metadata delete succeeds.
 func (e *diskEngine) lockedDeleteV2Entry(pk string) (BlockMeta, bool) {
-	info, ok := e.v2PolicyMap[pk]
+	namespace, key, shard, ok := parseV2PolicyKey(pk)
+	if !ok {
+		e.evictErrors.Add(1)
+		return BlockMeta{}, false
+	}
+	identity := v2PolicyIdentityFor(namespace, key, shard)
+	info, ok := e.v2PolicyMap[identity]
 	if !ok {
 		return BlockMeta{}, false
 	}
@@ -371,11 +421,11 @@ func (e *diskEngine) lockedDeleteV2Entry(pk string) (BlockMeta, bool) {
 		e.evictErrors.Add(1)
 		return BlockMeta{}, false
 	}
-	if err := e.v2.DeleteV2Chunk(info.namespace, info.key, info.shard); err != nil {
+	if err := e.v2.DeleteV2Chunk(namespace, key, shard); err != nil {
 		e.evictErrors.Add(1)
 		return BlockMeta{}, false
 	}
-	delete(e.v2PolicyMap, pk)
+	delete(e.v2PolicyMap, identity)
 	e.blocksEvicted.Add(1)
 	return BlockMeta{FilePath: fullPath, Size: info.size}, true
 }

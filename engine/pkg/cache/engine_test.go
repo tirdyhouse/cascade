@@ -456,6 +456,36 @@ func TestV2MatchChunksFullHit(t *testing.T) {
 	}
 }
 
+func TestV2PolicyKeyRoundTrip(t *testing.T) {
+	cases := []struct {
+		namespace string
+		key       string
+		shard     string
+	}{
+		{namespace: "model/ns:1", key: "key:with:colons", shard: "层:0"},
+		{namespace: "ns", key: "key", shard: "shard"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.namespace+"/"+tc.key+"/"+tc.shard, func(t *testing.T) {
+			namespace, key, shard, ok := parseV2PolicyKey(
+				v2PolicyKey(tc.namespace, tc.key, tc.shard),
+			)
+			if !ok {
+				t.Fatal("parseV2PolicyKey() rejected a valid key")
+			}
+			if namespace != tc.namespace || key != tc.key || shard != tc.shard {
+				t.Fatalf("parsed identity = (%q, %q, %q), want (%q, %q, %q)", namespace, key, shard, tc.namespace, tc.key, tc.shard)
+			}
+		})
+	}
+
+	for _, malformed := range []string{"v2:0002:ns:0003:key", "v2:zzzz:ns:0003:key:0001:s"} {
+		if _, _, _, ok := parseV2PolicyKey(malformed); ok {
+			t.Fatalf("parseV2PolicyKey(%q) accepted malformed input", malformed)
+		}
+	}
+}
+
 func TestV2MatchChunksFirstMissing(t *testing.T) {
 	eng := newTestEngine(t, 1<<20)
 
@@ -474,6 +504,9 @@ func TestV2MatchChunksFirstMissing(t *testing.T) {
 	}
 	if result.MatchedChunks != 0 {
 		t.Fatalf("MatchedChunks = %d, want 0 (first candidate missing shard)", result.MatchedChunks)
+	}
+	if result.MatchedKeys != nil {
+		t.Fatalf("MatchedKeys = %v, want nil on a complete miss", result.MatchedKeys)
 	}
 }
 

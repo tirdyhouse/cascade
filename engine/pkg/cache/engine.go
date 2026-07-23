@@ -48,7 +48,7 @@ type diskEngine struct {
 	evictErrors       atomic.Int64
 
 	// v2 chunk state (protected by mu)
-	v2PolicyMap map[string]*v2EntryInfo
+	v2PolicyMap map[v2PolicyIdentity]*v2EntryInfo
 }
 
 // New creates a new disk cache engine.
@@ -66,7 +66,7 @@ func New(cfg Config) (Engine, error) {
 		meta:        meta,
 		v2:          meta, // same Pebble DB, different key prefix (0x03)
 		pol:         pol,
-		v2PolicyMap: make(map[string]*v2EntryInfo),
+		v2PolicyMap: make(map[v2PolicyIdentity]*v2EntryInfo),
 	}
 
 	// Rebuild eviction tracker from existing metadata. A partial tracker can
@@ -100,10 +100,8 @@ func (e *diskEngine) rebuild() error {
 	return e.v2.IterateAllV2(func(m *metadata.ChunkObjectMeta) error {
 		pk := v2PolicyKey(m.Namespace, m.Key, m.Shard)
 		e.pol.Record(pk, m.Size)
-		e.v2PolicyMap[pk] = &v2EntryInfo{
-			namespace:   m.Namespace,
-			key:         m.Key,
-			shard:       m.Shard,
+		e.v2PolicyMap[v2PolicyIdentityFor(m.Namespace, m.Key, m.Shard)] = &v2EntryInfo{
+			policyKey:   pk,
 			filePath:    m.FilePath,
 			size:        m.Size,
 			index:       m.Index,

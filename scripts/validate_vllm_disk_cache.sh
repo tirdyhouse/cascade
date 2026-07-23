@@ -24,7 +24,7 @@ DISK_CACHE_BIN=${DISK_CACHE_BIN:-$ROOT_DIR/bin/disk-cache}
 DISK_CACHE_MAX_SIZE=${DISK_CACHE_MAX_SIZE:-20GB}
 VLLM_LOG=${VLLM_LOG:-$META_DIR/vllm.log}
 DISK_CACHE_LOG=${DISK_CACHE_LOG:-$META_DIR/disk-cache.log}
-CHUNK_SIZE_MB=${CHUNK_SIZE_MB:-128}
+CHUNK_SIZE_TOKENS=${CHUNK_SIZE_TOKENS:-256}
 STORAGE_BACKEND=${STORAGE_BACKEND:-posix}
 TARGET_DEVICE=${TARGET_DEVICE:-cuda:0}
 BLOCK_SIZE=${BLOCK_SIZE:-16}
@@ -174,10 +174,10 @@ else
   PREFIX_CACHE_ARG=()
 fi
 
-KV_CONFIG=$("$PYTHON_BIN" - <<'PY' "$CACHE_DIR" "$BASE_CACHE_URL" "$TARGET_DEVICE" "$CHUNK_SIZE_MB" "$STORAGE_BACKEND" "$CONNECTOR_MODULE"
+KV_CONFIG=$("$PYTHON_BIN" - <<'PY' "$CACHE_DIR" "$BASE_CACHE_URL" "$TARGET_DEVICE" "$CHUNK_SIZE_TOKENS" "$STORAGE_BACKEND" "$CONNECTOR_MODULE"
 import json
 import sys
-cache_dir, engine_addr, target_device, chunk_mb, backend, module = sys.argv[1:]
+cache_dir, engine_addr, target_device, chunk_tokens, backend, module = sys.argv[1:]
 print(json.dumps({
     "kv_connector": "DiskCacheConnector",
     "kv_role": "kv_both",
@@ -186,7 +186,7 @@ print(json.dumps({
         "disk_cache_path": cache_dir,
         "disk_cache_engine_addr": engine_addr,
         "target_device": target_device,
-        "disk_cache_chunk_size_mb": int(chunk_mb),
+        "disk_cache_chunk_size_tokens": int(chunk_tokens),
         "storage_backend": backend,
     },
 }, separators=(",", ":")))
@@ -200,7 +200,7 @@ setsid env \
   -u MODEL_PATH -u VLLM_BIN -u PYTHON_BIN -u CONNECTOR_MODULE \
   -u DISK_CACHE_ADDR -u VLLM_ADDR -u CACHE_DIR -u META_DIR \
   -u DISK_CACHE_BIN -u DISK_CACHE_MAX_SIZE -u VLLM_LOG -u DISK_CACHE_LOG \
-  -u CHUNK_SIZE_MB -u STORAGE_BACKEND -u TARGET_DEVICE -u BLOCK_SIZE \
+  -u CHUNK_SIZE_TOKENS -u STORAGE_BACKEND -u TARGET_DEVICE -u BLOCK_SIZE \
   -u REQUEST_REPETITIONS -u MAX_TOKENS -u TEMPERATURE -u READY_TIMEOUT \
   -u SHUTDOWN_TIMEOUT -u VLLM_EXTRA_ARGS -u DISABLE_PREFIX_CACHING \
   -u KEEP_VALIDATION_DIRS -u SKIP_BUILD_DISK_CACHE \
@@ -273,6 +273,9 @@ def cached_tokens(resp):
 
 first_retrieved_delta = int(mid.get("BlocksRetrieved", 0)) - int(before.get("BlocksRetrieved", 0))
 second_retrieved_delta = int(after.get("BlocksRetrieved", 0)) - int(mid.get("BlocksRetrieved", 0))
+first_chunks_retrieved_delta = int(mid.get("ChunksRetrieved", 0)) - int(before.get("ChunksRetrieved", 0))
+second_chunks_retrieved_delta = int(after.get("ChunksRetrieved", 0)) - int(mid.get("ChunksRetrieved", 0))
+chunks_stored_delta = int(after.get("ChunksStored", 0)) - int(before.get("ChunksStored", 0))
 second_cached_tokens = cached_tokens(second)
 
 print("model", model)
@@ -285,16 +288,27 @@ print("second_usage", second.get("usage"))
 print("after", after)
 print("first_retrieved_delta", first_retrieved_delta)
 print("second_retrieved_delta", second_retrieved_delta)
+print("first_chunks_retrieved_delta", first_chunks_retrieved_delta)
+print("second_chunks_retrieved_delta", second_chunks_retrieved_delta)
+print("chunks_stored_delta", chunks_stored_delta)
 print("second_cached_tokens", second_cached_tokens)
 
-if first_retrieved_delta != 0:
-    raise SystemExit(f"first request unexpectedly retrieved {first_retrieved_delta} blocks")
+if first_retrieved_delta != 0 or first_chunks_retrieved_delta != 0:
+    raise SystemExit(
+        "first request unexpectedly retrieved disk-cache chunks: "
+        f"blocks={first_retrieved_delta} chunks={first_chunks_retrieved_delta}"
+    )
 if second_retrieved_delta <= 0:
     raise SystemExit("second request did not retrieve any disk-cache chunks")
+if second_chunks_retrieved_delta != second_retrieved_delta:
+    raise SystemExit(
+        "retrieval counters disagree: "
+        f"blocks={second_retrieved_delta} chunks={second_chunks_retrieved_delta}"
+    )
 if second_cached_tokens < block_size:
     raise SystemExit(f"second request cached_tokens too low: {second_cached_tokens}")
-if int(after.get("BlocksStored", 0)) <= int(before.get("BlocksStored", 0)):
-    raise SystemExit("disk-cache did not store any blocks")
+if chunks_stored_delta <= 0:
+    raise SystemExit("disk-cache did not store any v2 chunks")
 
 print("vLLM disk-cache validation passed")
 PY

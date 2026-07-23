@@ -141,6 +141,20 @@ class TestChainChunkKeyStrategy:
             assert d1.start == d2.start
             assert d1.end == d2.end
 
+    def test_exact_wire_format_vectors(self):
+        """Keys remain compatible with objects written by earlier versions."""
+        from adapter.vllm.chunk_keys import ChainChunkKeyStrategy
+
+        strategy = ChainChunkKeyStrategy(tokens_per_chunk=4, block_size=1)
+        desc = strategy.describe(
+            [0, 1, 2**31, 2**32 - 1, 17],
+            "model/ns:1",
+        )
+        assert [item.key for item in desc] == [
+            "48b79fa63431a0a518f1f7789db95f708fbe8bb0de2fc75686504f5c26289f65",
+            "d614fd6bad544dd9292fb509fa92b9211889d60e2d1f4a870d4a069e9ee22bf4",
+        ]
+
     def test_different_namespace_different_keys(self):
         from adapter.vllm.chunk_keys import ChainChunkKeyStrategy
         strategy = ChainChunkKeyStrategy(tokens_per_chunk=4, block_size=1)

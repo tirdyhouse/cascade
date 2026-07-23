@@ -143,6 +143,14 @@ class DummyConnector(DiskCacheConnectorCommonMixin):
         return isinstance(meta, DiskCacheMeta)
 
 
+def test_connector_requires_piecewise_cudagraph():
+    """FULL graph replay must not skip Cascade's per-layer Python hooks."""
+    assert DummyConnector.requires_piecewise_for_cudagraph({}) is True
+    assert DummyConnector.requires_piecewise_for_cudagraph(
+        {"use_layerwise": False}
+    ) is True
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 1. Nested tuple block IDs
 # ═══════════════════════════════════════════════════════════════════

@@ -647,6 +647,99 @@ class TestPosixPositionalIO:
         assert torch.equal(loaded[1], t2)
         assert loaded[1].dtype == torch.bfloat16
 
+    def test_load_tensor_slices_coalesces_contiguous_reads(
+        self, backend, tmp_path, monkeypatch
+    ):
+        p = self._prepare_file(tmp_path, size=262144)
+        tensors = [
+            torch.arange(8, dtype=torch.float32),
+            torch.arange(4, dtype=torch.bfloat16),
+        ]
+        stored = [4096, 4096]
+        offsets = [65536, 65536 + stored[0]]
+        from adapter.storage.backend import TensorSliceSpec
+        specs = []
+        for tensor, offset, stored_nbytes in zip(
+            tensors, offsets, stored
+        ):
+            backend.write_tensor_at(p, tensor, offset, stored_nbytes)
+            specs.append(TensorSliceSpec(
+                offset,
+                tensor.nbytes,
+                stored_nbytes,
+                tuple(tensor.shape),
+                tensor.dtype,
+            ))
+
+        import builtins
+        real_open = builtins.open
+        readinto_calls = []
+
+        class TrackingReader:
+            def __init__(self, wrapped):
+                self._wrapped = wrapped
+
+            def __enter__(self):
+                self._wrapped.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self._wrapped.__exit__(*args)
+
+            def __getattr__(self, name):
+                return getattr(self._wrapped, name)
+
+            def readinto(self, buffer):
+                readinto_calls.append(len(buffer))
+                return self._wrapped.readinto(buffer)
+
+        def tracking_open(path, mode="r", *args, **kwargs):
+            opened = real_open(path, mode, *args, **kwargs)
+            return TrackingReader(opened) if path == p and mode == "rb" else opened
+
+        monkeypatch.setattr(builtins, "open", tracking_open)
+        loaded = backend.load_tensor_slices(p, specs, "cpu")
+
+        assert readinto_calls == [sum(stored)]
+        assert all(torch.equal(actual, expected) for actual, expected in zip(
+            loaded, tensors
+        ))
+
+    def test_load_tensor_slices_preserves_sparse_request_order(
+        self, backend, tmp_path
+    ):
+        p = self._prepare_file(tmp_path, size=262144)
+        first = torch.arange(8, dtype=torch.float32)
+        second = torch.arange(6, dtype=torch.float32) + 100
+        stored = 4096
+        first_offset = 65536
+        second_offset = first_offset + 2 * stored
+        backend.write_tensor_at(p, first, first_offset, stored)
+        backend.write_tensor_at(p, second, second_offset, stored)
+
+        from adapter.storage.backend import TensorSliceSpec
+        specs = [
+            TensorSliceSpec(
+                second_offset,
+                second.nbytes,
+                stored,
+                tuple(second.shape),
+                second.dtype,
+            ),
+            TensorSliceSpec(
+                first_offset,
+                first.nbytes,
+                stored,
+                tuple(first.shape),
+                first.dtype,
+            ),
+        ]
+
+        loaded = backend.load_tensor_slices(p, specs, "cpu")
+
+        assert torch.equal(loaded[0], second)
+        assert torch.equal(loaded[1], first)
+
     def test_load_tensor_slices_bfloat16(self, backend, tmp_path):
         """bfloat16 round-trip via uint8 view — no numpy bf16 needed."""
         p = self._prepare_file(tmp_path)

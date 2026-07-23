@@ -149,6 +149,13 @@ class DiskCacheConnectorCommonMixin:
     to ``_save_request_kv`` — both defined here.
     """
 
+    @classmethod
+    def requires_piecewise_for_cudagraph(
+        cls, extra_config: dict[str, Any]
+    ) -> bool:
+        """Keep Cascade's per-layer Python hooks outside CUDA graph replay."""
+        return True
+
     # ── Private hooks (called by connector subclasses) ─────────────────
 
     def _get_num_new_matched_tokens(

@@ -88,31 +88,57 @@ class PosixBackend(StorageBackend):
         specs: List[TensorSliceSpec],
         device: str,
     ) -> List[torch.Tensor]:
-        # Single open for all slices
+        if not specs:
+            return []
+
+        indexed_specs = sorted(
+            enumerate(specs), key=lambda item: item[1].offset
+        )
+        groups = []
+        group_start = indexed_specs[0][1].offset
+        group_end = group_start
+        group_specs = []
+
+        for index, spec in indexed_specs:
+            spec_end = spec.offset + spec.stored_nbytes
+            if group_specs and spec.offset > group_end:
+                groups.append((group_start, group_end, group_specs))
+                group_start = spec.offset
+                group_specs = []
+            group_end = max(group_end, spec_end)
+            group_specs.append((index, spec))
+        groups.append((group_start, group_end, group_specs))
+
+        results = [None] * len(specs)
         with open(path, "rb") as f:
-            results: List[torch.Tensor] = []
-            for spec in specs:
-                f.seek(spec.offset)
-                raw = f.read(spec.stored_nbytes)
-                if len(raw) != spec.stored_nbytes:
+            for start, end, grouped_specs in groups:
+                expected_nbytes = end - start
+                raw = bytearray(expected_nbytes)
+                f.seek(start)
+                bytes_read = f.readinto(raw)
+                if bytes_read != expected_nbytes:
                     raise RuntimeError(
-                        f"POSIX load_tensor_slices: expected "
-                        f"{spec.stored_nbytes} bytes for slice at offset "
-                        f"{spec.offset}, got {len(raw)}"
+                        "POSIX load_tensor_slices: expected "
+                        f"{expected_nbytes} bytes for slice group at offset "
+                        f"{start}, got {bytes_read}"
                     )
 
-                # Use torch.frombuffer with uint8 view for bfloat16 compat
-                # (numpy does not understand bfloat16)
-                raw_bytes = raw[:spec.nbytes]
-                buf = bytearray(raw_bytes)
-                tensor = torch.frombuffer(
-                    buf, dtype=torch.uint8
-                ).clone()
-                # view changes element size (e.g. 256 uint8 → 128 bfloat16)
-                tensor = tensor.view(dtype=spec.dtype).reshape(spec.shape)
-
+                buffer_tensor = torch.frombuffer(raw, dtype=torch.uint8)
                 if device.startswith("cuda") and device != "cpu":
-                    tensor = tensor.to(device, non_blocking=True)
-                results.append(tensor)
+                    buffer_tensor = buffer_tensor.to(device, non_blocking=True)
+                else:
+                    buffer_tensor = buffer_tensor.clone()
 
+                for index, spec in grouped_specs:
+                    relative_offset = spec.offset - start
+                    tensor = buffer_tensor.narrow(
+                        0, relative_offset, spec.nbytes
+                    )
+                    tensor = tensor.view(dtype=spec.dtype).reshape(spec.shape)
+                    results[index] = tensor
+
+        if any(tensor is None for tensor in results):
+            raise RuntimeError(
+                "POSIX load_tensor_slices returned incomplete results"
+            )
         return results

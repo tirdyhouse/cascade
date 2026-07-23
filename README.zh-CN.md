@@ -188,7 +188,7 @@ vllm serve /path/to/model \
       "disk_cache_engine_addr": "http://localhost:9100",
       "target_device": "auto",
       "storage_backend": "auto",
-      "disk_cache_chunk_size_mb": 128
+      "disk_cache_chunk_size_tokens": 256
     }
   }'
 ```

@@ -367,7 +367,13 @@ class TestNvFileBackendMocked:
 # ═══════════════════════════════════════════════════════════════════
 
 def _has_gds() -> bool:
-    """Check if a GDS library is installed."""
+    """Check if a cuFile-compatible binding is installed."""
+    try:
+        from cuda.bindings import cufile  # noqa: F401
+
+        return True
+    except ImportError:
+        pass
     for lib in ("cufile", "nvfile", "hipfile"):
         try:
             __import__(lib)
@@ -380,10 +386,10 @@ def _has_gds() -> bool:
 @pytest.mark.skipif(not _has_gds(), reason="Requires GDS library (cufile/nvfile/hipfile)")
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
 class TestRealGdsBackend:
-    """Smoke tests against real GDS hardware.
+    """Smoke tests against a real cuFile binding and CUDA device.
 
-    These are the Level 3 validation tests — they verify that real
-    cuFile/nvfile calls work end-to-end with GPU tensors.
+    Whether transfers use direct GDS or cuFile compatibility mode must be
+    determined separately with ``gdscheck.py -p``.
     """
 
     @pytest.fixture
@@ -399,13 +405,13 @@ class TestRealGdsBackend:
     def test_gds_backend_init(self):
         """Creating the backend should succeed when GDS library is present."""
         from adapter.storage import create_storage_backend
-        backend = create_storage_backend(prefer="gds")
+        backend = create_storage_backend(prefer="gds", strict=True)
         assert "NvFile" in type(backend).__name__ or "File" in type(backend).__name__
 
     def test_gds_save_and_load(self, tmp_path):
         """Full GDS write+read round-trip with a real GPU tensor."""
         from adapter.storage import create_storage_backend
-        backend = create_storage_backend(prefer="gds")
+        backend = create_storage_backend(prefer="gds", strict=True)
 
         path = tmp_path / "smoke.kvcache"
         tensor = torch.randn(2, 256, 8, 128, dtype=torch.bfloat16, device="cuda")
@@ -419,6 +425,41 @@ class TestRealGdsBackend:
         assert loaded.shape == tensor.shape
         assert torch.equal(loaded.cpu(), tensor.cpu())
 
+
+    def test_gds_positional_slices_round_trip(self, tmp_path):
+        """Coalesced positional reads round-trip adjacent CUDA tensors."""
+        from adapter.storage import create_storage_backend
+        from adapter.storage.backend import TensorSliceSpec
+
+        backend = create_storage_backend(prefer="gds", strict=True)
+        path = tmp_path / "positional.cobj"
+        path.write_bytes(b"\x00" * 262144)
+        tensors = [
+            torch.randn(2, 32, dtype=torch.float32, device="cuda"),
+            torch.randn(3, 32, dtype=torch.bfloat16, device="cuda"),
+        ]
+        stored = [
+            (tensor.nbytes + 4095) // 4096 * 4096 for tensor in tensors
+        ]
+        offsets = [65536, 65536 + stored[0]]
+        specs = []
+        for tensor, offset, stored_nbytes in zip(tensors, offsets, stored):
+            backend.write_tensor_at(path, tensor, offset, stored_nbytes)
+            specs.append(TensorSliceSpec(
+                offset=offset,
+                nbytes=tensor.nbytes,
+                stored_nbytes=stored_nbytes,
+                shape=tuple(tensor.shape),
+                dtype=tensor.dtype,
+            ))
+
+        loaded = backend.load_tensor_slices(path, specs, "cuda:0")
+
+        assert all(tensor.is_cuda for tensor in loaded)
+        assert all(
+            torch.equal(actual.cpu(), expected.cpu())
+            for actual, expected in zip(loaded, tensors)
+        )
 
 class TestNvFileBackendInternals:
     """Focused unit tests for GDS binding/handle edge cases."""
@@ -591,6 +632,25 @@ class TestNvFileBackendInternals:
 
         assert isinstance(result, PosixBackend)
 
+
+    def test_forced_gds_unavailable_strict_raises(self):
+        from adapter.storage import backend as storage_backend
+
+        with mock.patch("adapter.storage.backend._try_gds", return_value=None):
+            with pytest.raises(RuntimeError, match="Requested GDS backend"):
+                storage_backend.create_storage_backend(
+                    prefer="gds",
+                    strict=True,
+                )
+
+    def test_unknown_backend_strict_raises(self):
+        from adapter.storage import backend as storage_backend
+
+        with pytest.raises(ValueError, match="Unknown storage backend"):
+            storage_backend.create_storage_backend(
+                prefer="gdss",
+                strict=True,
+            )
 
 # ═══════════════════════════════════════════════════════════════════
 # POSIX positional I/O (write_tensor_at / load_tensor_slices)
@@ -1112,6 +1172,155 @@ class TestNvFileBackendPositionalIOMocked:
         assert len(loaded) == 2
         assert torch.equal(loaded[0], t1)
         assert torch.equal(loaded[1], t2)
+
+    def test_gds_load_tensor_slices_coalesces_contiguous_reads(
+        self, backend, tmp_path, monkeypatch
+    ):
+        from adapter.storage.backend import TensorSliceSpec
+        from adapter.storage.nvfile_backend import _CuFileHandle
+
+        p = self._prepare_file(tmp_path, size=262144)
+        tensors = [
+            torch.randn(2, 8, dtype=torch.float32),
+            torch.randn(3, 12, dtype=torch.bfloat16),
+        ]
+        stored = [
+            (tensor.nbytes + 4095) // 4096 * 4096 for tensor in tensors
+        ]
+        offsets = [65536, 65536 + stored[0]]
+        for tensor, offset, stored_nbytes in zip(tensors, offsets, stored):
+            backend.write_tensor_at(p, tensor, offset, stored_nbytes)
+        specs = [
+            TensorSliceSpec(
+                offset, tensor.nbytes, stored_nbytes,
+                tuple(tensor.shape), tensor.dtype,
+            )
+            for tensor, offset, stored_nbytes in zip(tensors, offsets, stored)
+        ]
+
+        reads = []
+        original_read = _CuFileHandle.read
+
+        def tracking_read(self, gpu_addr, nbytes, **kwargs):
+            reads.append((nbytes, kwargs["file_offset"]))
+            return original_read(self, gpu_addr, nbytes, **kwargs)
+
+        monkeypatch.setattr(_CuFileHandle, "read", tracking_read)
+        loaded = backend.load_tensor_slices(p, specs, "cpu")
+
+        assert reads == [(sum(stored), offsets[0])]
+        assert all(
+            torch.equal(actual, expected)
+            for actual, expected in zip(loaded, tensors)
+        )
+
+    def test_gds_load_tensor_slices_coalesces_overlapping_ranges(
+        self, backend, tmp_path, monkeypatch
+    ):
+        from adapter.storage.backend import TensorSliceSpec
+        from adapter.storage.nvfile_backend import _CuFileHandle
+
+        p = self._prepare_file(tmp_path, size=262144)
+        payload = torch.arange(2048, dtype=torch.float32)
+        offset = 65536
+        stored = 12288
+        backend.write_tensor_at(p, payload, offset, stored)
+        specs = [
+            TensorSliceSpec(
+                offset=offset + 4096,
+                nbytes=4096,
+                stored_nbytes=8192,
+                shape=(1024,),
+                dtype=torch.float32,
+            ),
+            TensorSliceSpec(
+                offset=offset,
+                nbytes=8192,
+                stored_nbytes=8192,
+                shape=(2048,),
+                dtype=torch.float32,
+            ),
+        ]
+
+        reads = []
+        original_read = _CuFileHandle.read
+
+        def tracking_read(self, gpu_addr, nbytes, **kwargs):
+            reads.append((nbytes, kwargs["file_offset"]))
+            return original_read(self, gpu_addr, nbytes, **kwargs)
+
+        monkeypatch.setattr(_CuFileHandle, "read", tracking_read)
+        loaded = backend.load_tensor_slices(p, specs, "cpu")
+
+        assert reads == [(stored, offset)]
+        assert torch.equal(loaded[0], payload[1024:])
+        assert torch.equal(loaded[1], payload)
+
+    def test_gds_load_tensor_slices_preserves_sparse_request_order(
+        self, backend, tmp_path, monkeypatch
+    ):
+        from adapter.storage.backend import TensorSliceSpec
+        from adapter.storage.nvfile_backend import _CuFileHandle
+
+        p = self._prepare_file(tmp_path, size=262144)
+        first = torch.randn(2, 8, dtype=torch.float32)
+        second = torch.randn(3, 12, dtype=torch.bfloat16)
+        first_stored = (first.nbytes + 4095) // 4096 * 4096
+        second_stored = (second.nbytes + 4095) // 4096 * 4096
+        first_offset = 65536
+        second_offset = 131072
+        backend.write_tensor_at(p, first, first_offset, first_stored)
+        backend.write_tensor_at(p, second, second_offset, second_stored)
+        specs = [
+            TensorSliceSpec(
+                second_offset, second.nbytes, second_stored,
+                tuple(second.shape), second.dtype,
+            ),
+            TensorSliceSpec(
+                first_offset, first.nbytes, first_stored,
+                tuple(first.shape), first.dtype,
+            ),
+        ]
+
+        reads = []
+        original_read = _CuFileHandle.read
+
+        def tracking_read(self, gpu_addr, nbytes, **kwargs):
+            reads.append((nbytes, kwargs["file_offset"]))
+            return original_read(self, gpu_addr, nbytes, **kwargs)
+
+        monkeypatch.setattr(_CuFileHandle, "read", tracking_read)
+        loaded = backend.load_tensor_slices(p, specs, "cpu")
+
+        assert reads == [
+            (first_stored, first_offset),
+            (second_stored, second_offset),
+        ]
+        assert torch.equal(loaded[0], second)
+        assert torch.equal(loaded[1], first)
+
+    def test_gds_load_tensor_slices_rejects_short_group_read(
+        self, backend, tmp_path, monkeypatch
+    ):
+        from adapter.storage.backend import TensorSliceSpec
+        from adapter.storage.nvfile_backend import _CuFileHandle
+
+        p = self._prepare_file(tmp_path)
+        tensor = torch.arange(8, dtype=torch.float32)
+        stored = (tensor.nbytes + 4095) // 4096 * 4096
+        offset = 65536
+        backend.write_tensor_at(p, tensor, offset, stored)
+        spec = TensorSliceSpec(
+            offset, tensor.nbytes, stored, tuple(tensor.shape), tensor.dtype
+        )
+        monkeypatch.setattr(
+            _CuFileHandle,
+            "read",
+            lambda self, gpu_addr, nbytes, **kwargs: nbytes - 1,
+        )
+
+        with pytest.raises(RuntimeError, match="slice group"):
+            backend.load_tensor_slices(p, [spec], "cpu")
 
     def test_gds_aligned_offset_check(self, backend, tmp_path):
         """Non-aligned offset should raise."""

@@ -177,38 +177,87 @@ class NvFileBackend(StorageBackend):
         specs: List[TensorSliceSpec],
         device: str,
     ) -> List[torch.Tensor]:
-        """Load multiple tensor slices from *path* in one GDS session.
+        """Load tensor slices with one cuFile read per contiguous group.
 
-        Opens the :class:`CuFileHandle` only once and reads all slices
-        through it.
+        Chunk-object layer payloads are normally adjacent and 4 KiB aligned.
+        Reading each layer separately adds a cuFile submission and device
+        allocation per layer, so coalesce adjacent or overlapping slices while
+        preserving the caller's requested order. Returned tensors are views of
+        their group buffer and follow the read-only StorageBackend contract.
         """
-        results: List[torch.Tensor] = []
+        if not specs:
+            return []
 
+        indexed_specs = sorted(
+            enumerate(specs), key=lambda item: item[1].offset
+        )
+        groups = []
+        group_start = indexed_specs[0][1].offset
+        group_end = group_start
+        group_specs = []
+
+        for index, spec in indexed_specs:
+            if spec.nbytes > spec.stored_nbytes:
+                raise ValueError(
+                    f"slice nbytes ({spec.nbytes}) exceeds stored_nbytes "
+                    f"({spec.stored_nbytes})"
+                )
+            if spec.offset % _GDS_ALIGNMENT != 0:
+                raise ValueError(
+                    f"offset ({spec.offset}) must be "
+                    f"{_GDS_ALIGNMENT}-byte aligned"
+                )
+            if spec.stored_nbytes % _GDS_ALIGNMENT != 0:
+                raise ValueError(
+                    f"stored_nbytes ({spec.stored_nbytes}) must be "
+                    f"{_GDS_ALIGNMENT}-byte aligned"
+                )
+
+            spec_end = spec.offset + spec.stored_nbytes
+            if group_specs and spec.offset > group_end:
+                groups.append((group_start, group_end, group_specs))
+                group_start = spec.offset
+                group_specs = []
+            group_end = max(group_end, spec_end)
+            group_specs.append((index, spec))
+        groups.append((group_start, group_end, group_specs))
+
+        results = [None] * len(specs)
         with _CuFileHandle(self._binding, str(path), "r") as f:
-            for spec in specs:
-                # Allocate aligned buffer on target device
-                stored_aligned = _align_up(spec.stored_nbytes)
+            for start, end, grouped_specs in groups:
+                expected_nbytes = end - start
                 backing, aligned, _ = _aligned_device_buffer(
-                    stored_aligned, device,
+                    expected_nbytes, device
                 )
 
                 read_bytes = f.read(
-                    aligned.data_ptr(), stored_aligned,
-                    file_offset=spec.offset,
+                    aligned.data_ptr(),
+                    expected_nbytes,
+                    file_offset=start,
                 )
-                if read_bytes != stored_aligned:
+                if read_bytes != expected_nbytes:
                     raise RuntimeError(
-                        f"GDS load_tensor_slices: expected "
-                        f"{stored_aligned} bytes at offset "
-                        f"{spec.offset}, got {read_bytes}"
+                        "GDS load_tensor_slices: expected "
+                        f"{expected_nbytes} bytes for slice group at offset "
+                        f"{start}, got {read_bytes}"
                     )
 
-                # Extract logical tensor from first spec.nbytes
-                raw = aligned[:spec.nbytes].clone().reshape(-1)
-                tensor = raw.view(dtype=spec.dtype).reshape(spec.shape)
-                results.append(tensor)
+                for index, spec in grouped_specs:
+                    relative_offset = spec.offset - start
+                    tensor = aligned.narrow(
+                        0, relative_offset, spec.nbytes
+                    )
+                    tensor = tensor.view(dtype=spec.dtype).reshape(spec.shape)
+                    results[index] = tensor
 
-        return results
+        tensors = []
+        for tensor in results:
+            if tensor is None:
+                raise RuntimeError(
+                    "GDS load_tensor_slices returned incomplete results"
+                )
+            tensors.append(tensor)
+        return tensors
 
     # ── GDS I/O path ──────────────────────────────────────────────
 

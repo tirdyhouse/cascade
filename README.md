@@ -72,6 +72,8 @@ Observed on the project A100 validation host. These numbers are environment samp
 | First request | `1.704s`, retrieved blocks `0` |
 | Second request | `0.199s`, retrieved blocks `28`, cached tokens `6624` |
 
+> Historical note: later inspection showed this T4 host mounted `/mnt/nvfile` on `/dev/sda3` XFS, with cuFile `use_compat_mode=true` and no loaded `nvidia_fs`. The following T4 “GDS” rows prove the NvFile/cuFile code path, not direct GDS DMA; see [benchmark-report.md](./benchmark-report.md) for the corrected 2026-07-23 results.
+
 ### T4 + nvfile POSIX benchmark (2026-07-22)
 
 | Item | Value |
@@ -229,7 +231,7 @@ vllm serve /path/to/model \
       "disk_cache_engine_addr": "http://localhost:9100",
       "target_device": "auto",
       "storage_backend": "auto",
-      "disk_cache_chunk_size_mb": 128
+      "disk_cache_chunk_size_tokens": 256
     }
   }'
 ```

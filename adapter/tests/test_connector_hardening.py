@@ -151,6 +151,55 @@ def test_connector_requires_piecewise_cudagraph():
     ) is True
 
 
+def test_connector_passes_opt_in_strict_gds_selection(monkeypatch, tmp_path):
+    class Config:
+        kv_transfer_config = SimpleNamespace(
+            kv_connector_extra_config={
+                "disk_cache_path": str(tmp_path),
+                "disk_cache_engine_addr": "http://127.0.0.1:19103",
+                "storage_backend": "gds",
+                "storage_backend_strict": True,
+                "disk_cache_chunk_size_tokens": 8,
+            }
+        )
+        cache_config = SimpleNamespace(block_size=4, cache_dtype="auto")
+        model_config = SimpleNamespace(model="test-model")
+        parallel_config = SimpleNamespace(
+            tensor_parallel_size=1,
+            pipeline_parallel_size=1,
+            rank=0,
+            tensor_parallel_rank=0,
+            pipeline_parallel_rank=0,
+        )
+
+    class Base:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class ConfiguredConnector(DiskCacheConnectorCommonMixin, Base):
+        pass
+
+    selected = mock.Mock()
+    monkeypatch.setattr(
+        "adapter.vllm.connector_common.create_storage_backend",
+        selected,
+    )
+    monkeypatch.setattr(
+        "adapter.vllm.connector_common.DiskCacheGoClient",
+        lambda address: mock.Mock(),
+    )
+    monkeypatch.setattr(
+        DiskCacheConnectorCommonMixin,
+        "_health_check",
+        lambda self: False,
+    )
+
+    ConfiguredConnector(Config(), "kv_both", None)
+
+    selected.assert_called_once_with(prefer="gds", strict=True)
+
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 1. Nested tuple block IDs
 # ═══════════════════════════════════════════════════════════════════

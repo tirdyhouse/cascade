@@ -1030,9 +1030,14 @@ class DiskCacheConnectorCommonMixin:
             block_size=self._block_size,
         )
 
-        # Storage backend
+        # Storage backend. Strict mode is opt-in so existing explicit GDS
+        # configurations retain their historical POSIX fallback behavior.
         storage_prefer = extra.get("storage_backend", "auto")
-        self._storage = create_storage_backend(prefer=storage_prefer)
+        storage_strict = bool(extra.get("storage_backend_strict", False))
+        self._storage = create_storage_backend(
+            prefer=storage_prefer,
+            strict=storage_strict,
+        )
 
         # Device resolution
         self.target_device = extra.get("target_device", "auto")

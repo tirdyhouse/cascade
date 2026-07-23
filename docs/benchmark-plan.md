@@ -130,6 +130,41 @@ vllm serve deepseek-ai/DeepSeek-V4-Flash \
 
 ---
 
+## 三点一、正式缓存 A/B 方法
+
+本项目的缓存后端正式对比采用 LMCache 官方 `long-doc-qa` workload，而不是上方用于 DeepSeek V4 容量规划的通用场景草案。对 Cascade POSIX、Cascade GDS 和 LMCache 必须重放同一份配置：
+
+```bash
+lmcache bench engine \
+  --engine-url http://127.0.0.1:8000 \
+  --config bench_config.json \
+  --output-dir results/<backend> \
+  --json
+```
+
+`bench_config.json` 的项目正式口径：
+
+```json
+{
+  "model": "qwen25-7b",
+  "workload": "long-doc-qa",
+  "kv_cache_volume": 10.0,
+  "tokens_per_gb_kvcache": 17361,
+  "ldqa_document_length": 10000,
+  "ldqa_query_per_document": 1,
+  "ldqa_shuffle_policy": "tile",
+  "ldqa_num_inflight_requests": 4
+}
+```
+
+这沿用 LMCache 官方教程的共享配置重放流程，但 `tokens_per_gb_kvcache` 必须按模型、KV dtype 和并行配置测量，不能复制教程中 Qwen3-8B 的 `46020` 示例值。当前 Qwen2.5-7B-AWQ 的 256-token 完整 chunk 实测为 14,745,600 bytes，对应约 `17,361 tokens/GB`，因此 10GB 工作集约产生 17 个请求；官方 Qwen3 示例才约为 46 个。旧版官方脚本 `LMCache/benchmarks/long_doc_qa/long_doc_qa.py` 的历史口径见 `docs/testing-guide.md`。
+
+T4 上 `10 documents × 4096 tokens × output 10 × inflight 1` 是单请求 TTFT 诊断配置，目的是避免 15GB 显存下并发 prefill OOM。它不只是把并发改为 1，还同时缩小了文档数、文档长度和输出长度，不能替代正式压力测试。
+
+所有 external cache 方案必须使用 `--no-enable-prefix-caching`。GDS 方案还必须设置 `storage_backend_strict: true`、确认启动日志选择 `NvFileBackend`，并保存 `gdscheck -p` 与文件系统信息；cuFile compatibility mode 不得标记为真实 direct GDS。
+
+---
+
 ## 四、关键指标
 
 | 指标 | 单位 | 说明 |

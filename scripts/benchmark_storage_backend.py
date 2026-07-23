@@ -117,7 +117,8 @@ def _create_storage_backend(prefer: str):
                 "or run in the project venv before benchmarking storage backends"
             ) from exc
         raise
-    return create_storage_backend(prefer=prefer)
+    strict = prefer in {"gds", "nvfile", "cufile"}
+    return create_storage_backend(prefer=prefer, strict=strict)
 
 
 def benchmark_backend(
@@ -132,6 +133,14 @@ def benchmark_backend(
 ) -> dict[str, Any]:
     backend = _create_storage_backend(backend_name)
     selected = backend.__class__.__name__
+    if (
+        backend_name in {"gds", "nvfile", "cufile"}
+        and selected != "NvFileBackend"
+    ):
+        raise RuntimeError(
+            f"requested backend {backend_name!r} selected {selected}; "
+            "refusing to record POSIX fallback as a GDS benchmark"
+        )
     tensor = _make_tensor(shape, dtype, device)
     nbytes = tensor.nbytes
 

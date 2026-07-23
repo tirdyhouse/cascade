@@ -1,7 +1,7 @@
 # Cascade Benchmark 测试报告
 
 > 测试日期：2026-07-22
-> 测试环境：Tesla T4 (16GB) + nvfile (自研高性能存储集群)
+> 测试环境：Tesla T4 (16GB)；历史记录称 nvfile/GDS，后续检查显示该路径实际位于 `/dev/sda3` XFS 且 cuFile 为 compatibility mode
 
 ---
 
@@ -10,7 +10,7 @@
 | 项目 | 配置 |
 |------|------|
 | GPU | NVIDIA Tesla T4 (16GB) |
-| 存储 | nvfile 自研高性能存储集群 (113TB) |
+| 存储 | `/mnt/nvfile` 路径；后续实测为 `/dev/sda3` XFS |
 | 模型 | Qwen2.5-7B-Instruct-AWQ |
 | vLLM | 0.25.1 |
 | LMCache | 0.4.3 |
@@ -20,9 +20,9 @@
 
 | 组件 | 路径 | 说明 |
 |------|------|------|
-| Cascade KV 缓存 | `/mnt/nvfile/test-1/cascade-gds/` | GDS 直接读写 |
+| Cascade KV 缓存 | `/mnt/nvfile/test-1/cascade-gds/` | 历史 GDS 配置；direct-GDS 前置条件未留证 |
 | Cascade 元数据 | `/mnt/nvfile/test-1/cascade-meta/` | Pebble 数据库 |
-| LMCache GDS 缓存 | `/mnt/nvfile/cache/` | GDS 直接读写 |
+| LMCache GDS 缓存 | `/mnt/nvfile/cache/` | 历史 GDS 配置；direct-GDS 前置条件未留证 |
 
 ---
 
@@ -39,6 +39,8 @@
 ---
 
 ## 测试结果
+
+> **口径校正（2026-07-23）**：以下数字保留为历史结果。当时只确认配置和 `NvFileBackend` 路径，没有保存 `nvidia_fs`、`gdscheck` 与实际挂载证据；当前同机检查为 cuFile compatibility mode。因此下文“GDS”应理解为历史 cuFile/NvFile 路径，不是已证明的 direct GDS。
 
 ### GDS 版本对比（严格测试，全新状态）
 
@@ -161,7 +163,7 @@ vllm serve /mnt/data/Qwen2.5-7B-Instruct-AWQ \
       "disk_cache_path": "/mnt/nvfile/test-1/cascade-gds",
       "disk_cache_engine_addr": "http://localhost:9100",
       "target_device": "auto",
-      "disk_cache_chunk_size_mb": 64,
+      "disk_cache_chunk_size_tokens": 256,
       "storage_backend": "gds"
     }
   }'
@@ -183,6 +185,8 @@ vllm serve /mnt/data/Qwen2.5-7B-Instruct-AWQ \
 
 ### 运行 Benchmark
 
+本报告中的 `128.258ms` Cascade 结果属于 **T4 单请求 TTFT 诊断口径**，参数如下：
+
 ```bash
 python3 LMCache/benchmarks/long_doc_qa/long_doc_qa.py \
   --model qwen25-7b \
@@ -196,6 +200,51 @@ python3 LMCache/benchmarks/long_doc_qa/long_doc_qa.py \
   --sleep-time-after-warmup 1 \
   --json-output
 ```
+
+它同时缩小了文档数、文档长度、输出长度和并发，不能代表官方长文档压力口径。正式 GDS/POSIX/LMCache A/B 应使用 `lmcache bench engine` 的共享、模型归一化 `bench_config.json`；`46 × 10000 × output 100 × inflight 4` 仅保留为历史固定压力配置，对当前模型约对应 26.5GB KV，而不是 10GB。
+
+---
+
+## GDS 合并读取验证（2026-07-23）
+
+> 当前测试机缺少 `nvidia_fs`，`gdscheck.py -p` 显示 `properties.use_compat_mode : true`，且 `/mnt/nvfile` 实际位于 `/dev/sda3` XFS。因此以下结果是 **NvFile/cuFile compatibility-mode**，不是 direct GDS。
+
+### Storage 层微基准
+
+28 个连续 layer slices、14,680,064 bytes payload，20 样本：
+
+| 实现 | cuFile reads/chunk | Mean | Median | Min–Max |
+|------|-------------------:|-----:|-------:|--------:|
+| 旧版逐层读取 | 28 | 3.281ms | 3.227ms | 3.210–4.103ms |
+| 新版合并读取 | 1 | 1.726ms | 1.718ms | 1.690–1.876ms |
+
+median speedup 为 `1.878×`，新旧 28 层 tensor 逐字节一致。
+
+### 4K 单请求 TTFT 诊断
+
+同一 `10 documents × 4096 tokens × output 10 × tile × inflight 1` 口径：
+
+| 后端 | 样本 | Mean TTFT |
+|------|-----:|----------:|
+| Cascade POSIX 合并读取 | 20 | 128.258ms |
+| Cascade GDS compatibility-mode run 1 | 10 | 104.295ms |
+| Cascade GDS compatibility-mode run 2 | 10 | 99.318ms |
+| **GDS compatibility-mode aggregate** | **20** | **101.807ms** |
+
+GDS compatibility-mode 在该诊断口径下比 POSIX 快约 `26.451ms / 20.6%`。所有 query 成功，内置 prefix cache 关闭，run 2 engine 增量为 `MatchHits +25`、`MatchedTokens +87650`、`ChunksRetrieved +365`、`ChunksStored +0`。
+
+### LMCache 官方 `bench engine` 方法
+
+正式配置使用 `10GB / 10000 tokens / 1 query per document / tile / inflight 4`。`tokens_per_gb_kvcache` 必须按当前模型测量；Qwen3-8B 官方教程中的 `46020` 不能直接用于 Qwen2.5-7B-AWQ。当前 256-token 完整 chunk 实测为 14,745,600 bytes，对应约 `17,361 tokens/GB`，因此派生 17 个文档。
+
+正式 GDS compatibility-mode run：
+
+- 17/17 请求成功，0 失败；工作集实际占用 9,865,150,464 bytes。
+- Mean TTFT `1367.082ms`，p50 `958.639ms`，p90 `2523.867ms`，p99 `2524.856ms`。
+- Engine 增量：`MatchRequests +34`、`MatchHits +17`、`MatchedTokens +169728`、`ChunksStored +697`、`ChunksRetrieved +663`。
+- 该 run 证明 GDS 路线可在官方压力方法下正确工作；由于本轮未重跑同配置 POSIX/LMCache，不能用它单独得出正式后端性能排名。
+
+结果保存在远端 `/mnt/data/vllmtest/cascade-gds-coalesced/results/`。
 
 ---
 

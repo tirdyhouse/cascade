@@ -260,6 +260,8 @@ def block_hash(token_ids, block_size, block_idx):
 |------|:------:|------|
 | 修复前 (prefix_key 16 tokens) | 47% | Chat template 导致碰撞 |
 | 修复后 (block-level hashing) | **96%** | 每个 block 独立存储 |
+> 历史口径校正：后续检查确认该 T4 主机的 `/mnt/nvfile` 位于 `/dev/sda3` XFS，cuFile 为 `use_compat_mode=true`，且未加载 `nvidia_fs`。下文历史“GDS”数字仅证明 NvFile/cuFile 代码路径，不能证明 direct GDS DMA；性能归因以 `benchmark-report.md` 的 2026-07-23 校正结果为准。
+
 ### T4 + nvfile GDS 测试
 
 | 指标 | 值 |
@@ -285,7 +287,7 @@ def block_hash(token_ids, block_size, block_idx):
 | Query TTFT | 0.389s | 0.390s | 相当 |
 | 命中率 | 98% | 96% | 相当 |
 
-**GDS 的巨大优势在冷启动**：GPU 直接写磁盘，无需 CPU 参与，冷启动时间从 8 秒降到 0.38 秒。
+**历史结果不能归因于 direct GDS**：当时未保存 `nvidia_fs`、`gdscheck` 和挂载证据，且后续同机检查为 compatibility mode；冷启动差异需在相同缓存状态和真实 direct-GDS 环境重新验证。
 ### LMCache + GDS 测试
 
 | 指标 | 值 |

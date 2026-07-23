@@ -96,9 +96,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ) from exc
         raise
 
-    backend = create_storage_backend(prefer=args.backend)
+    strict = args.backend in {"gds", "nvfile", "cufile"}
+    backend = create_storage_backend(prefer=args.backend, strict=strict)
     result["selected_backend"] = backend.__class__.__name__
     result["backend_repr"] = repr(backend)
+    if strict and result["selected_backend"] != "NvFileBackend":
+        raise RuntimeError(
+            f"requested backend {args.backend!r} selected "
+            f"{result['selected_backend']}; GDS validation requires "
+            "NvFileBackend"
+        )
 
     root = Path(args.path) if args.path else Path(tempfile.mkdtemp(prefix="predict-storage-"))
     root.mkdir(parents=True, exist_ok=True)

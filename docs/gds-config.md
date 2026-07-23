@@ -44,8 +44,9 @@ cufile.driver_close()
     "disk_cache_path": "/tmp/cascade-kv",
     "disk_cache_engine_addr": "http://localhost:9100",
     "target_device": "cuda:0",
-    "disk_cache_chunk_size_mb": 128,
-    "storage_backend": "gds"
+    "disk_cache_chunk_size_tokens": 256,
+    "storage_backend": "gds",
+    "storage_backend_strict": true
   }
 }
 ```
@@ -54,9 +55,11 @@ cufile.driver_close()
 
 | 值 | 行为 |
 |-----|------|
-| `"auto"`（默认） | 自动检测：有 cuda.bindings.cufile → NvFileBackend，否则 PosixBackend |
-| `"gds"` | 强制使用 GDS，不可用时降级到 PosixBackend（日志 warning） |
-| `"posix"` | 强制使用 CPU bounce buffer + safetensors |
+| `"auto"`（默认） | 自动检测：有可用 cuFile binding → NvFileBackend，否则 PosixBackend |
+| `"gds"` | 请求 GDS；默认保留历史兼容行为，不可用时 warning 后回退 POSIX |
+| `"posix"` | 强制使用 CPU bounce buffer + POSIX I/O |
+
+正式验证和 benchmark 应同时设置 `"storage_backend_strict": true`。此时显式 GDS 不可用会直接报错，避免把 POSIX 回退结果误记为 GDS。
 
 ## 验证 GDS 生效
 
@@ -71,6 +74,17 @@ vLLM 启动日志中会出现：
 
 如果看到 `backend=NvFileBackend` 说明 GDS 已启用。
 如果看到 `backend=PosixBackend` 说明走的是 CPU bounce buffer 降级路径。
+
+这里的“GDS 已启用”只表示 Cascade 选择了 cuFile/NvFile 代码路径。要声明为 **direct GDS**，还必须确认：
+
+```bash
+lsmod | grep nvidia_fs
+/usr/local/cuda/gds/tools/gdscheck.py -p
+findmnt -T /path/to/cache -o TARGET,SOURCE,FSTYPE,OPTIONS
+```
+
+如果缺少 `nvidia_fs` 或 `gdscheck` 显示 `properties.use_compat_mode : true`，应记录为 **cuFile compatibility mode**。该模式可能仍能正确读写，但数据可能经过兼容 POSIX/bounce 路径，不能用于证明 GPU↔storage direct DMA 性能。
+
 
 ### 2. 手动测试
 
@@ -90,7 +104,7 @@ disk-cache --cache-path /tmp/cascade-kv --metadata-path /tmp/cascade-meta --list
 
 # 启动 vLLM（配置 storage_backend: gds）
 vllm serve /path/to/model \
-  --kv-transfer-config '{"kv_connector": "DiskCacheConnector", "kv_role": "kv_both", "kv_connector_module_path": "disk_cache", "kv_connector_extra_config": {"disk_cache_path": "/tmp/cascade-kv", "disk_cache_engine_addr": "http://localhost:9100", "target_device": "cuda:0", "disk_cache_chunk_size_mb": 128, "storage_backend": "gds"}}'
+  --kv-transfer-config '{"kv_connector": "DiskCacheConnector", "kv_role": "kv_both", "kv_connector_module_path": "disk_cache", "kv_connector_extra_config": {"disk_cache_path": "/tmp/cascade-kv", "disk_cache_engine_addr": "http://localhost:9100", "target_device": "cuda:0", "disk_cache_chunk_size_tokens": 256, "storage_backend": "gds", "storage_backend_strict": true}}'
 
 # 发推理请求
 curl http://localhost:8000/v1/chat/completions \

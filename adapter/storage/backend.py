@@ -147,7 +147,9 @@ class StorageBackend(ABC):
         Returns
         -------
         list[torch.Tensor]
-            Tensors in the same order as *specs*.
+            Tensors in the same order as *specs*. Tensors loaded in one I/O
+            group may share underlying storage and must be treated as
+            read-only by callers.
         """
 
     def __repr__(self) -> str:
@@ -159,35 +161,42 @@ class StorageBackend(ABC):
 
 def create_storage_backend(
     prefer: Optional[str] = None,
+    *,
+    strict: bool = False,
 ) -> StorageBackend:
-    """Auto-select the best storage backend.
+    """Select the requested storage backend.
 
-    Resolution order:
-    1. If *prefer* is ``"gds"`` or ``"nvfile"`` → try :class:`NvFileBackend`.
-    2. If *prefer* is ``"posix"`` → use :class:`PosixBackend`.
-    3. If *prefer* is ``None`` (default) → try GDS first, fall back to POSIX.
-
-    *prefer* is case-insensitive.
+    ``auto`` and the default preference try GDS first and fall back to POSIX.
+    Explicit GDS requests retain that compatibility unless ``strict`` is true;
+    strict mode is intended for validation and benchmarks where silently
+    measuring POSIX as GDS would invalidate the result.
     """
     if prefer is not None:
         prefer = prefer.lower()
 
-    # Forced backend
+    known_backends = {"posix", "gds", "nvfile", "cufile", "auto"}
+    if prefer is not None and prefer not in known_backends:
+        message = f"Unknown storage backend: {prefer}"
+        if strict:
+            raise ValueError(message)
+        logger.warning("%s; falling back to PosixBackend", message)
+        return _POSIX
+
     if prefer == "posix":
         logger.info("Storage backend: PosixBackend (explicit)")
         return _POSIX
 
-    # Try GDS first
     if prefer in (None, "gds", "nvfile", "cufile", "auto"):
         gds = _try_gds()
         if gds is not None:
             return gds
         if prefer is not None and prefer != "auto":
-            logger.warning(
-                "Requested GDS backend (%s) but it is unavailable; "
-                "falling back to PosixBackend",
-                prefer,
+            message = (
+                f"Requested GDS backend ({prefer}) but it is unavailable"
             )
+            if strict:
+                raise RuntimeError(message)
+            logger.warning("%s; falling back to PosixBackend", message)
 
     logger.info("Storage backend: PosixBackend")
     return _POSIX

@@ -8,6 +8,7 @@ import (
 // Policy defines the eviction strategy interface.
 type Policy interface {
 	Record(key string, size int64)
+	Candidates(targetBytes int64) []string
 	Evict(targetBytes int64) []string
 	Remove(key string)
 	Len() int
@@ -41,6 +42,10 @@ func (p *LRU) Record(key string, size int64) {
 	defer p.mu.Unlock()
 	if elem, ok := p.items[key]; ok {
 		p.ll.MoveToFront(elem)
+		e := elem.Value.(*entry)
+		delta := size - e.size
+		e.size = size
+		p.total += delta
 		return
 	}
 	e := &entry{key: key, size: size}
@@ -49,24 +54,26 @@ func (p *LRU) Record(key string, size int64) {
 	p.total += size
 }
 
-func (p *LRU) Evict(targetBytes int64) []string {
+func (p *LRU) Candidates(targetBytes int64) []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	var evicted []string
-	var freed int64
-	for freed < targetBytes && p.ll.Len() > 0 {
-		elem := p.ll.Back()
-		if elem == nil {
-			break
-		}
+
+	var candidates []string
+	var covered int64
+	for elem := p.ll.Back(); elem != nil && covered < targetBytes; elem = elem.Prev() {
 		e := elem.Value.(*entry)
-		p.ll.Remove(elem)
-		delete(p.items, e.key)
-		p.total -= e.size
-		freed += e.size
-		evicted = append(evicted, e.key)
+		candidates = append(candidates, e.key)
+		covered += e.size
 	}
-	return evicted
+	return candidates
+}
+
+func (p *LRU) Evict(targetBytes int64) []string {
+	keys := p.Candidates(targetBytes)
+	for _, key := range keys {
+		p.Remove(key)
+	}
+	return keys
 }
 
 func (p *LRU) Remove(key string) {

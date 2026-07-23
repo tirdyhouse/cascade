@@ -96,5 +96,45 @@ class DiskCacheGoClient:
         """Record retrieved counts for multiple layers at once."""
         self.post("/batch_retrieved", {"counts": counts})
 
-def get(self, hash_val: int) -> Any:
+    def match_chunks(
+        self,
+        namespace: str,
+        candidates: list[dict[str, Any]],
+        required_shards: list[str],
+    ) -> dict[str, Any]:
+        data = self.post(
+            "/v2/chunks/match",
+            {
+                "namespace": namespace,
+                "candidates": candidates,
+                "required_shards": required_shards,
+            },
+        )
+        return json.loads(data)
+
+    def resolve_chunks(
+        self, namespace: str, keys: list[str], shard: str
+    ) -> list[dict[str, Any]]:
+        data = self.post(
+            "/v2/chunks/resolve",
+            {"namespace": namespace, "keys": keys, "shard": shard},
+        )
+        result = json.loads(data)
+        if not isinstance(result, list):
+            raise ValueError("resolve response must be a JSON array")
+        return result
+
+    def commit_chunks(self, objects: list[dict[str, Any]]) -> None:
+        self.post("/v2/chunks/commit", {"objects": objects})
+
+    def invalidate_chunk(self, namespace: str, key: str, shard: str) -> None:
+        self.post(
+            "/v2/chunks/invalidate",
+            {"namespace": namespace, "key": key, "shard": shard},
+        )
+
+    def chunks_retrieved(self, count: int) -> None:
+        self.post("/v2/chunks/retrieved", {"count": count})
+
+    def get(self, hash_val: int) -> Any:
         return self.get_json("/get", {"hash": f"{hash_val:016x}"})

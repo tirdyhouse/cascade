@@ -1,0 +1,389 @@
+package cache
+
+import (
+	"fmt"
+	"strings"
+
+	"predict/engine/pkg/metadata"
+)
+
+// v2PolicyKey builds a reversible policy key for a v2 chunk entry.
+// Format: "v2:NNNN:namespace:NNNN:key:NNNN:shard"
+// where NNNN is the 4-hex-digit length of the following component.
+func v2PolicyKey(namespace, key, shard string) string {
+	return fmt.Sprintf("v2:%04x:%s:%04x:%s:%04x:%s",
+		len(namespace), namespace,
+		len(key), key,
+		len(shard), shard)
+}
+
+// v2EntryInfo stores reverse-mapping data for a v2 LRU policy entry.
+type v2EntryInfo struct {
+	namespace   string
+	key         string
+	shard       string
+	filePath    string
+	size        int64
+	index       int
+	startTokens int
+	endTokens   int
+}
+
+// parseV2PolicyKey decodes a policy key created by v2PolicyKey.
+func parseV2PolicyKey(pk string) (namespace, key, shard string, ok bool) {
+	if !strings.HasPrefix(pk, "v2:") {
+		return "", "", "", false
+	}
+	rest := pk[3:]
+	parts := strings.SplitN(rest, ":", 6)
+	if len(parts) != 6 {
+		return "", "", "", false
+	}
+	// parts: nLenHex, namespace, kLenHex, key, sLenHex, shard
+	return parts[1], parts[3], parts[5], true
+}
+
+// validateChunkObjects validates a batch of ChunkObject for CommitChunks.
+func validateChunkObjects(objects []ChunkObject) error {
+	invalid := func(format string, args ...any) error {
+		return fmt.Errorf("%w: %s", ErrInvalidArgument, fmt.Sprintf(format, args...))
+	}
+	if len(objects) == 0 {
+		return invalid("empty objects")
+	}
+	seen := make(map[string]struct{}, len(objects))
+	namespace := objects[0].Namespace
+	for i, obj := range objects {
+		if obj.Namespace == "" {
+			return invalid("objects[%d]: empty namespace", i)
+		}
+		if obj.Namespace != namespace {
+			return invalid("objects[%d]: mixed namespace %q", i, obj.Namespace)
+		}
+		if obj.Key == "" {
+			return invalid("objects[%d]: empty key", i)
+		}
+		if obj.Shard == "" {
+			return invalid("objects[%d]: empty shard", i)
+		}
+		if len(obj.Namespace) > 65535 {
+			return invalid("objects[%d]: namespace too long (%d bytes)", i, len(obj.Namespace))
+		}
+		if len(obj.Key) > 65535 {
+			return invalid("objects[%d]: key too long (%d bytes)", i, len(obj.Key))
+		}
+		if len(obj.Shard) > 65535 {
+			return invalid("objects[%d]: shard too long (%d bytes)", i, len(obj.Shard))
+		}
+		if _, err := rootedCachePath("", obj.FilePath); err != nil {
+			return invalid("objects[%d]: %v", i, err)
+		}
+		if obj.Index < 0 {
+			return invalid("objects[%d]: negative index (%d)", i, obj.Index)
+		}
+		if obj.StartTokens < 0 {
+			return invalid("objects[%d]: negative start_tokens (%d)", i, obj.StartTokens)
+		}
+		if obj.EndTokens <= obj.StartTokens {
+			return invalid("objects[%d]: end_tokens (%d) <= start_tokens (%d)", i, obj.EndTokens, obj.StartTokens)
+		}
+		if obj.Size <= 0 {
+			return invalid("objects[%d]: non-positive size (%d)", i, obj.Size)
+		}
+		identity := v2PolicyKey(obj.Namespace, obj.Key, obj.Shard)
+		if _, ok := seen[identity]; ok {
+			return invalid("objects[%d]: duplicate namespace/key/shard", i)
+		}
+		seen[identity] = struct{}{}
+	}
+	return nil
+}
+
+// ── Engine v2 method implementations ──
+
+// CommitChunks atomically commits a batch of v2 chunk objects.
+func (e *diskEngine) CommitChunks(objects []ChunkObject) error {
+	if err := validateChunkObjects(objects); err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	metas := make([]metadata.ChunkObjectMeta, len(objects))
+	var totalNewSize int64
+	for i, obj := range objects {
+		metas[i] = metadata.ChunkObjectMeta{
+			Namespace:   obj.Namespace,
+			Key:         obj.Key,
+			Shard:       obj.Shard,
+			FilePath:    obj.FilePath,
+			Index:       obj.Index,
+			StartTokens: obj.StartTokens,
+			EndTokens:   obj.EndTokens,
+			Size:        obj.Size,
+		}
+
+		pk := v2PolicyKey(obj.Namespace, obj.Key, obj.Shard)
+		if existing, ok := e.v2PolicyMap[pk]; ok {
+			if existing.filePath != obj.FilePath ||
+				existing.index != obj.Index ||
+				existing.startTokens != obj.StartTokens ||
+				existing.endTokens != obj.EndTokens ||
+				existing.size != obj.Size {
+				return fmt.Errorf("%w: conflict for namespace=%q key=%q shard=%q", ErrInvalidArgument, obj.Namespace, obj.Key, obj.Shard)
+			}
+			continue
+		}
+		if obj.Size > e.cfg.MaxSizeBytes-totalNewSize {
+			return fmt.Errorf("%w: batch size exceeds cache capacity %d", ErrInvalidArgument, e.cfg.MaxSizeBytes)
+		}
+		totalNewSize += obj.Size
+	}
+
+	if err := e.lockedMakeRoom(totalNewSize); err != nil {
+		return err
+	}
+
+	newCount, err := e.v2.CommitChunkObjects(metas)
+	if err != nil {
+		return fmt.Errorf("v2 commit: %w", err)
+	}
+
+	for _, obj := range objects {
+		pk := v2PolicyKey(obj.Namespace, obj.Key, obj.Shard)
+		e.pol.Record(pk, obj.Size)
+		e.v2PolicyMap[pk] = &v2EntryInfo{
+			namespace:   obj.Namespace,
+			key:         obj.Key,
+			shard:       obj.Shard,
+			filePath:    obj.FilePath,
+			size:        obj.Size,
+			index:       obj.Index,
+			startTokens: obj.StartTokens,
+			endTokens:   obj.EndTokens,
+		}
+	}
+
+	e.chunksStored.Add(int64(newCount))
+	return nil
+}
+
+// MatchChunks performs linear sequential match over candidates.
+// For each candidate in order, verifies ALL required shards exist with matching EndTokens.
+// Stops at the first candidate that is missing any required shard or has mismatched EndTokens.
+// On match, refreshes LRU recency for matched entries.
+func (e *diskEngine) MatchChunks(namespace string, candidates []ChunkCandidate, requiredShards []string) (ChunkMatchResult, error) {
+	e.matchRequests.Add(1)
+	invalid := func(format string, args ...any) error {
+		return fmt.Errorf("%w: %s", ErrInvalidArgument, fmt.Sprintf(format, args...))
+	}
+
+	if namespace == "" {
+		return ChunkMatchResult{}, invalid("empty namespace")
+	}
+	if len(candidates) == 0 {
+		return ChunkMatchResult{}, nil
+	}
+	if len(requiredShards) == 0 {
+		return ChunkMatchResult{}, invalid("empty required_shards")
+	}
+
+	// Validate and deduplicate requiredShards
+	seen := make(map[string]bool, len(requiredShards))
+	uniqueShards := make([]string, 0, len(requiredShards))
+	for _, s := range requiredShards {
+		if s == "" {
+			return ChunkMatchResult{}, invalid("empty required_shard entry")
+		}
+		if !seen[s] {
+			seen[s] = true
+			uniqueShards = append(uniqueShards, s)
+		}
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Pre-validate all candidates: key non-empty and strictly increasing end_tokens
+	prevEnd := 0
+	for i, cand := range candidates {
+		if cand.Key == "" {
+			return ChunkMatchResult{}, invalid("candidate[%d]: empty key", i)
+		}
+		if cand.EndTokens <= prevEnd {
+			return ChunkMatchResult{}, invalid("candidate[%d]: end_tokens %d not strictly increasing after %d", i, cand.EndTokens, prevEnd)
+		}
+		prevEnd = cand.EndTokens
+	}
+
+	prevEnd = 0
+	var matchedKeys []string
+	matchedChunks := 0
+	matchedTokens := 0
+
+	for _, cand := range candidates {
+		// Verify ALL required shards exist with matching EndTokens
+		allShardsMatch := true
+		for _, shard := range uniqueShards {
+			meta, err := e.v2.GetV2Chunk(namespace, cand.Key, shard)
+			if err != nil {
+				return ChunkMatchResult{}, fmt.Errorf("v2 store read error: %w", err)
+			}
+			if meta == nil || meta.EndTokens != cand.EndTokens {
+				allShardsMatch = false
+				break
+			}
+		}
+
+		if !allShardsMatch {
+			break
+		}
+
+		// Refresh LRU recency for all shards of this matched candidate
+		for _, shard := range uniqueShards {
+			pk := v2PolicyKey(namespace, cand.Key, shard)
+			// Get size from policy map to refresh with correct size
+			if info, ok := e.v2PolicyMap[pk]; ok {
+				e.pol.Record(pk, info.size)
+			}
+		}
+
+		matchedChunks++
+		matchedTokens = cand.EndTokens
+		matchedKeys = append(matchedKeys, cand.Key)
+	}
+
+	if matchedChunks > 0 {
+		e.matchHits.Add(1)
+		e.matchedTokens.Add(int64(matchedTokens))
+	}
+
+	return ChunkMatchResult{
+		MatchedChunks: matchedChunks,
+		MatchedTokens: matchedTokens,
+		MatchedKeys:   matchedKeys,
+	}, nil
+}
+
+// ResolveChunks resolves chunk keys in order, returning the corresponding ChunkObject
+// entries for the given shard. Returns an error if any key is missing.
+// On success, refreshes LRU recency for resolved entries.
+func (e *diskEngine) ResolveChunks(namespace string, keys []string, shard string) ([]ChunkObject, error) {
+	invalid := func(format string, args ...any) error {
+		return fmt.Errorf("%w: %s", ErrInvalidArgument, fmt.Sprintf(format, args...))
+	}
+	if namespace == "" {
+		return nil, invalid("empty namespace")
+	}
+	if len(keys) == 0 {
+		return nil, invalid("empty keys")
+	}
+	if shard == "" {
+		return nil, invalid("empty shard")
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	result := make([]ChunkObject, 0, len(keys))
+	for _, key := range keys {
+		if key == "" {
+			return nil, invalid("empty key in keys list")
+		}
+		meta, err := e.v2.GetV2Chunk(namespace, key, shard)
+		if err != nil {
+			return nil, fmt.Errorf("v2 store read error: %w", err)
+		}
+		if meta == nil {
+			return nil, fmt.Errorf("chunk not found: namespace=%q key=%q shard=%q", namespace, key, shard)
+		}
+		result = append(result, ChunkObject{
+			Namespace:   meta.Namespace,
+			Key:         meta.Key,
+			Shard:       meta.Shard,
+			FilePath:    meta.FilePath,
+			Index:       meta.Index,
+			StartTokens: meta.StartTokens,
+			EndTokens:   meta.EndTokens,
+			Size:        meta.Size,
+		})
+
+		// Refresh LRU recency
+		pk := v2PolicyKey(namespace, key, shard)
+		if info, ok := e.v2PolicyMap[pk]; ok {
+			e.pol.Record(pk, info.size)
+		}
+	}
+	return result, nil
+}
+
+// InvalidateChunk removes one corrupt or missing v2 object from metadata and
+// eviction accounting. The connector owns physical cleanup because it is the
+// component that has conclusively validated the local object as bad.
+func (e *diskEngine) InvalidateChunk(namespace, key, shard string) error {
+	invalid := func(format string, args ...any) error {
+		return fmt.Errorf("%w: %s", ErrInvalidArgument, fmt.Sprintf(format, args...))
+	}
+	if namespace == "" {
+		return invalid("empty namespace")
+	}
+	if key == "" {
+		return invalid("empty key")
+	}
+	if shard == "" {
+		return invalid("empty shard")
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	pk := v2PolicyKey(namespace, key, shard)
+	if _, ok := e.v2PolicyMap[pk]; !ok {
+		meta, err := e.v2.GetV2Chunk(namespace, key, shard)
+		if err != nil {
+			return fmt.Errorf("read v2 chunk before invalidation: %w", err)
+		}
+		if meta == nil {
+			return nil
+		}
+	}
+
+	if err := e.v2.DeleteV2Chunk(namespace, key, shard); err != nil {
+		return fmt.Errorf("delete v2 chunk metadata: %w", err)
+	}
+	delete(e.v2PolicyMap, pk)
+	e.pol.Remove(pk)
+	return nil
+}
+
+// lockedEvictV2Entry removes a v2 entry from metadata and policy during eviction.
+// Returns the file path for the caller to delete the actual file.
+// Must be called with e.mu held.
+// Only removes from policy map if metadata delete succeeds.
+func (e *diskEngine) lockedDeleteV2Entry(pk string) (BlockMeta, bool) {
+	info, ok := e.v2PolicyMap[pk]
+	if !ok {
+		return BlockMeta{}, false
+	}
+	fullPath, err := rootedCachePath(e.cfg.CachePath, info.filePath)
+	if err != nil {
+		e.evictErrors.Add(1)
+		return BlockMeta{}, false
+	}
+	if err := e.v2.DeleteV2Chunk(info.namespace, info.key, info.shard); err != nil {
+		e.evictErrors.Add(1)
+		return BlockMeta{}, false
+	}
+	delete(e.v2PolicyMap, pk)
+	e.blocksEvicted.Add(1)
+	return BlockMeta{FilePath: fullPath, Size: info.size}, true
+}
+
+// RecordRetrievedV2 records successful v2 chunk retrievals.
+func (e *diskEngine) RecordRetrievedV2(count int) {
+	if count <= 0 {
+		return
+	}
+	e.chunksRetrieved.Add(int64(count))
+}

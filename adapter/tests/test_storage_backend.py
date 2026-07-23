@@ -423,6 +423,15 @@ class TestRealGdsBackend:
 class TestNvFileBackendInternals:
     """Focused unit tests for GDS binding/handle edge cases."""
 
+    def test_aligned_device_buffer_preserves_aligned_view(self):
+        from adapter.storage.nvfile_backend import _aligned_device_buffer
+
+        backing, aligned, offset = _aligned_device_buffer(8192, "cpu")
+
+        assert aligned.data_ptr() % 4096 == 0
+        assert aligned.data_ptr() == backing.data_ptr() + offset
+        assert aligned.numel() == 8192
+
     def test_cufile_handle_low_level_registers_and_deregisters_fd(self, tmp_path):
         from adapter.storage.nvfile_backend import _CuFileHandle
 
@@ -581,3 +590,446 @@ class TestNvFileBackendInternals:
             result = storage_backend.create_storage_backend(prefer="gds")
 
         assert isinstance(result, PosixBackend)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# POSIX positional I/O (write_tensor_at / load_tensor_slices)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestPosixPositionalIO:
+    """Positional I/O through PosixBackend."""
+
+    @pytest.fixture
+    def backend(self):
+        return PosixBackend()
+
+    @pytest.fixture
+    def tmp_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            yield Path(d)
+
+    def _prepare_file(self, tmp_path, size=65536):
+        p = tmp_path / "chunk.cobj"
+        p.write_bytes(b"\x00" * size)
+        return p
+
+    def test_write_tensor_at(self, backend, tmp_path):
+        p = self._prepare_file(tmp_path)
+        tensor = torch.randn(2, 64, dtype=torch.bfloat16)
+        nbytes = tensor.nbytes
+        stored = (nbytes + 4095) // 4096 * 4096
+        backend.write_tensor_at(p, tensor, 65536, stored)
+        from adapter.storage.backend import TensorSliceSpec
+        specs = [TensorSliceSpec(65536, nbytes, stored, (2, 64), torch.bfloat16)]
+        loaded = backend.load_tensor_slices(p, specs, "cpu")
+        assert len(loaded) == 1
+        assert torch.equal(loaded[0], tensor)
+
+    def test_load_tensor_slices_multiple(self, backend, tmp_path):
+        p = self._prepare_file(tmp_path, size=262144)
+        t1 = torch.randn(4, 8, dtype=torch.float32)
+        t2 = torch.randn(2, 4, dtype=torch.bfloat16)
+        stored1 = (t1.nbytes + 4095) // 4096 * 4096
+        stored2 = (t2.nbytes + 4095) // 4096 * 4096
+        off1, off2 = 65536, 65536 + stored1
+        backend.write_tensor_at(p, t1, off1, stored1)
+        backend.write_tensor_at(p, t2, off2, stored2)
+        from adapter.storage.backend import TensorSliceSpec
+        specs = [
+            TensorSliceSpec(off1, t1.nbytes, stored1, (4, 8), torch.float32),
+            TensorSliceSpec(off2, t2.nbytes, stored2, (2, 4), torch.bfloat16),
+        ]
+        loaded = backend.load_tensor_slices(p, specs, "cpu")
+        assert len(loaded) == 2
+        assert torch.equal(loaded[0], t1)
+        assert loaded[0].dtype == torch.float32
+        assert torch.equal(loaded[1], t2)
+        assert loaded[1].dtype == torch.bfloat16
+
+    def test_load_tensor_slices_bfloat16(self, backend, tmp_path):
+        """bfloat16 round-trip via uint8 view — no numpy bf16 needed."""
+        p = self._prepare_file(tmp_path)
+        tensor = torch.randn(3, 16, dtype=torch.bfloat16)
+        nbytes = tensor.nbytes
+        stored = (nbytes + 4095) // 4096 * 4096
+        backend.write_tensor_at(p, tensor, 65536, stored)
+        from adapter.storage.backend import TensorSliceSpec
+        specs = [TensorSliceSpec(65536, nbytes, stored, (3, 16), torch.bfloat16)]
+        loaded = backend.load_tensor_slices(p, specs, "cpu")
+        assert loaded[0].dtype == torch.bfloat16
+        assert torch.equal(loaded[0], tensor)
+
+    def test_load_rejects_truncated_alignment_padding(self, backend, tmp_path):
+        from adapter.storage.backend import TensorSliceSpec
+
+        p = self._prepare_file(tmp_path)
+        tensor = torch.arange(8, dtype=torch.float32)
+        stored = 4096
+        backend.write_tensor_at(p, tensor, 65536, stored)
+        with open(p, "r+b") as f:
+            f.truncate(65536 + tensor.nbytes)
+
+        spec = TensorSliceSpec(
+            65536, tensor.nbytes, stored, tuple(tensor.shape), tensor.dtype
+        )
+        with pytest.raises(RuntimeError, match="expected 4096 bytes"):
+            backend.load_tensor_slices(p, [spec], "cpu")
+
+    def test_write_tensor_at_short_write_raises(self, backend, tmp_path):
+        """stored_nbytes less than nbytes should raise."""
+        p = self._prepare_file(tmp_path)
+        tensor = torch.arange(8, dtype=torch.float32)
+        with pytest.raises(ValueError, match="stored_nbytes"):
+            backend.write_tensor_at(p, tensor, 65536, 4)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ChunkObject tests (pure CPU, no GPU needed)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestChunkObject:
+    """ChunkObjectWriter and load_chunk_object round-trip."""
+
+    @pytest.fixture
+    def tmp_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            yield Path(d)
+
+    def _writer(self, tmp_path, namespace="test-ns", key="k" * 64,
+                shard=0, index=0, start=0, end=10,
+                expected_layers=None, backend=None):
+        from adapter.storage.chunk_object import ChunkObjectWriter
+        if expected_layers is None:
+            expected_layers = {"k", "v"}
+        return ChunkObjectWriter(
+            work_dir=tmp_path,
+            namespace=namespace,
+            key=key,
+            shard=shard,
+            index=index,
+            start=start,
+            end=end,
+            expected_layers=expected_layers,
+            backend=backend or PosixBackend(),
+        )
+
+    def test_roundtrip(self, tmp_path):
+        from adapter.storage.chunk_object import load_chunk_object
+        k_tensor = torch.randn(4, 8, dtype=torch.bfloat16)
+        v_tensor = torch.randn(4, 8, dtype=torch.bfloat16)
+        with self._writer(tmp_path) as w:
+            w.add_layer("k", k_tensor)
+            w.add_layer("v", v_tensor)
+            manifest = w.finalize()
+        assert manifest.complete
+        assert manifest.namespace == "test-ns"
+        assert manifest.start == 0
+        assert manifest.end == 10
+        assert len(manifest.layers) == 2
+        assert w.final_path.exists()
+        header, tensors = load_chunk_object(
+            w.final_path, ["k", "v"], device="cpu", backend=PosixBackend(),
+        )
+        assert header.complete
+        assert header.namespace == "test-ns"
+        assert header.start == 0
+        assert header.end == 10
+        assert torch.equal(tensors["k"], k_tensor)
+        assert tensors["k"].dtype == torch.bfloat16
+        assert torch.equal(tensors["v"], v_tensor)
+
+    def test_float8_dtype_roundtrip(self, tmp_path):
+        if not hasattr(torch, "float8_e4m3fn"):
+            pytest.skip("PyTorch build has no float8_e4m3fn")
+
+        raw = torch.arange(32, dtype=torch.uint8)
+        tensor = raw.view(torch.float8_e4m3fn).reshape(4, 8)
+        with self._writer(tmp_path, expected_layers={"fp8"}) as w:
+            w.add_layer("fp8", tensor)
+            w.finalize()
+
+        from adapter.storage.chunk_object import load_chunk_object
+        _, tensors = load_chunk_object(
+            w.final_path, ["fp8"], device="cpu", backend=PosixBackend()
+        )
+        assert tensors["fp8"].dtype == torch.float8_e4m3fn
+        assert torch.equal(
+            tensors["fp8"].view(torch.uint8), raw.reshape(4, 8)
+        )
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"expected_layers": set()}, "expected_layers must be non-empty"),
+            ({"index": -1}, "index must be >= 0"),
+            ({"start": 4, "end": 4}, "Invalid token range"),
+        ],
+    )
+    def test_writer_rejects_invalid_header_fields(
+        self, tmp_path, kwargs, message
+    ):
+        with pytest.raises(ValueError, match=message):
+            self._writer(tmp_path, **kwargs)
+
+    def test_writer_rejects_too_many_shape_dimensions(self, tmp_path):
+        with self._writer(tmp_path, expected_layers={"k"}) as w:
+            with pytest.raises(ValueError, match="max is 8"):
+                w.add_layer("k", torch.ones((1,) * 9))
+
+    def test_missing_layer_rejected(self, tmp_path):
+        with self._writer(tmp_path) as w:
+            w.add_layer("k", torch.randn(4, 8, dtype=torch.bfloat16))
+            with pytest.raises(ValueError, match="do not match expected"):
+                w.finalize()
+
+    def test_unexpected_layer_rejected(self, tmp_path):
+        with self._writer(tmp_path, expected_layers={"k"}) as w:
+            w.add_layer("k", torch.randn(4, 8, dtype=torch.bfloat16))
+            with pytest.raises(ValueError, match="not in expected_layers"):
+                w.add_layer("extra", torch.randn(4, 8, dtype=torch.bfloat16))
+
+    def test_abort_cleans_temp(self, tmp_path):
+        w = self._writer(tmp_path)
+        w.add_layer("k", torch.randn(4, 8, dtype=torch.bfloat16))
+        w.abort()
+        assert not w.final_path.exists()
+
+    def test_double_finalize_raises(self, tmp_path):
+        with self._writer(tmp_path) as w:
+            w.add_layer("k", torch.randn(4, 8, dtype=torch.bfloat16))
+            w.add_layer("v", torch.randn(4, 8, dtype=torch.bfloat16))
+            w.finalize()
+            with pytest.raises(RuntimeError, match="already finalized"):
+                w.finalize()
+
+    def test_load_corrupted_magic(self, tmp_path):
+        from adapter.storage.chunk_object import load_chunk_object
+        with self._writer(tmp_path) as w:
+            w.add_layer("k", torch.randn(4, 8, dtype=torch.bfloat16))
+            w.add_layer("v", torch.randn(4, 8, dtype=torch.bfloat16))
+            w.finalize()
+        data = w.final_path.read_bytes()
+        w.final_path.write_bytes(b"\x00" * 8 + data[8:])
+        with pytest.raises(ValueError, match="Bad magic"):
+            load_chunk_object(w.final_path, ["k", "v"], device="cpu")
+
+    def test_load_incomplete_rejected(self, tmp_path):
+        """Load of an incomplete (partial) chunk object should raise."""
+        from adapter.storage.chunk_object import (_HEADER_SIZE, _HEADER_MAGIC,
+                                                   _HEADER_VERSION)
+        buf = bytearray(_HEADER_SIZE)
+        struct.pack_into("<8s", buf, 0, _HEADER_MAGIC)
+        struct.pack_into("<H", buf, 8, _HEADER_VERSION)
+        struct.pack_into("<B", buf, 10, 0)  # complete = 0
+        p = tmp_path / "incomplete.cobj"
+        p.write_bytes(bytes(buf))
+        with pytest.raises(ValueError, match="incomplete"):
+            from adapter.storage.chunk_object import load_chunk_object
+            load_chunk_object(p, ["k"], device="cpu")
+
+    def test_add_layer_idempotent(self, tmp_path):
+        """Adding the same layer name twice should be a no-op."""
+        with self._writer(tmp_path) as w:
+            t1 = torch.randn(4, 8, dtype=torch.bfloat16)
+            w.add_layer("k", t1)
+            w.add_layer("k", torch.randn(4, 8, dtype=torch.bfloat16))
+            w.add_layer("v", torch.randn(4, 8, dtype=torch.bfloat16))
+            w.finalize()
+        from adapter.storage.chunk_object import load_chunk_object
+        _, tensors = load_chunk_object(
+            w.final_path, ["k"], device="cpu", backend=PosixBackend(),
+        )
+        assert torch.equal(tensors["k"], t1)
+
+
+    def _complete(self, writer):
+        writer.add_layer("k", torch.randn(4, 8, dtype=torch.bfloat16))
+        writer.add_layer("v", torch.randn(4, 8, dtype=torch.bfloat16))
+        return writer.finalize()
+
+    def test_abort_removes_temp_file_and_is_idempotent(self, tmp_path):
+        w = self._writer(tmp_path)
+        w.add_layer("k", torch.randn(4, 8, dtype=torch.bfloat16))
+        temp_path = w._tmp_path
+        assert temp_path is not None and temp_path.exists()
+
+        w.abort()
+        w.abort()
+
+        assert not temp_path.exists()
+        assert list(tmp_path.rglob("*.cobj.tmp")) == []
+        assert not w.final_path.exists()
+
+    def test_constructor_failure_cleans_temp_file(self, tmp_path, monkeypatch):
+        import builtins
+
+        real_open = builtins.open
+        opened = []
+
+        def failing_open(*args, **kwargs):
+            opened.append(args[0])
+            if str(args[0]).endswith(".cobj.tmp"):
+                raise OSError("open failed")
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", failing_open)
+        with pytest.raises(OSError, match="open failed"):
+            self._writer(tmp_path)
+
+        assert opened
+        assert list(tmp_path.rglob("*.cobj.tmp")) == []
+
+    def test_same_identity_reuses_existing_object_without_overwrite(self, tmp_path):
+        first = self._writer(tmp_path, namespace="ns", key="key", shard="s")
+        first_header = self._complete(first)
+        final_path = first.final_path
+        original = final_path.read_bytes()
+
+        second = self._writer(tmp_path, namespace="ns", key="key", shard="s")
+        second_header = self._complete(second)
+
+        assert second_header == first_header
+        assert final_path.read_bytes() == original
+        assert not second._tmp_path.exists()
+
+    def test_conflicting_identity_does_not_overwrite_existing_object(self, tmp_path):
+        first = self._writer(tmp_path, namespace="ns", key="key", shard="s")
+        self._complete(first)
+        final_path = first.final_path
+        original = final_path.read_bytes()
+
+        second = self._writer(
+            tmp_path,
+            namespace="ns",
+            key="key",
+            shard="s",
+            end=11,
+        )
+        second.add_layer("k", torch.randn(4, 8, dtype=torch.bfloat16))
+        second.add_layer("v", torch.randn(4, 8, dtype=torch.bfloat16))
+        with pytest.raises(ValueError, match="invalid or conflicts"):
+            second.finalize()
+
+        assert final_path.read_bytes() == original
+        assert not second._tmp_path.exists()
+
+    def test_existing_corrupt_object_is_not_overwritten(self, tmp_path):
+        first = self._writer(tmp_path, namespace="ns", key="key", shard="s")
+        self._complete(first)
+        final_path = first.final_path
+        final_path.write_bytes(b"corrupt")
+
+        second = self._writer(tmp_path, namespace="ns", key="key", shard="s")
+        second.add_layer("k", torch.randn(4, 8, dtype=torch.bfloat16))
+        second.add_layer("v", torch.randn(4, 8, dtype=torch.bfloat16))
+        with pytest.raises(ValueError, match="invalid or conflicts"):
+            second.finalize()
+
+        assert final_path.read_bytes() == b"corrupt"
+        assert not second._tmp_path.exists()
+
+    def test_file_exists_race_validates_competing_object(self, tmp_path, monkeypatch):
+        import adapter.storage.chunk_object as chunk_object
+
+        first = self._writer(tmp_path, namespace="ns", key="key", shard="s")
+        expected = self._complete(first)
+        second = self._writer(tmp_path, namespace="ns", key="key", shard="s")
+        second.add_layer("k", torch.randn(4, 8, dtype=torch.bfloat16))
+        second.add_layer("v", torch.randn(4, 8, dtype=torch.bfloat16))
+        real_link = chunk_object.os.link
+
+        def race_link(source, destination):
+            if not Path(destination).exists():
+                Path(destination).parent.mkdir(parents=True, exist_ok=True)
+                real_link(first.final_path, destination)
+            raise FileExistsError(destination)
+
+        monkeypatch.setattr(chunk_object.os, "link", race_link)
+        result = second.finalize()
+
+        assert result == expected
+        assert first.final_path.exists()
+        assert not second._tmp_path.exists()
+
+    def test_finalize_fsyncs_parent_directory(self, tmp_path, monkeypatch):
+        import adapter.storage.chunk_object as chunk_object
+
+        fsynced = []
+        monkeypatch.setattr(
+            chunk_object,
+            "_fsync_directory",
+            lambda path: fsynced.append(Path(path)),
+        )
+        writer = self._writer(tmp_path, namespace="ns", key="key", shard="s")
+        self._complete(writer)
+
+        assert fsynced == [writer.final_path.parent]
+
+# ═══════════════════════════════════════════════════════════════════
+# GDS positional I/O mock tests (no real driver needed)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestNvFileBackendPositionalIOMocked:
+    """NvFileBackend write_tensor_at / load_tensor_slices with mocked cufile."""
+
+    @pytest.fixture
+    def tmp_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            yield Path(d)
+
+    @pytest.fixture
+    def backend(self):
+        with _mock_nvfile_backend() as backend:
+            yield backend
+
+    def _prepare_file(self, tmp_path, size=262144):
+        p = tmp_path / "chunk.cobj"
+        p.write_bytes(b"\x00" * size)
+        return p
+
+    def test_gds_write_tensor_at(self, backend, tmp_path):
+        p = self._prepare_file(tmp_path)
+        tensor = torch.randn(4, 16, dtype=torch.bfloat16)
+        nbytes = tensor.nbytes
+        stored = (nbytes + 4095) // 4096 * 4096
+        backend.write_tensor_at(p, tensor, 65536, stored)
+        from adapter.storage.backend import TensorSliceSpec
+        specs = [TensorSliceSpec(65536, nbytes, stored, (4, 16), torch.bfloat16)]
+        loaded = backend.load_tensor_slices(p, specs, "cpu")
+        assert torch.equal(loaded[0], tensor)
+
+    def test_gds_load_tensor_slices_multiple(self, backend, tmp_path):
+        p = self._prepare_file(tmp_path, size=262144)
+        t1 = torch.randn(2, 8, dtype=torch.float32)
+        t2 = torch.randn(3, 12, dtype=torch.bfloat16)
+        stored1 = (t1.nbytes + 4095) // 4096 * 4096
+        stored2 = (t2.nbytes + 4095) // 4096 * 4096
+        off1, off2 = 65536, 65536 + stored1
+        backend.write_tensor_at(p, t1, off1, stored1)
+        backend.write_tensor_at(p, t2, off2, stored2)
+        from adapter.storage.backend import TensorSliceSpec
+        specs = [
+            TensorSliceSpec(off1, t1.nbytes, stored1, (2, 8), torch.float32),
+            TensorSliceSpec(off2, t2.nbytes, stored2, (3, 12), torch.bfloat16),
+        ]
+        loaded = backend.load_tensor_slices(p, specs, "cpu")
+        assert len(loaded) == 2
+        assert torch.equal(loaded[0], t1)
+        assert torch.equal(loaded[1], t2)
+
+    def test_gds_aligned_offset_check(self, backend, tmp_path):
+        """Non-aligned offset should raise."""
+        p = self._prepare_file(tmp_path)
+        tensor = torch.arange(4, dtype=torch.float32)
+        with pytest.raises(ValueError, match="aligned"):
+            backend.write_tensor_at(p, tensor, 100, 4096)
+
+    def test_gds_aligned_stored_nbytes_check(self, backend, tmp_path):
+        """Non-aligned stored_nbytes should raise."""
+        p = self._prepare_file(tmp_path)
+        tensor = torch.arange(4, dtype=torch.float32)
+        with pytest.raises(ValueError, match="aligned"):
+            backend.write_tensor_at(p, tensor, 65536, 100)

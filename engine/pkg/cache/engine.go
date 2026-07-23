@@ -6,7 +6,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -18,6 +20,7 @@ import (
 type diskEngine struct {
 	cfg  Config
 	meta *metadata.Store
+	v2   *metadata.Store // v2 chunk metadata store (same Pebble DB)
 	pol  eviction.Policy
 
 	mu sync.Mutex
@@ -42,6 +45,10 @@ type diskEngine struct {
 	chunkListHits     atomic.Int64
 	removeRequests    atomic.Int64
 	evictRequests     atomic.Int64
+	evictErrors       atomic.Int64
+
+	// v2 chunk state (protected by mu)
+	v2PolicyMap map[string]*v2EntryInfo
 }
 
 // New creates a new disk cache engine.
@@ -55,14 +62,25 @@ func New(cfg Config) (Engine, error) {
 	pol := eviction.NewLRU(maxBytes)
 
 	eng := &diskEngine{
-		cfg:  cfg,
-		meta: meta,
-		pol:  pol,
+		cfg:         cfg,
+		meta:        meta,
+		v2:          meta, // same Pebble DB, different key prefix (0x03)
+		pol:         pol,
+		v2PolicyMap: make(map[string]*v2EntryInfo),
 	}
 
-	// Rebuild eviction tracker from existing metadata
+	// Rebuild eviction tracker from existing metadata. A partial tracker can
+	// violate capacity accounting and leave v2 objects permanently orphaned, so
+	// reject startup and release Pebble's lock on any rebuild error.
 	if err := eng.rebuild(); err != nil {
-		log.Printf("warn: rebuild eviction: %v", err)
+		if closeErr := meta.Close(); closeErr != nil {
+			return nil, fmt.Errorf(
+				"rebuild eviction tracker: %w (close metadata: %v)",
+				err,
+				closeErr,
+			)
+		}
+		return nil, fmt.Errorf("rebuild eviction tracker: %w", err)
 	}
 
 	log.Printf("disk-cache engine ready: path=%s max=%d", cfg.CachePath, cfg.MaxSizeBytes)
@@ -70,18 +88,104 @@ func New(cfg Config) (Engine, error) {
 }
 
 func (e *diskEngine) rebuild() error {
-	return e.meta.IterateAll(func(m *metadata.BlockMeta) error {
+	// Rebuild v1 blocks
+	if err := e.meta.IterateAll(func(m *metadata.BlockMeta) error {
 		e.pol.Record(hexKey(m.Hash), m.Size)
 		return nil
+	}); err != nil {
+		return err
+	}
+
+	// Rebuild v2 chunks
+	return e.v2.IterateAllV2(func(m *metadata.ChunkObjectMeta) error {
+		pk := v2PolicyKey(m.Namespace, m.Key, m.Shard)
+		e.pol.Record(pk, m.Size)
+		e.v2PolicyMap[pk] = &v2EntryInfo{
+			namespace:   m.Namespace,
+			key:         m.Key,
+			shard:       m.Shard,
+			filePath:    m.FilePath,
+			size:        m.Size,
+			index:       m.Index,
+			startTokens: m.StartTokens,
+			endTokens:   m.EndTokens,
+		}
+		return nil
 	})
+}
+
+func rootedCachePath(root, relative string) (string, error) {
+	if relative == "" || filepath.IsAbs(relative) || strings.ContainsRune(relative, '\x00') {
+		return "", fmt.Errorf("file_path must be a non-empty relative path")
+	}
+	clean := filepath.Clean(relative)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("file_path escapes cache root")
+	}
+	if root == "" {
+		return clean, nil
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve cache root: %w", err)
+	}
+	candidate := filepath.Join(rootAbs, clean)
+	rel, err := filepath.Rel(rootAbs, candidate)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("file_path escapes cache root")
+	}
+	return candidate, nil
+}
+
+// lockedMakeRoom evicts the exact overflow required for an incoming write.
+// The caller must hold e.mu.
+func (e *diskEngine) lockedMakeRoom(additional int64) error {
+	if additional <= 0 {
+		return nil
+	}
+	if additional > e.cfg.MaxSizeBytes {
+		return fmt.Errorf("%w: incoming size %d exceeds cache capacity %d", ErrInvalidArgument, additional, e.cfg.MaxSizeBytes)
+	}
+	available := e.cfg.MaxSizeBytes - e.pol.TotalBytes()
+	if available >= additional {
+		return nil
+	}
+	e.lockedEvict(additional - available)
+	if e.cfg.MaxSizeBytes-e.pol.TotalBytes() < additional {
+		return fmt.Errorf("insufficient cache capacity after eviction")
+	}
+	return nil
 }
 
 // Put records a newly cached block.
 // Python calls this after writing the file.
 func (e *diskEngine) Put(hash uint64, filePath string, size int64) error {
 	e.putRequests.Add(1)
-	// Check space and evict if needed
-	e.evictIfNeeded(size)
+	if size <= 0 {
+		return fmt.Errorf("%w: non-positive size (%d)", ErrInvalidArgument, size)
+	}
+	if _, err := rootedCachePath(e.cfg.CachePath, filePath); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+	}
+	if size > e.cfg.MaxSizeBytes {
+		return fmt.Errorf("%w: object size %d exceeds cache capacity %d", ErrInvalidArgument, size, e.cfg.MaxSizeBytes)
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	oldSize := int64(0)
+	if existing, err := e.meta.Get(hash); err != nil {
+		return fmt.Errorf("get existing meta: %w", err)
+	} else if existing != nil {
+		oldSize = existing.Size
+	}
+	additional := size - oldSize
+	if additional > 0 {
+		if err := e.lockedMakeRoom(additional); err != nil {
+			return err
+		}
+	}
 
 	if err := e.meta.Put(&metadata.BlockMeta{
 		Hash:       hash,
@@ -100,6 +204,9 @@ func (e *diskEngine) Put(hash uint64, filePath string, size int64) error {
 
 func (e *diskEngine) Get(hash uint64) (*BlockMeta, error) {
 	e.getRequests.Add(1)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	m, err := e.meta.Get(hash)
 	if err != nil {
 		return nil, err
@@ -109,9 +216,13 @@ func (e *diskEngine) Get(hash uint64) (*BlockMeta, error) {
 		return nil, nil
 	}
 
-	// Update access time for LRU
+	// Update access time and the eviction policy while the same engine lock
+	// that protects Remove/Put/Evict is held. Otherwise a concurrent Remove can
+	// be followed by this write-back and resurrect the metadata entry.
 	m.AccessTime = now()
-	e.meta.Put(m)
+	if err := e.meta.Put(m); err != nil {
+		return nil, fmt.Errorf("update access time: %w", err)
+	}
 	e.pol.Record(hexKey(hash), m.Size)
 	e.blocksRetrieved.Add(1)
 	e.getHits.Add(1)
@@ -126,8 +237,11 @@ func (e *diskEngine) Get(hash uint64) (*BlockMeta, error) {
 }
 
 // Remove deletes a block from metadata and eviction tracker.
+// Remove deletes a block from metadata and eviction tracker.
 func (e *diskEngine) Remove(hash uint64) error {
 	e.removeRequests.Add(1)
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if err := e.meta.Delete(hash); err != nil {
 		return err
 	}
@@ -141,39 +255,82 @@ func (e *diskEngine) Exists(hash uint64) bool {
 	return err == nil && m != nil
 }
 
-// Evict returns blocks to delete to free targetBytes.
-func (e *diskEngine) Evict(targetBytes int64) []BlockMeta {
-	e.evictRequests.Add(1)
-	keys := e.pol.Evict(targetBytes)
-	var metas []BlockMeta
-	for _, k := range keys {
-		var hash uint64
-		fmt.Sscanf(k, "%016x", &hash)
-		if m, err := e.meta.Get(hash); err == nil && m != nil {
-			metas = append(metas, BlockMeta{
-				Hash:     m.Hash,
-				FilePath: filepath.Join(e.cfg.CachePath, m.FilePath),
-				Size:     m.Size,
-			})
-			e.meta.Delete(hash)
-			e.blocksEvicted.Add(1)
+// lockedEvict evicts entries to free targetBytes.
+// Must be called with e.mu held.
+// Deletes metadata AND physical files on disk.
+func (e *diskEngine) lockedEvict(targetBytes int64) []BlockMeta {
+	if targetBytes <= 0 {
+		return nil
+	}
+
+	keys := e.pol.Candidates(targetBytes)
+	metas := make([]BlockMeta, 0, len(keys))
+	for _, key := range keys {
+		if strings.HasPrefix(key, "v2:") {
+			meta, ok := e.lockedDeleteV2Entry(key)
+			if !ok {
+				continue
+			}
+			e.pol.Remove(key)
+			if err := os.Remove(meta.FilePath); err != nil && !os.IsNotExist(err) {
+				e.evictErrors.Add(1)
+				log.Printf("warn: remove evicted v2 file %s: %v", meta.FilePath, err)
+			}
+			metas = append(metas, meta)
+			continue
 		}
+
+		var hash uint64
+		if _, err := fmt.Sscanf(key, "%016x", &hash); err != nil {
+			e.evictErrors.Add(1)
+			continue
+		}
+		stored, err := e.meta.Get(hash)
+		if err != nil || stored == nil {
+			if err != nil {
+				e.evictErrors.Add(1)
+			}
+			continue
+		}
+		fullPath, err := rootedCachePath(e.cfg.CachePath, stored.FilePath)
+		if err != nil {
+			e.evictErrors.Add(1)
+			continue
+		}
+		if err := e.meta.Delete(hash); err != nil {
+			e.evictErrors.Add(1)
+			continue
+		}
+		e.pol.Remove(key)
+		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
+			e.evictErrors.Add(1)
+			log.Printf("warn: remove evicted v1 file %s: %v", fullPath, err)
+		}
+		metas = append(metas, BlockMeta{
+			Hash:     stored.Hash,
+			FilePath: fullPath,
+			Size:     stored.Size,
+		})
+		e.blocksEvicted.Add(1)
 	}
 	return metas
 }
 
-func (e *diskEngine) evictIfNeeded(needed int64) {
-	if e.pol.TotalBytes()+needed <= e.cfg.MaxSizeBytes {
-		return
-	}
-	e.Evict(needed)
+// Evict returns blocks to delete to free targetBytes.
+// Public method - takes the engine lock and deletes physical files.
+func (e *diskEngine) Evict(targetBytes int64) []BlockMeta {
+	e.evictRequests.Add(1)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.lockedEvict(targetBytes)
 }
 
 // Stats returns engine statistics.
 func (e *diskEngine) Stats() Stats {
 	blockEntries, _ := e.meta.Count()
 	sentinelEntries, _ := e.meta.CountSentinels()
-	chunkEntries, _ := e.meta.CountChunks()
+	chunkV1, _ := e.meta.CountChunks()
+	chunkV2, _ := e.meta.CountV2()
 
 	return Stats{
 		BlocksStored:      e.blocksStored.Load(),
@@ -182,7 +339,7 @@ func (e *diskEngine) Stats() Stats {
 		DiskUsedBytes:     e.pol.TotalBytes(),
 		BlockEntries:      int64(blockEntries),
 		SentinelEntries:   int64(sentinelEntries),
-		ChunkEntries:      int64(chunkEntries),
+		ChunkEntries:      int64(chunkV1 + chunkV2),
 		PutRequests:       e.putRequests.Load(),
 		GetRequests:       e.getRequests.Load(),
 		GetHits:           e.getHits.Load(),

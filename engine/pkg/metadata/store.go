@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/gob"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,6 +21,20 @@ import (
 type Store struct {
 	db *pebble.DB
 	mu sync.RWMutex
+}
+
+// dbGet converts Pebble's closed-database panic into an ordinary error at the
+// metadata boundary. Callers can then preserve their all-or-nothing behavior
+// instead of crashing a serving process during shutdown races.
+func (s *Store) dbGet(key []byte) (value []byte, closer io.Closer, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			value = nil
+			closer = nil
+			err = fmt.Errorf("pebble get: %v", recovered)
+		}
+	}()
+	return s.db.Get(key)
 }
 
 // BlockMeta stores metadata for a cached block on disk.
@@ -65,8 +82,8 @@ func (s *Store) Put(meta *BlockMeta) error {
 }
 
 func (s *Store) Get(hash uint64) (*BlockMeta, error) {
-	val, closer, err := s.db.Get(blockKey(hash))
-	if err == pebble.ErrNotFound {
+	val, closer, err := s.dbGet(blockKey(hash))
+	if errors.Is(err, pebble.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
@@ -140,7 +157,7 @@ func (s *Store) IterateAll(fn func(*BlockMeta) error) error {
 		}
 		var meta BlockMeta
 		if err := gob.NewDecoder(bytes.NewReader(iter.Value())).Decode(&meta); err != nil {
-			continue
+			return fmt.Errorf("decode block metadata at key %x: %w", iter.Key(), err)
 		}
 		if err := fn(&meta); err != nil {
 			return err
@@ -170,8 +187,8 @@ func (s *Store) RecordSentinel(promptHash string, numTokens int) error {
 
 // GetSentinel returns the cached token count for a prompt hash, if recorded.
 func (s *Store) GetSentinel(promptHash string) (int, bool) {
-	val, closer, err := s.db.Get(sentinelKey(promptHash))
-	if err == pebble.ErrNotFound {
+	val, closer, err := s.dbGet(sentinelKey(promptHash))
+	if errors.Is(err, pebble.ErrNotFound) {
 		return 0, false
 	}
 	if err != nil {

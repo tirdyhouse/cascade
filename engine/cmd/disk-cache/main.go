@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -90,6 +91,12 @@ func main() {
 	mux.HandleFunc("/chunk_list", handleChunkList)
 	mux.HandleFunc("/batch_load", handleBatchLoad)
 	mux.HandleFunc("/batch_retrieved", handleBatchRetrieved)
+
+	mux.HandleFunc("/v2/chunks/commit", handleV2CommitChunks)
+	mux.HandleFunc("/v2/chunks/match", handleV2MatchChunks)
+	mux.HandleFunc("/v2/chunks/resolve", handleV2ResolveChunks)
+	mux.HandleFunc("/v2/chunks/invalidate", handleV2InvalidateChunk)
+	mux.HandleFunc("/v2/chunks/retrieved", handleV2Retrieved)
 
 	if err := http.ListenAndServe(*listenAddr, mux); err != nil {
 		log.Fatalf("server error: %v", err)
@@ -244,6 +251,7 @@ type ChunkPutReq struct {
 	ChunkIndex int    `json:"chunk_index"`
 	NumTokens  int    `json:"num_tokens"`
 }
+
 // ── Batch API for reduced HTTP round-trips ──
 
 // BatchLoadReq requests chunk lists for multiple layers in one call.
@@ -306,8 +314,6 @@ func handleBatchRetrieved(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 }
 
-
-
 func handleChunkPut(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "POST required", 400)
@@ -343,4 +349,175 @@ func handleChunkList(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"chunks": indices,
 	})
+}
+
+// ── V2 chunk handlers ──
+
+func writeV2EngineError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	if errors.Is(err, cache.ErrInvalidArgument) {
+		status = http.StatusBadRequest
+	}
+	http.Error(w, err.Error(), status)
+}
+
+type V2CommitReq struct {
+	Objects []cache.ChunkObject `json:"objects"`
+}
+
+type V2MatchReq struct {
+	Namespace      string                 `json:"namespace"`
+	Candidates     []cache.ChunkCandidate `json:"candidates"`
+	RequiredShards []string               `json:"required_shards"`
+}
+
+type V2ResolveReq struct {
+	Namespace string   `json:"namespace"`
+	Keys      []string `json:"keys"`
+	Shard     string   `json:"shard"`
+}
+
+type V2RetrievedReq struct {
+	Count int64 `json:"count"`
+}
+
+func handleV2CommitChunks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", 400)
+		return
+	}
+	var req V2CommitReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if len(req.Objects) == 0 {
+		http.Error(w, "empty objects", 400)
+		return
+	}
+	for i, obj := range req.Objects {
+		if obj.Size <= 0 {
+			http.Error(w, fmt.Sprintf("objects[%d]: non-positive size (%d)", i, obj.Size), 400)
+			return
+		}
+	}
+	if err := eng.CommitChunks(req.Objects); err != nil {
+		writeV2EngineError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func handleV2MatchChunks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", 400)
+		return
+	}
+	var req V2MatchReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if req.Namespace == "" {
+		http.Error(w, "empty namespace", 400)
+		return
+	}
+	if len(req.Candidates) == 0 {
+		http.Error(w, "empty candidates", 400)
+		return
+	}
+	for i, c := range req.Candidates {
+		if c.EndTokens <= 0 {
+			http.Error(w, fmt.Sprintf("candidates[%d]: non-positive end_tokens (%d)", i, c.EndTokens), 400)
+			return
+		}
+	}
+	if len(req.RequiredShards) == 0 {
+		http.Error(w, "empty required_shards", 400)
+		return
+	}
+	result, err := eng.MatchChunks(req.Namespace, req.Candidates, req.RequiredShards)
+	if err != nil {
+		writeV2EngineError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func handleV2ResolveChunks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", 400)
+		return
+	}
+	var req V2ResolveReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if req.Namespace == "" {
+		http.Error(w, "empty namespace", 400)
+		return
+	}
+	if len(req.Keys) == 0 {
+		http.Error(w, "empty keys", 400)
+		return
+	}
+	if req.Shard == "" {
+		http.Error(w, "empty shard", 400)
+		return
+	}
+	result, err := eng.ResolveChunks(req.Namespace, req.Keys, req.Shard)
+	if err != nil {
+		writeV2EngineError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+type V2InvalidateReq struct {
+	Namespace string `json:"namespace"`
+	Key       string `json:"key"`
+	Shard     string `json:"shard"`
+}
+
+func handleV2InvalidateChunk(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusBadRequest)
+		return
+	}
+	var req V2InvalidateReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := eng.InvalidateChunk(req.Namespace, req.Key, req.Shard); err != nil {
+		writeV2EngineError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func handleV2Retrieved(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "POST required", 400)
+		return
+	}
+	var req V2RetrievedReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if req.Count < 0 {
+		http.Error(w, "negative count", 400)
+		return
+	}
+	eng.RecordRetrieved(req.Count)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }

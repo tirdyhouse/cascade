@@ -3,8 +3,12 @@
 package cache
 
 import (
+	"errors"
 	"time"
 )
+
+// ErrInvalidArgument marks client-supplied API input that failed validation.
+var ErrInvalidArgument = errors.New("invalid argument")
 
 // BlockMeta stores metadata for a cached block on disk.
 type BlockMeta struct {
@@ -53,6 +57,31 @@ type MatchResult struct {
 	PromptHash    string `json:"prompt_hash"`
 }
 
+// ChunkCandidate represents a candidate chunk for v2 matching (ordered by EndTokens).
+type ChunkCandidate struct {
+	Key       string `json:"key"`
+	EndTokens int    `json:"end_tokens"`
+}
+
+// ChunkObject represents a committed v2 chunk object.
+type ChunkObject struct {
+	Namespace   string `json:"namespace"`
+	Key         string `json:"key"`
+	Shard       string `json:"shard"`
+	FilePath    string `json:"file_path"`
+	Index       int    `json:"index"`
+	StartTokens int    `json:"start_tokens"`
+	EndTokens   int    `json:"end_tokens"`
+	Size        int64  `json:"size"`
+}
+
+// ChunkMatchResult is the result of a v2 chunk match query.
+type ChunkMatchResult struct {
+	MatchedChunks int      `json:"matched_chunks"`
+	MatchedTokens int      `json:"matched_tokens"`
+	MatchedKeys   []string `json:"matched_keys"`
+}
+
 // Engine is the metadata + eviction engine.
 // Python calls these after/before file I/O.
 type Engine interface {
@@ -69,6 +98,12 @@ type Engine interface {
 	ListChunks(prefixKey, layerName string) ([]int, error)
 	RecordRetrieved(count int64)
 	Close() error
+
+	// V2 chunk API
+	CommitChunks(objects []ChunkObject) error
+	MatchChunks(namespace string, candidates []ChunkCandidate, requiredShards []string) (ChunkMatchResult, error)
+	ResolveChunks(namespace string, keys []string, shard string) ([]ChunkObject, error)
+	InvalidateChunk(namespace, key, shard string) error
 }
 
 // Config holds engine configuration.

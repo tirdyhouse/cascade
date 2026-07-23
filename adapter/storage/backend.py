@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import torch
 
@@ -50,6 +51,28 @@ def _unpack_header(blob: bytes) -> dict:
     return json.loads(payload)
 
 
+# ── Tensor-slice descriptor ─────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class TensorSliceSpec:
+    """Describes a contiguous byte slice within a file.
+
+    Attributes:
+        offset:        Byte offset from the start of the file.
+        nbytes:        Logical (uncompressed) tensor size in bytes.
+        stored_nbytes: Number of bytes physically stored on disk
+                       (may be larger than *nbytes* due to alignment).
+        shape:         Logical tensor shape.
+        dtype:         Logical tensor data type.
+    """
+    offset: int
+    nbytes: int
+    stored_nbytes: int
+    shape: tuple[int, ...]
+    dtype: torch.dtype
+
+
 # ── Abstract base ──────────────────────────────────────────────────
 
 
@@ -79,6 +102,53 @@ class StorageBackend(ABC):
     @abstractmethod
     def is_available(self) -> bool:
         """Return ``True`` when this backend can be used right now."""
+
+    # ── Positional I/O (chunk-object support) ──────────────────────
+
+    @abstractmethod
+    def write_tensor_at(
+        self,
+        path: Path,
+        tensor: torch.Tensor,
+        offset: int,
+        stored_nbytes: int,
+    ) -> None:
+        """Write *tensor* bytes at the given *offset* in *path*.
+
+        ``stored_nbytes`` specifies the on-disk padded size (≥ tensor
+        logical size).  The tensor is made contiguous before writing.
+        The file **must** already exist and be large enough.
+
+        Raises
+        ------
+        RuntimeError
+            If the actual number of bytes written does not match
+            *stored_nbytes*.
+        """
+
+    @abstractmethod
+    def load_tensor_slices(
+        self,
+        path: Path,
+        specs: List[TensorSliceSpec],
+        device: str,
+    ) -> List[torch.Tensor]:
+        """Load multiple tensor slices from *path* in a single pass.
+
+        Parameters
+        ----------
+        path:
+            Path to the file.
+        specs:
+            Ordered list of slice descriptors.
+        device:
+            Target device (``"cpu"`` or ``"cuda"``).
+
+        Returns
+        -------
+        list[torch.Tensor]
+            Tensors in the same order as *specs*.
+        """
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}()"

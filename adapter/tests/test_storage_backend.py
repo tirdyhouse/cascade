@@ -178,6 +178,81 @@ class TestPosixBackendWithGPU:
         backend.save(path, tensor)
         assert torch.equal(tensor, original)
 
+    def test_load_positional_slices_to_gpu(self, backend, tmp_path):
+        """Coalesced positional reads round-trip through the pinned H2D path."""
+        from adapter.storage.backend import TensorSliceSpec
+
+        path = tmp_path / "positional.cobj"
+        path.write_bytes(b"\x00" * 262144)
+        tensors = [
+            torch.randn(4, 16, dtype=torch.float16, device="cuda"),
+            torch.randn(2, 8, dtype=torch.bfloat16, device="cuda"),
+        ]
+        stored = [
+            (tensor.nbytes + 4095) // 4096 * 4096 for tensor in tensors
+        ]
+        offsets = [65536, 65536 + stored[0]]
+        specs = []
+        for tensor, offset, stored_nbytes in zip(tensors, offsets, stored):
+            backend.write_tensor_at(path, tensor, offset, stored_nbytes)
+            specs.append(TensorSliceSpec(
+                offset=offset,
+                nbytes=tensor.nbytes,
+                stored_nbytes=stored_nbytes,
+                shape=tuple(tensor.shape),
+                dtype=tensor.dtype,
+            ))
+
+        loaded = backend.load_tensor_slices(path, specs, "cuda:0")
+
+        assert all(tensor.is_cuda for tensor in loaded)
+        assert all(
+            torch.equal(actual.cpu(), expected.cpu())
+            for actual, expected in zip(loaded, tensors)
+        )
+
+    def test_pinned_cpu_prefetch_keeps_coalesced_h2d_copy(
+        self, backend, tmp_path
+    ):
+        """Read-ahead CPU views move back as one backing-buffer group."""
+        from adapter.storage.backend import TensorSliceSpec
+
+        path = tmp_path / "prefetch.cobj"
+        path.write_bytes(b"\x00" * 262144)
+        tensors = [
+            torch.randn(4, 16, dtype=torch.float16, device="cuda"),
+            torch.randn(2, 8, dtype=torch.bfloat16, device="cuda"),
+        ]
+        stored = [
+            (tensor.nbytes + 4095) // 4096 * 4096 for tensor in tensors
+        ]
+        offsets = [65536, 65536 + stored[0]]
+        specs = []
+        for tensor, offset, stored_nbytes in zip(tensors, offsets, stored):
+            backend.write_tensor_at(path, tensor, offset, stored_nbytes)
+            specs.append(TensorSliceSpec(
+                offset=offset,
+                nbytes=tensor.nbytes,
+                stored_nbytes=stored_nbytes,
+                shape=tuple(tensor.shape),
+                dtype=tensor.dtype,
+            ))
+
+        host_loaded = backend.load_tensor_slices_to_pinned_cpu(path, specs)
+        loaded = backend.move_pinned_tensor_slices_to_device(
+            host_loaded, "cuda:0"
+        )
+
+        assert all(tensor.is_pinned() for tensor in host_loaded)
+        assert len({
+            tensor.untyped_storage().data_ptr() for tensor in host_loaded
+        }) == 1
+        assert all(tensor.is_cuda for tensor in loaded)
+        assert all(
+            torch.equal(actual.cpu(), expected.cpu())
+            for actual, expected in zip(loaded, tensors)
+        )
+
 
 
 @contextlib.contextmanager

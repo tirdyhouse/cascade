@@ -1,0 +1,17 @@
+# Comparable no-GDS LMCache configuration for disk-cache benchmarks.
+# The test runner may override local_disk with LMCACHE_LOCAL_DISK so that
+# every run uses a fresh cache directory.
+chunk_size: 256
+# LMCache's LocalDiskBackend requires this pinned host pool as its I/O staging
+# buffer.  It is excluded from the cache lookup/store locations below, so a
+# benchmark query is still served from disk rather than CPU RAM.
+local_cpu: true
+max_local_cpu_size: 0.25
+local_disk: "file:///mnt/nvfile/lmcache-local-disk"
+max_local_disk_size: 30.0
+store_location: "LocalDiskBackend"
+retrieve_locations:
+  - "LocalDiskBackend"
+# LMCache 0.4.x selects GDS only when this path is configured.
+gds_path:
+save_unfull_chunk: true

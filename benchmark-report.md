@@ -1,267 +1,180 @@
-# Cascade Benchmark 测试报告
+# Cascade 与 LMCache 最终对比报告
 
-> 测试日期：2026-07-22
-> 测试环境：Tesla T4 (16GB)；历史记录称 nvfile/GDS，后续检查显示该路径实际位于 `/dev/sda3` XFS 且 cuFile 为 compatibility mode
+> 测试日期：2026-07-25
+> 当前结论：Cascade 已在内存层追到 LMCache 的约 1ms 范围内，并在 cuFile
+> compatibility 与纯 POSIX 文件两组中反超 LMCache。
 
----
-
-## 测试环境
+## 1. 测试口径
 
 | 项目 | 配置 |
-|------|------|
-| GPU | NVIDIA Tesla T4 (16GB) |
-| 存储 | `/mnt/nvfile` 路径；后续实测为 `/dev/sda3` XFS |
+|---|---|
+| GPU | NVIDIA Tesla T4 15,360 MiB |
+| Driver / CUDA | 595.71.05 / CUDA 13.2 |
+| GDS 组件 | `nvidia_fs 2.28`，GDS release 1.17.1.22 |
+| 存储 | `/mnt/nvfile`，`nvfile` 文件系统 |
 | 模型 | Qwen2.5-7B-Instruct-AWQ |
 | vLLM | 0.25.1 |
-| LMCache | 0.4.3 |
-| Go Engine | Cascade disk-cache (Pebble on nvfile) |
+| LMCache | 0.4.3 系列，当前测试环境安装版本 |
+| 文档 | 10 份互异 prompt，每份 API 实测 4,088 tokens |
+| 输出 | 10 tokens |
+| 并发 | 1，串行 |
+| Cache chunk | 256 tokens，每份 prompt 16 chunks |
+| vLLM prefix cache | 关闭 |
+| CUDA graph | 强制/保持 PIECEWISE，确保 connector 真正执行 KV 恢复 |
 
-### 存储路径
+每组均先写入 10 份缓存，再查询相同的 10 份 prompt。TTFT 是客户端 streaming
+API 从发请求到收到首 token 的端到端时间。输出 hash 不一致单独统计，但不会从
+TTFT 样本中剔除。
 
-| 组件 | 路径 | 说明 |
-|------|------|------|
-| Cascade KV 缓存 | `/mnt/nvfile/test-1/cascade-gds/` | 历史 GDS 配置；direct-GDS 前置条件未留证 |
-| Cascade 元数据 | `/mnt/nvfile/test-1/cascade-meta/` | Pebble 数据库 |
-| LMCache GDS 缓存 | `/mnt/nvfile/cache/` | 历史 GDS 配置；direct-GDS 前置条件未留证 |
+逻辑命中统一按完整的 4,088 tokens 计算。vLLM 为生成首 token logits，需要让最后
+一个 prompt token 再经过前向，因此调度器要求物理注入 4,087 tokens；Cascade 和
+LMCache 使用同一口径，没有人为少匹配一个 token。
 
----
+## 2. 六组有效成绩
 
-## 测试参数
+| 存储层 | 方案 | Mean TTFT | P50 | P95 | Min–Max | 请求/Token 命中 | 输出 hash |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 内存 | **LMCache LocalCPU** | **63.706ms** | **60.997ms** | 76.311ms | 60.305–88.483ms | 10/10；40,880/40,880 | 9/10 |
+| 内存 | **Cascade 4GiB pinned host tier** | 65.089ms | 61.991ms | 78.727ms | 61.200–91.489ms | 10/10；40,880/40,880；160/160 chunks | **10/10** |
+| cuFile compatibility | **Cascade NvFile，6 workers** | **76.740ms** | **72.917ms** | 95.669ms | 71.337–113.516ms | 10/10；40,880/40,880；160/160 chunks | **10/10** |
+| cuFile compatibility | LMCache GdsBackend | 89.157ms | 83.167ms | 117.289ms | 81.350–143.471ms | 10/10；40,880/40,880 | 9/10 |
+| POSIX 文件 | **Cascade，4 workers + 256MiB pinned staging** | **89.417ms** | **82.122ms** | 121.985ms | 78.074–149.930ms | 10/10；40,880/40,880；160/160 chunks | **10/10** |
+| POSIX 文件 | LMCache LocalDisk | 150.181ms | 146.986ms | 164.953ms | 146.124–176.650ms | 10/10；40,880/40,880 | **10/10** |
 
-| 参数 | 值 |
-|------|-----|
-| 文档数量 | 10 |
-| 文档长度 | ~2760 tokens (4096 字符目标) |
-| 生成长度 | 10 tokens |
-| 并发数 | 1 (串行) |
-| 重复模式 | tile (相同文档重复1次) |
+同层横向差异：
 
----
+| 对比 | Mean 差异 | P50 差异 | 结论 |
+|---|---:|---:|---|
+| Cascade host tier vs LMCache LocalCPU | +1.382ms（+2.17%） | +0.994ms（+1.63%） | 基本追平，稳定差距约 1ms |
+| Cascade cuFile vs LMCache GdsBackend | **-12.417ms（-13.93%）** | **-10.250ms（-12.32%）** | Cascade 反超 |
+| Cascade POSIX vs LMCache LocalDisk | **-60.764ms（-40.46%）** | **-64.864ms（-44.13%）** | Cascade 明显反超 |
 
-## 测试结果
+LMCache CPU/GDS 的第 5 份文档发生近似数值输出分叉，因此输出 hash 为 9/10；该
+样本的 TTFT 仍完整计入 Mean/P50/P95。它不是 cache miss，也不是文件损坏。
 
-> **口径校正（2026-07-23）**：以下数字保留为历史结果。当时只确认配置和 `NvFileBackend` 路径，没有保存 `nvidia_fs`、`gdscheck` 与实际挂载证据；当前同机检查为 cuFile compatibility mode。因此下文“GDS”应理解为历史 cuFile/NvFile 路径，不是已证明的 direct GDS。
+## 3. 为什么以前 LMCache 是约 46–50ms
 
-### GDS 版本对比（严格测试，全新状态）
+该成绩不能作为有效恢复结果。FULL CUDA graph 下，LMCache 的非 layerwise 路径在
+`start_load_kv` 收到 `attn_metadata=None`，日志虽然显示逻辑命中 4,088 tokens，
+却没有任何对应的 `Retrieved ...` 记录，KV payload 实际未注入。
 
-| 指标 | Cascade GDS | LMCache GDS |
-|------|:----------:|:----------:|
-| **Warmup TTFT** | 8.041s | 8.257s |
-| **Query TTFT** | 0.389s | **0.092s** |
-| **Query 总耗时** | 6.598s | 3.618s |
-| **加速比** | 20.7x | 89.8x |
-| **命中率** | 90% | - |
+有效复测强制 PIECEWISE 后，每次请求均出现：
 
-**分析**：
-- Warmup（冷启动）两者相当，约 8 秒
-- Query（缓存命中）LMCache 快 4.2 倍
-- LMCache 优势：直接从 GDS 加载到 GPU，路径更短
-- Cascade 瓶颈：Go 引擎 HTTP 调用开销
-
-### POSIX 版本测试
-
-| 指标 | Cascade POSIX |
-|------|:----------:|
-| **Warmup TTFT** | 8.105s |
-| **Query TTFT** | 0.390s |
-| **Query 总耗时** | 6.621s |
-| **加速比** | 20.8x |
-| **命中率** | 96% |
-
-### LMCache CPU RAM 版本（同参数验证）
-
-| 指标 | LMCache CPU RAM |
-|------|:----------:|
-| **Warmup TTFT** | 8.178s |
-| **Query TTFT** | **0.093s** |
-
-注：使用相同参数（10文档×4K tokens）验证，LMCache CPU RAM 与 GDS 性能一致（93ms vs 92ms）。
-
----
-
-## 完整对比表
-
-| 方案 | Warmup TTFT | Query TTFT | 加速比 | 命中率 | 说明 |
-|------|:----------:|:----------:|:------:|:------:|------|
-| **Cascade GDS** | 8.041s | 0.389s | 20.7x | 90% | GPU 直接读写 nvfile |
-| **Cascade POSIX** | 8.105s | 0.390s | 20.8x | 96% | CPU 绕路读写 nvfile |
-| **LMCache GDS** | 8.257s | **0.092s** | 89.8x | - | GPU 直接读写 nvfile |
-| **LMCache CPU RAM** | 8.178s | **0.093s** | 88.0x | - | CPU 内存缓存 |
-
-注：LMCache CPU RAM 使用相同参数（10文档×4K tokens）验证，与 GDS 性能一致。
-
----
-
-## 关键发现
-
-### 1. Block-level Hashing 修复
-
-**问题**：早期 `prefix_key` 只 hash 前 16 个 token，导致 chat template 使所有请求共享同一 key，chunks 互相覆盖。
-
-**修复**：改用 block-level cumulative hashing，每个 block 使用 `hash(tokens[0:block_end])` 作为存储 key。
-
-**效果**：命中率从 47% 提升到 90-96%。
-
-### 2. 必须禁用 vLLM 内置 Prefix Caching
-
-使用 `--no-enable-prefix-caching` 启动 vLLM，否则 vLLM 的内置缓存会绕过 Cascade 的 match 接口，导致 `External prefix cache hit rate: 0%`。
-
-### 3. GDS vs POSIX
-
-- GDS 和 POSIX 的 Query TTFT 基本相同（0.389s vs 0.390s）
-- 瓶颈不在 I/O，而在 Go 引擎 HTTP 调用和文件路径解析
-- GDS 优势主要体现在大文件顺序读写场景
-
-### 4. Cascade vs LMCache 差距分析
-
-LMCache Query TTFT (~0.093s) 比 Cascade (~0.389s) 快 **4.2 倍**，原因：
-
-| 因素 | LMCache | Cascade |
-|------|---------|---------|
-| 数据路径 | GPU 直接加载 | Go 引擎 → 文件系统 → Python → GPU |
-| 元数据查询 | 内存 hash 表 | Pebble + HTTP API |
-| 语言开销 | Python + C++ (进程内) | Go + HTTP + Python (跨进程) |
-
-**关键洞察**：LMCache 无论 CPU RAM 还是 GDS 都是 ~93ms，说明瓶颈不在 I/O，而在 Cascade 的 Go 引擎 HTTP 调用开销。
-
----
-
-## 优化建议
-
-1. **减少 Go 引擎 HTTP 开销**：考虑 gRPC 或 Unix Socket 替代 HTTP
-2. **Pebble 查询优化**：预热缓存、批量查询
-3. **并行加载**：多层 KV 并行加载而非串行
-4. **内存元数据缓存**：在 connector 端缓存热门 prefix 的匹配结果
-
----
-
-## 测试脚本
-
-### 启动 Cascade GDS
-
-```bash
-# 启动 Go 引擎（Pebble 在 nvfile 上）
-/opt/cascade/disk-cache \
-  -listen :9100 \
-  -cache-path /mnt/nvfile/test-1/cascade-storage \
-  -metadata-path /mnt/nvfile/test-1/cascade-meta \
-  -max-size 50GB
-
-# 启动 vLLM + Cascade
-vllm serve /mnt/data/Qwen2.5-7B-Instruct-AWQ \
-  --served-model-name qwen25-7b \
-  --host 0.0.0.0 --port 8000 \
-  --tensor-parallel-size 1 \
-  --max-model-len 16384 \
-  --gpu-memory-utilization 0.90 \
-  --no-enable-prefix-caching \
-  --kv-transfer-config '{
-    "kv_connector": "DiskCacheConnector",
-    "kv_role": "kv_both",
-    "kv_connector_module_path": "adapter.vllm.connector",
-    "kv_connector_extra_config": {
-      "disk_cache_path": "/mnt/nvfile/test-1/cascade-gds",
-      "disk_cache_engine_addr": "http://localhost:9100",
-      "target_device": "auto",
-      "disk_cache_chunk_size_tokens": 256,
-      "storage_backend": "gds"
-    }
-  }'
+```text
+LMCache hit tokens: 4088, need to load: 4087
+Retrieved 4088 out of 4088 required tokens
 ```
 
-### 启动 LMCache GDS
+因此 LMCache LocalCPU 的有效 Mean 是 63.706ms，而不是约 46–50ms。无恢复的
+FULL-graph 数字只能作为“首 token 固定开销”的诊断值，不能列入六组排名。
 
-```bash
-export LMCACHE_CONFIG_FILE=/mnt/data/vllmtest/configs/gds-config.yaml
+## 4. GDS 状态说明
 
-vllm serve /mnt/data/Qwen2.5-7B-Instruct-AWQ \
-  --served-model-name qwen25-7b \
-  --host 0.0.0.0 --port 8000 \
-  --tensor-parallel-size 1 \
-  --max-model-len 16384 \
-  --gpu-memory-utilization 0.85 \
-  --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1", "kv_role":"kv_both"}'
+本机已经安装并加载 `nvidia_fs 2.28`，平台检查也通过；但 `gdscheck.py -p` 明确显示：
+
+```text
+properties.use_compat_mode : true
+NVMe / NVMeOF / SCSI / NFS / BeeGFS ... : compat
 ```
 
-### 运行 Benchmark
+所以表里的两组 GDS 都应称为 **cuFile compatibility path**，不能宣传为已经验证的
+GPU Direct Storage 直通路径。Cascade 的 192MiB GPU staging pool 确实完成了
+`cuFileBufRegister`，但底层 nvfile 文件系统仍由 cuFile compatibility mode 处理。
+供应商修复文件系统识别/直通后，需要原样再跑一次六组脚本；当前结果可以比较两套
+软件在同一兼容环境中的效率，但不能外推 direct-GDS 的绝对性能。
 
-本报告中的 `128.258ms` Cascade 结果属于 **T4 单请求 TTFT 诊断口径**，参数如下：
+T4 的 BAR1 只有 256MiB。实测 192MiB 注册稳定，224MiB 注册失败；最终采用 6 个
+I/O workers、192MiB pool、13 个注册 slot。4 workers 暴露约 26–30ms I/O wait，
+8 workers 则超过全注册双缓冲深度并产生临时未注册 buffer；6 workers 是当前机器的
+最佳稳定点。
 
-```bash
-python3 LMCache/benchmarks/long_doc_qa/long_doc_qa.py \
-  --model qwen25-7b \
-  --host 127.0.0.1 --port 8000 \
-  --num-documents 10 \
-  --document-length 4096 \
-  --output-len 10 \
-  --repeat-count 1 \
-  --repeat-mode tile \
-  --max-inflight-requests 1 \
-  --sleep-time-after-warmup 1 \
-  --json-output
-```
+## 5. Cascade 本轮完成的优化
 
-它同时缩小了文档数、文档长度、输出长度和并发，不能代表官方长文档压力口径。正式 GDS/POSIX/LMCache A/B 应使用 `lmcache bench engine` 的共享、模型归一化 `bench_config.json`；`46 × 10000 × output 100 × inflight 4` 仅保留为历史固定压力配置，对当前模型约对应 26.5GB KV，而不是 10GB。
+1. **跨 28 层 compiled paged-KV scatter**
+   原路径是 16 chunks × 28 layers，即 448 次 Python/paged-KV 注入。现在每个
+   chunk 一次 all-layer CUDA kernel，共 16 次 launch。GDS profile 的注入调度从
+   约 21ms 降到约 3.2ms。
 
----
+2. **修复异步 source-pointer 表生命周期**
+   每个在途指针表使用独立 pinned host tensor，并在 CUDA Event 完成后才释放，避免
+   CPU 提前覆盖同一 224B 指针表。修复前速度快但输出 0/10 正确；修复后 10/10 正确。
 
-## GDS 合并读取验证（2026-07-23）
+3. **完整 host-cache 快路径**
+   16/16 对象都命中 pinned LRU 时，不再为每个请求创建 `ThreadPoolExecutor` 和 16 个
+   Future；直接读取 LRU 并完成 H2D/scatter。
 
-> 当前测试机缺少 `nvidia_fs`，`gdscheck.py -p` 显示 `properties.use_compat_mode : true`，且 `/mnt/nvfile` 实际位于 `/dev/sda3` XFS。因此以下结果是 **NvFile/cuFile compatibility-mode**，不是 direct GDS。
+4. **match + resolve 融合**
+   `/v2/chunks/match` 可同时返回 `matched_objects`，热路径不再追加一次 `/resolve`
+   HTTP。旧引擎未返回对象时仍自动回退，协议保持兼容。
 
-### Storage 层微基准
+5. **异步 retrieval 统计**
+   `/v2/chunks/retrieved` 由一个持久 daemon reporter 合并上报，不再阻塞 TTFT，也不
+   再为每个请求新建线程。
 
-28 个连续 layer slices、14,680,064 bytes payload，20 样本：
+6. **GDS read-ahead + 注册 staging pool**
+   cuFile worker 只负责把数据读到固定 GPU slot；vLLM 执行线程负责校验和注入。最终
+   选用 6 workers / 192MiB / 13 slots。
 
-| 实现 | cuFile reads/chunk | Mean | Median | Min–Max |
-|------|-------------------:|-----:|-------:|--------:|
-| 旧版逐层读取 | 28 | 3.281ms | 3.227ms | 3.210–4.103ms |
-| 新版合并读取 | 1 | 1.726ms | 1.718ms | 1.690–1.876ms |
+7. **POSIX read-ahead + 启动期 pinned staging 预热**
+   4 个 CPU workers 合并读取每个 `.cobj`，一次 H2D 搬运完整 object。启动时预热
+   256MiB caching pinned allocator（18 个 object-sized blocks），避免首个查询承担
+   OS page pinning。10 文档 Mean 从 96.554ms 降到 89.417ms，P50 从 86.560ms
+   降到 82.122ms。
 
-median speedup 为 `1.878×`，新旧 28 层 tensor 逐字节一致。
+8. **verified path/layout LRU**
+   已验证 immutable object path 与 64KiB header/layout 进入有界 LRU；失效时同步
+   删除，避免远端文件系统上反复 `Path.resolve()` 和 header 解析。
 
-### 4K 单请求 TTFT 诊断
+9. **基准正确性修复**
+   输出 hash 不一致不再从 TTFT 中剔除；独立报告 `matching_outputs`。Runner 还会在
+   `CASCADE_COMPILED_TRANSFER=1` 时强制核对日志中的 `compiled_transfer=True`，防止
+   CUDA 扩展构建失败后静默拿 Python fallback 成绩。
 
-同一 `10 documents × 4096 tokens × output 10 × tile × inflight 1` 口径：
+## 6. 剩余差距在哪里
 
-| 后端 | 样本 | Mean TTFT |
-|------|-----:|----------:|
-| Cascade POSIX 合并读取 | 20 | 128.258ms |
-| Cascade GDS compatibility-mode run 1 | 10 | 104.295ms |
-| Cascade GDS compatibility-mode run 2 | 10 | 99.318ms |
-| **GDS compatibility-mode aggregate** | **20** | **101.807ms** |
+内存组已不存在结构性的几十毫秒差距。Cascade host profile 的稳态恢复为：
 
-GDS compatibility-mode 在该诊断口径下比 POSIX 快约 `26.451ms / 20.6%`。所有 query 成功，内置 prefix cache 关闭，run 2 engine 增量为 `MatchHits +25`、`MatchedTokens +87650`、`ChunksRetrieved +365`、`ChunksStored +0`。
+| 阶段 | 稳态耗时 |
+|---|---:|
+| fused resolve | 0.000–0.001ms |
+| setup/layout | 约 0.11ms |
+| Python/H2D/kernel dispatch | 约 3.6ms |
+| GPU 完成 H2D + scatter | 约 16.5ms |
+| 恢复总计 | 约 20.7ms |
 
-### LMCache 官方 `bench engine` 方法
+单请求需要搬运约 223.56MiB KV；T4 上约 16.5ms 已接近 PCIe H2D 带宽下限。
+LMCache LocalCPU 日志中的内部 retrieve 为约 18.27–18.48ms。两者端到端 P50 只差
+0.994ms，主要是 Cascade 的 Go match/协议对象构造和少量 Python 校验，不再是
+448 次 layer 注入或 token 命中率问题。
 
-正式配置使用 `10GB / 10000 tokens / 1 query per document / tile / inflight 4`。`tokens_per_gb_kvcache` 必须按当前模型测量；Qwen3-8B 官方教程中的 `46020` 不能直接用于 Qwen2.5-7B-AWQ。当前 256-token 完整 chunk 实测为 14,745,600 bytes，对应约 `17,361 tokens/GB`，因此派生 17 个文档。
+文件组中 Cascade 已经领先。当前更值得做的下一阶段工作是：
 
-正式 GDS compatibility-mode run：
+- 将 CUDA extension 作为预编译构件发布，消除生产环境 JIT/GCC 依赖；
+- direct-GDS 可用后重新调 staging 大小、worker 数和 cuFile async/batch API；
+- 做并发、多请求、不同 prompt 长度和冷文件页缓存压力测试；
+- 若还要压低内存组最后约 1ms，需要设计带失效版本的进程内 match cache，不能用
+  不安全的永久缓存绕过 Go 权威元数据；
+- layerwise I/O/模型计算重叠可作为长上下文方案，但必须继续核验真实恢复，不能再次
+  出现 FULL graph“逻辑命中但未注入”的假快结果。
 
-- 17/17 请求成功，0 失败；工作集实际占用 9,865,150,464 bytes。
-- Mean TTFT `1367.082ms`，p50 `958.639ms`，p90 `2523.867ms`，p99 `2524.856ms`。
-- Engine 增量：`MatchRequests +34`、`MatchHits +17`、`MatchedTokens +169728`、`ChunksStored +697`、`ChunksRetrieved +663`。
-- 该 run 证明 GDS 路线可在官方压力方法下正确工作；由于本轮未重跑同配置 POSIX/LMCache，不能用它单独得出正式后端性能排名。
+## 7. 原始结果
 
-结果保存在远端 `/mnt/data/vllmtest/cascade-gds-coalesced/results/`。
+| 结果 | 远端目录 |
+|---|---|
+| Cascade host tier，10 docs | `/mnt/data/vllmtest/gds-retest-results/cascade-final-hostcpu-10doc-20260725/` |
+| Cascade cuFile，10 docs | `/mnt/data/vllmtest/gds-retest-results/cascade-final-gds-w6-10doc-20260725/` |
+| Cascade POSIX，10 docs | `/mnt/data/vllmtest/gds-retest-results/cascade-final-posix-pinnedwarm-10doc-20260725/` |
+| LMCache LocalCPU 有效 PIECEWISE | `/mnt/data/vllmtest/gds-retest-results/lmcache-piecewise-valid-20260725-1457/` |
+| LMCache LocalDisk 有效 PIECEWISE | `/mnt/data/vllmtest/gds-retest-results/lmcache-localdisk-piecewise-20260725-1450/` |
+| LMCache cuFile 有效 PIECEWISE | `/mnt/data/vllmtest/gds-retest-results/lmcache-gds-unregistered-valid-20260725-1520/` |
+| Cascade GDS 4/6/7/8-worker profiles | `/mnt/data/vllmtest/gds-retest-results/cascade-gds-*-profile-3doc-20260725/` |
 
----
+统一 runner：`scripts/run_remote_gds_retest.sh`。单组可通过 `MODE_FILTER` 选择，
+诊断 breakdown 使用 `CASCADE_LOAD_PROFILE=1`；正式成绩必须保持 profile 关闭。
 
-## 附录：Go Engine 统计数据
+## 8. 验证
 
-### Cascade GDS 测试结束时
-
-```json
-{
-  "BlocksStored": 700,
-  "BlocksRetrieved": 672,
-  "MatchRequests": 25,
-  "MatchHits": 24,
-  "MatchedTokens": 41344,
-  "SentinelEntries": 2876,
-  "ChunksRetrieved": 672
-}
-```
-
-**命中率**: 24/25 = 96%
+- Python：174 passed，7 skipped；
+- Go：`go test ./engine/pkg/cache ./engine/cmd/disk-cache` 通过；
+- `black`、`bash -n`、`git diff --check` 通过；
+- 三个 Cascade 最终组均为 10/10 输出一致、10/10 请求命中、160/160 chunks 恢复。

@@ -19,7 +19,9 @@ class DiskCacheGoClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
-    def post(self, path: str, payload: dict[str, Any], timeout: float | None = None) -> bytes:
+    def post(
+        self, path: str, payload: dict[str, Any], timeout: float | None = None
+    ) -> bytes:
         req = urllib.request.Request(
             f"{self.base_url}{path}",
             data=json.dumps(payload).encode(),
@@ -28,7 +30,12 @@ class DiskCacheGoClient:
         with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
             return resp.read()
 
-    def get_json(self, path: str, query: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
+    def get_json(
+        self,
+        path: str,
+        query: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
         url = f"{self.base_url}{path}"
         if query:
             url = f"{url}?{urllib.parse.urlencode(query)}"
@@ -42,7 +49,9 @@ class DiskCacheGoClient:
         except Exception:
             return False
 
-    def chunk_put(self, prefix_key: str, layer_name: str, chunk_idx: int, num_tokens: int) -> None:
+    def chunk_put(
+        self, prefix_key: str, layer_name: str, chunk_idx: int, num_tokens: int
+    ) -> None:
         self.post(
             "/chunk_put",
             {
@@ -60,7 +69,9 @@ class DiskCacheGoClient:
         )
         return data.get("chunks", [])
 
-    def match(self, token_ids: list[int], mm_hashes: list[str], block_size: int) -> dict[str, Any]:
+    def match(
+        self, token_ids: list[int], mm_hashes: list[str], block_size: int
+    ) -> dict[str, Any]:
         data = self.post(
             "/match",
             {"token_ids": token_ids, "mm_hashes": mm_hashes, "block_size": block_size},
@@ -70,7 +81,9 @@ class DiskCacheGoClient:
     def record(self, prompt_hash: str, num_tokens: int) -> None:
         self.post("/record", {"prompt_hash": prompt_hash, "num_tokens": num_tokens})
 
-    def record_batch(self, token_ids: list[int], mm_hashes: list[str], block_size: int) -> None:
+    def record_batch(
+        self, token_ids: list[int], mm_hashes: list[str], block_size: int
+    ) -> None:
         self.post(
             "/record_batch",
             {"token_ids": token_ids, "mm_hashes": mm_hashes, "block_size": block_size},
@@ -82,7 +95,6 @@ class DiskCacheGoClient:
     def put(self, hash_val: int, file_path: str, size: int) -> None:
         self.post("/put", {"hash": hash_val, "file_path": file_path, "size": size})
 
-    
     def batch_load(self, prefix_key: str, layers: list[str]) -> dict[str, list[int]]:
         """Batch query chunk lists for multiple layers in one HTTP call."""
         data = self.post(
@@ -101,14 +113,18 @@ class DiskCacheGoClient:
         namespace: str,
         candidates: list[dict[str, Any]],
         required_shards: list[str],
+        resolve_shard: str | None = None,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "namespace": namespace,
+            "candidates": candidates,
+            "required_shards": required_shards,
+        }
+        if resolve_shard:
+            payload["resolve_shard"] = resolve_shard
         data = self.post(
             "/v2/chunks/match",
-            {
-                "namespace": namespace,
-                "candidates": candidates,
-                "required_shards": required_shards,
-            },
+            payload,
         )
         return json.loads(data)
 

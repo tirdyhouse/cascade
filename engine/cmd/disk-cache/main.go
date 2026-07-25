@@ -369,6 +369,7 @@ type V2MatchReq struct {
 	Namespace      string                 `json:"namespace"`
 	Candidates     []cache.ChunkCandidate `json:"candidates"`
 	RequiredShards []string               `json:"required_shards"`
+	ResolveShard   string                 `json:"resolve_shard,omitempty"`
 }
 
 type V2ResolveReq struct {
@@ -442,6 +443,29 @@ func handleV2MatchChunks(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeV2EngineError(w, err)
 		return
+	}
+	if req.ResolveShard != "" && result.MatchedChunks > 0 {
+		allowed := false
+		for _, shard := range req.RequiredShards {
+			if shard == req.ResolveShard {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			http.Error(w, "resolve_shard must be present in required_shards", 400)
+			return
+		}
+		objects, resolveErr := eng.ResolveChunks(
+			req.Namespace,
+			result.MatchedKeys,
+			req.ResolveShard,
+		)
+		if resolveErr != nil {
+			writeV2EngineError(w, resolveErr)
+			return
+		}
+		result.MatchedObjects = objects
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)

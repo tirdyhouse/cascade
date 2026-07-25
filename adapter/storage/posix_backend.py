@@ -88,6 +88,88 @@ class PosixBackend(StorageBackend):
         specs: List[TensorSliceSpec],
         device: str,
     ) -> List[torch.Tensor]:
+        """Load tensor slices to CPU or CUDA.
+
+        CUDA loads use a pinned host buffer so their H2D copy can be queued
+        asynchronously.  ``load_tensor_slices_to_pinned_cpu`` exposes the
+        same read half of this path for the connector's bounded read-ahead
+        pipeline: worker threads perform POSIX I/O only, while the vLLM
+        thread remains responsible for CUDA work and KV injection.
+        """
+        return self._load_tensor_slices(path, specs, device)
+
+    def load_tensor_slices_to_pinned_cpu(
+        self,
+        path: Path,
+        specs: List[TensorSliceSpec],
+    ) -> List[torch.Tensor]:
+        """Load slices into pinned CPU memory when available.
+
+        This is intentionally POSIX-specific.  It lets a CPU worker prefetch
+        disk data without issuing CUDA operations on a foreign thread.  If
+        pinned allocation is unavailable, safely return regular CPU tensors.
+        """
+        return self._load_tensor_slices(
+            path, specs, "cpu", prefer_pinned_cpu=True
+        )
+
+    def move_pinned_tensor_slices_to_device(
+        self,
+        tensors: List[torch.Tensor],
+        device: str,
+    ) -> List[torch.Tensor]:
+        """Move host slice views to CUDA while preserving coalesced groups.
+
+        ``load_tensor_slices_to_pinned_cpu`` returns views of one pinned byte
+        buffer for each contiguous I/O group.  Copying those views one at a
+        time would turn a coalesced H2D transfer back into one transfer per
+        layer.  Rebuild each backing byte view, transfer it once, then recreate
+        the original tensor views on the destination.
+        """
+        if not tensors:
+            return []
+        if not device.startswith("cuda"):
+            return list(tensors)
+
+        result: list[torch.Tensor | None] = [None] * len(tensors)
+        groups: dict[tuple[int, int], list[tuple[int, torch.Tensor, int]]] = {}
+        storages = {}
+
+        for index, tensor in enumerate(tensors):
+            if tensor.is_cuda:
+                result[index] = tensor
+                continue
+            storage = tensor.untyped_storage()
+            key = (storage.data_ptr(), storage.nbytes())
+            byte_offset = tensor.storage_offset() * tensor.element_size()
+            groups.setdefault(key, []).append((index, tensor, byte_offset))
+            storages[key] = storage
+
+        for key, group in groups.items():
+            storage = storages[key]
+            host_bytes = torch.empty(0, dtype=torch.uint8).set_(
+                storage, 0, (storage.nbytes(),)
+            )
+            device_bytes = host_bytes.to(device, non_blocking=True)
+            for index, tensor, byte_offset in group:
+                result[index] = device_bytes.narrow(
+                    0, byte_offset, tensor.nbytes
+                ).view(dtype=tensor.dtype).reshape(tensor.shape)
+
+        if any(tensor is None for tensor in result):
+            raise RuntimeError(
+                "POSIX pinned slice transfer returned incomplete results"
+            )
+        return [tensor for tensor in result if tensor is not None]
+
+    def _load_tensor_slices(
+        self,
+        path: Path,
+        specs: List[TensorSliceSpec],
+        device: str,
+        *,
+        prefer_pinned_cpu: bool = False,
+    ) -> List[torch.Tensor]:
         if not specs:
             return []
 
@@ -113,9 +195,63 @@ class PosixBackend(StorageBackend):
         with open(path, "rb") as f:
             for start, end, grouped_specs in groups:
                 expected_nbytes = end - start
-                raw = bytearray(expected_nbytes)
                 f.seek(start)
-                bytes_read = f.readinto(raw)
+
+                # A pageable bytearray makes ``Tensor.to(...,
+                # non_blocking=True)`` synchronise the H2D copy.  When the
+                # caller targets CUDA, read directly into pinned host memory
+                # instead, so the copy can be queued on the current stream.
+                # Keep the bytearray fallback for CPU loads and for builds
+                # where pinned allocations are unavailable.
+                buffer_tensor: torch.Tensor
+                target_cuda = device.startswith("cuda") and device != "cpu"
+                use_pinned_host_buffer = target_cuda or prefer_pinned_cpu
+                if use_pinned_host_buffer:
+                    try:
+                        host_buffer = torch.empty(
+                            expected_nbytes,
+                            dtype=torch.uint8,
+                            pin_memory=True,
+                        )
+                        if (
+                            host_buffer.device.type != "cpu"
+                            or not host_buffer.is_pinned()
+                        ):
+                            raise RuntimeError(
+                                "Pinned POSIX read buffer is not CPU pinned"
+                            )
+                        host_array = host_buffer.numpy()
+                    except (RuntimeError, TypeError) as exc:
+                        logger.debug(
+                            "Pinned POSIX read buffer unavailable; falling "
+                            "back to pageable memory: %s",
+                            exc,
+                        )
+                        raw = bytearray(expected_nbytes)
+                        f.seek(start)
+                        bytes_read = f.readinto(raw)
+                        buffer_tensor = torch.frombuffer(
+                            raw, dtype=torch.uint8
+                        )
+                        if target_cuda:
+                            buffer_tensor = buffer_tensor.to(
+                                device, non_blocking=True
+                            )
+                        else:
+                            buffer_tensor = buffer_tensor.clone()
+                    else:
+                        bytes_read = f.readinto(host_array)
+                        if target_cuda:
+                            buffer_tensor = host_buffer.to(
+                                device, non_blocking=True
+                            )
+                        else:
+                            buffer_tensor = host_buffer
+                else:
+                    raw = bytearray(expected_nbytes)
+                    bytes_read = f.readinto(raw)
+                    buffer_tensor = torch.frombuffer(raw, dtype=torch.uint8)
+
                 if bytes_read != expected_nbytes:
                     raise RuntimeError(
                         "POSIX load_tensor_slices: expected "
@@ -123,10 +259,7 @@ class PosixBackend(StorageBackend):
                         f"{start}, got {bytes_read}"
                     )
 
-                buffer_tensor = torch.frombuffer(raw, dtype=torch.uint8)
-                if device.startswith("cuda") and device != "cpu":
-                    buffer_tensor = buffer_tensor.to(device, non_blocking=True)
-                else:
+                if not target_cuda and not use_pinned_host_buffer:
                     buffer_tensor = buffer_tensor.clone()
 
                 for index, spec in grouped_specs:

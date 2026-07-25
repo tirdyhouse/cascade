@@ -1,0 +1,10 @@
+# Pure LMCache CPU-memory configuration for cache-hit benchmarking.
+chunk_size: 256
+local_cpu: true
+max_local_cpu_size: 4.0
+store_location: "LocalCPUBackend"
+retrieve_locations:
+  - "LocalCPUBackend"
+gds_path:
+local_disk:
+save_unfull_chunk: true

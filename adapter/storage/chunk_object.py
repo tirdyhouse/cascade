@@ -112,6 +112,7 @@ def _fsync_directory(path: Path) -> None:
 @dataclass(frozen=True)
 class LayerSpec:
     """Metadata for a single layer stored in a chunk object."""
+
     name: str
     dtype: torch.dtype
     shape: tuple[int, ...]
@@ -123,6 +124,7 @@ class LayerSpec:
 @dataclass(frozen=True)
 class ChunkObjectHeader:
     """Parsed header of a chunk-object file."""
+
     version: int
     complete: bool
     namespace: str
@@ -165,9 +167,17 @@ def _dtype_to_str(dt: torch.dtype) -> str:
 
 def _str_to_dtype(s: str) -> torch.dtype:
     names = (
-        "float16", "bfloat16", "float32", "float64",
-        "float8_e4m3fn", "float8_e5m2", "uint8", "int8",
-        "int16", "int32", "int64",
+        "float16",
+        "bfloat16",
+        "float32",
+        "float64",
+        "float8_e4m3fn",
+        "float8_e5m2",
+        "uint8",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
     )
     dtype_map = {
         f"torch.{name}": dtype
@@ -308,7 +318,6 @@ class ChunkObjectWriter:
         self._finalized = False
         self._next_offset = _HEADER_SIZE  # first payload byte
         self._aborted = False
-
 
     @property
     def final_path(self) -> Path:
@@ -459,7 +468,8 @@ class ChunkObjectWriter:
 
         # Fixed portion
         _FIXED_HEADER_FMT.pack_into(
-            buf, 0,
+            buf,
+            0,
             _HEADER_MAGIC,
             _HEADER_VERSION,
             1 if header.complete else 0,
@@ -477,7 +487,8 @@ class ChunkObjectWriter:
         for i, layer in enumerate(header.layers):
             off = base + i * _LAYER_ENTRY_SIZE
             _LAYER_ENTRY_FMT.pack_into(
-                buf, off,
+                buf,
+                off,
                 _encode_fixed_string(layer.name, 80),
                 _encode_fixed_string(_dtype_to_str(layer.dtype), 32),
                 len(layer.shape),
@@ -524,9 +535,7 @@ class ChunkObjectWriter:
             with open(path, "rb") as f:
                 blob = f.read(_HEADER_SIZE)
             if len(blob) != _HEADER_SIZE:
-                raise ValueError(
-                    f"existing chunk object header is truncated: {path}"
-                )
+                raise ValueError(f"existing chunk object header is truncated: {path}")
             existing = _parse_header(blob)
             if existing.version != _HEADER_VERSION or not existing.complete:
                 raise ValueError(
@@ -573,10 +582,11 @@ class ChunkObjectWriter:
                 raise ValueError(
                     f"existing chunk object is smaller than its header: {path}"
                 )
-            if existing.layers and max(
-                layer.offset + layer.stored_nbytes
-                for layer in existing.layers
-            ) > file_size:
+            if (
+                existing.layers
+                and max(layer.offset + layer.stored_nbytes for layer in existing.layers)
+                > file_size
+            ):
                 raise ValueError(
                     f"existing chunk object payload exceeds file size: {path}"
                 )
@@ -611,11 +621,86 @@ def resolve_chunk_object_path(
     )
 
 
+def read_chunk_object_layout(
+    path: str | Path,
+    layer_names: Sequence[str],
+) -> tuple[ChunkObjectHeader, list[TensorSliceSpec]]:
+    """Read and validate a chunk object's header and requested slice layout.
+
+    GDS read-ahead needs this split phase so CUDA buffers can be allocated on
+    vLLM's execution thread before cuFile reads run in I/O worker threads.
+    """
+    path = Path(path)
+    if not layer_names or len(set(layer_names)) != len(layer_names):
+        raise ValueError("layer_names must be non-empty and unique")
+
+    with open(path, "rb") as f:
+        header_blob = f.read(_HEADER_SIZE)
+
+    if len(header_blob) < _HEADER_SIZE:
+        raise ValueError(
+            f"Chunk object file too small: {len(header_blob)} bytes "
+            f"(expected at least {_HEADER_SIZE})"
+        )
+
+    header = _parse_header(header_blob)
+    if header.version != _HEADER_VERSION:
+        raise ValueError(
+            f"Unsupported chunk-object version {header.version} "
+            f"(expected {_HEADER_VERSION})"
+        )
+    if not header.complete:
+        raise ValueError(f"Chunk object is incomplete (complete flag is false): {path}")
+
+    specs = tensor_slice_specs_from_header(header, layer_names)
+
+    file_size = path.stat().st_size
+    if (
+        header.layers
+        and max(layer.offset + layer.stored_nbytes for layer in header.layers)
+        > file_size
+    ):
+        raise ValueError(f"Chunk object payload exceeds file size {file_size}: {path}")
+    return header, specs
+
+
+def tensor_slice_specs_from_header(
+    header: ChunkObjectHeader,
+    layer_names: Sequence[str],
+) -> list[TensorSliceSpec]:
+    """Build requested tensor slices from an already-verified header."""
+    if not layer_names or len(set(layer_names)) != len(layer_names):
+        raise ValueError("layer_names must be non-empty and unique")
+
+    layer_map = {layer.name: layer for layer in header.layers}
+    requested_set = set(layer_names)
+    available_set = set(layer_map)
+    missing = requested_set - available_set
+    if missing:
+        raise ValueError(
+            f"Requested layers {sorted(missing)} not found in chunk object. "
+            f"Available: {sorted(available_set)}"
+        )
+
+    return [
+        TensorSliceSpec(
+            offset=layer_map[name].offset,
+            nbytes=layer_map[name].nbytes,
+            stored_nbytes=layer_map[name].stored_nbytes,
+            shape=layer_map[name].shape,
+            dtype=layer_map[name].dtype,
+        )
+        for name in layer_names
+    ]
+
+
 def load_chunk_object(
     path: str | Path,
     layer_names: Sequence[str],
     device: str = "cuda",
     backend: Optional[StorageBackend] = None,
+    *,
+    pin_memory: bool = False,
 ) -> tuple[ChunkObjectHeader, dict[str, torch.Tensor]]:
     """Load specific layers from a chunk-object file.
 
@@ -630,6 +715,10 @@ def load_chunk_object(
         Target device for the loaded tensors.
     backend:
         Storage backend to use.  Defaults to auto-detected.
+    pin_memory:
+        Request pinned CPU output.  This is supported by the POSIX backend
+        and is used by the connector's CPU-only read-ahead workers before the
+        vLLM thread queues the H2D copy.  It requires ``device="cpu"``.
 
     Returns
     -------
@@ -643,64 +732,20 @@ def load_chunk_object(
         token range, or requested layer set is invalid.
     """
     path = Path(path)
-    if not layer_names or len(set(layer_names)) != len(layer_names):
-        raise ValueError("layer_names must be non-empty and unique")
     backend = backend or create_storage_backend()
-
-    # Read header
-    with open(path, "rb") as f:
-        header_blob = f.read(_HEADER_SIZE)
-
-    if len(header_blob) < _HEADER_SIZE:
-        raise ValueError(
-            f"Chunk object file too small: {len(header_blob)} bytes "
-            f"(expected at least {_HEADER_SIZE})"
-        )
-
-    header = _parse_header(header_blob)
-
-    # Validate header fields
-    if header.version != _HEADER_VERSION:
-        raise ValueError(
-            f"Unsupported chunk-object version {header.version} "
-            f"(expected {_HEADER_VERSION})"
-        )
-    if not header.complete:
-        raise ValueError(
-            f"Chunk object is incomplete (complete flag is false): {path}"
-        )
-
-    # Validate requested layers exist
-    layer_map = {l.name: l for l in header.layers}
-    requested_set = set(layer_names)
-    available_set = set(layer_map.keys())
-    missing = requested_set - available_set
-    if missing:
-        raise ValueError(
-            f"Requested layers {sorted(missing)} not found in chunk object. "
-            f"Available: {sorted(available_set)}"
-    )
-
-    # Build TensorSliceSpec list in the order requested
-    specs: list[TensorSliceSpec] = []
-    for name in layer_names:
-        ls = layer_map[name]
-        specs.append(TensorSliceSpec(
-            offset=ls.offset,
-            nbytes=ls.nbytes,
-            stored_nbytes=ls.stored_nbytes,
-            shape=ls.shape,
-            dtype=ls.dtype,
-        ))
-
-    file_size = path.stat().st_size
-    if header.layers and max(
-        layer.offset + layer.stored_nbytes for layer in header.layers
-    ) > file_size:
-        raise ValueError(
-            f"Chunk object payload exceeds file size {file_size}: {path}"
-        )
-    tensors = backend.load_tensor_slices(path, specs, device)
+    header, specs = read_chunk_object_layout(path, layer_names)
+    if pin_memory:
+        if device != "cpu":
+            raise ValueError("pin_memory requires device='cpu'")
+        pinned_loader = getattr(backend, "load_tensor_slices_to_pinned_cpu", None)
+        if not callable(pinned_loader):
+            raise RuntimeError(
+                f"Storage backend {type(backend).__name__} does not support "
+                "pinned CPU reads"
+            )
+        tensors = pinned_loader(path, specs)
+    else:
+        tensors = backend.load_tensor_slices(path, specs, device)
     if len(tensors) != len(specs):
         raise RuntimeError(
             f"Storage backend returned {len(tensors)} tensors for {len(specs)} specs"
@@ -712,14 +757,21 @@ def load_chunk_object(
 def _parse_header(blob: bytes) -> ChunkObjectHeader:
     """Parse a 64 KiB header blob and return a :class:`ChunkObjectHeader`."""
     # Fixed portion
-    magic, version, complete, ns_bytes, key_bytes, shard_bytes, idx, start, end, num_layers = (
-        _FIXED_HEADER_FMT.unpack_from(blob, 0)
-    )
+    (
+        magic,
+        version,
+        complete,
+        ns_bytes,
+        key_bytes,
+        shard_bytes,
+        idx,
+        start,
+        end,
+        num_layers,
+    ) = _FIXED_HEADER_FMT.unpack_from(blob, 0)
 
     if magic != _HEADER_MAGIC:
-        raise ValueError(
-            f"Bad magic: {magic!r} (expected {_HEADER_MAGIC!r})"
-        )
+        raise ValueError(f"Bad magic: {magic!r} (expected {_HEADER_MAGIC!r})")
 
     if not complete:
         return ChunkObjectHeader(
@@ -774,14 +826,16 @@ def _parse_header(blob: bytes) -> ChunkObjectHeader:
                 f"Layer {i} shape/dtype requires {expected_nbytes} bytes, "
                 f"header declares {nbytes}"
             )
-        layers.append(LayerSpec(
-            name=name,
-            dtype=dtype,
-            shape=shape,
-            offset=offset,
-            nbytes=nbytes,
-            stored_nbytes=stored_nbytes,
-        ))
+        layers.append(
+            LayerSpec(
+                name=name,
+                dtype=dtype,
+                shape=shape,
+                offset=offset,
+                nbytes=nbytes,
+                stored_nbytes=stored_nbytes,
+            )
+        )
 
     return ChunkObjectHeader(
         version=version,

@@ -77,9 +77,10 @@ type ChunkObject struct {
 
 // ChunkMatchResult is the result of a v2 chunk match query.
 type ChunkMatchResult struct {
-	MatchedChunks int      `json:"matched_chunks"`
-	MatchedTokens int      `json:"matched_tokens"`
-	MatchedKeys   []string `json:"matched_keys"`
+	MatchedChunks  int           `json:"matched_chunks"`
+	MatchedTokens  int           `json:"matched_tokens"`
+	MatchedKeys    []string      `json:"matched_keys"`
+	MatchedObjects []ChunkObject `json:"matched_objects,omitempty"`
 }
 
 // Engine is the metadata + eviction engine.

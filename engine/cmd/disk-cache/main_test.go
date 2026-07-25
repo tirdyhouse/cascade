@@ -131,7 +131,7 @@ func TestV2MatchChunksHTTP(t *testing.T) {
 		}
 
 		// Match
-		matchBody := `{"namespace":"ns1","candidates":[{"key":"chunk-a","end_tokens":100}],"required_shards":["shard1"]}`
+		matchBody := `{"namespace":"ns1","candidates":[{"key":"chunk-a","end_tokens":100}],"required_shards":["shard1"],"resolve_shard":"shard1"}`
 		rr = httptest.NewRecorder()
 		handleV2MatchChunks(rr, httptest.NewRequest(http.MethodPost, "/v2/chunks/match", strings.NewReader(matchBody)))
 		if rr.Code != http.StatusOK {
@@ -143,6 +143,16 @@ func TestV2MatchChunksHTTP(t *testing.T) {
 		}
 		if result.MatchedChunks != 1 {
 			t.Fatalf("MatchedChunks = %d, want 1", result.MatchedChunks)
+		}
+		if len(result.MatchedObjects) != 1 || result.MatchedObjects[0].FilePath != "p/a.bin" {
+			t.Fatalf("MatchedObjects = %+v, want p/a.bin", result.MatchedObjects)
+		}
+
+		badBody := `{"namespace":"ns1","candidates":[{"key":"chunk-a","end_tokens":100}],"required_shards":["shard1"],"resolve_shard":"other"}`
+		rr = httptest.NewRecorder()
+		handleV2MatchChunks(rr, httptest.NewRequest(http.MethodPost, "/v2/chunks/match", strings.NewReader(badBody)))
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("invalid resolve_shard status = %d, want 400", rr.Code)
 		}
 	})
 }

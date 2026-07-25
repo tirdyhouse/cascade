@@ -18,6 +18,7 @@ from adapter.vllm.hashing import (
     prefix_key,
 )
 
+
 def _expected_hash(token_ids, mm_hashes=()):
     h = hashlib.sha256()
     for tid in token_ids:
@@ -43,7 +44,9 @@ class TestHashingHelpers:
     def test_compute_prompt_hash_matches_connector_wire_format(self):
         token_ids = [11, 22, 33, 44]
         mm_hashes = ["image-a", "image-b"]
-        assert compute_prompt_hash(token_ids, 3, mm_hashes) == _expected_hash(token_ids[:3], mm_hashes)
+        assert compute_prompt_hash(token_ids, 3, mm_hashes) == _expected_hash(
+            token_ids[:3], mm_hashes
+        )
 
     def test_prefix_key_uses_first_block_only(self):
         token_ids = [11, 22, 33, 44]
@@ -75,7 +78,10 @@ class TestChunkingHelpers:
 
     def test_cached_file_path_partitions_by_layer_hash(self, tmp_path):
         lh = "1234567890abcdef"
-        assert cached_file_path(tmp_path, lh) == tmp_path / "12" / "34" / f"{lh}.safetensors"
+        assert (
+            cached_file_path(tmp_path, lh)
+            == tmp_path / "12" / "34" / f"{lh}.safetensors"
+        )
 
 
 class TestDiskCacheGoClient:
@@ -94,8 +100,12 @@ class TestDiskCacheGoClient:
     def test_get_json_encodes_query_parameters(self):
         client = DiskCacheGoClient("http://example.test")
         with mock.patch("urllib.request.urlopen") as urlopen:
-            urlopen.return_value.__enter__.return_value.read.return_value = b'{"chunks":[0,1]}'
-            result = client.get_json("/chunk_list", {"prefix_key": "a b", "layer_name": "layer/0"})
+            urlopen.return_value.__enter__.return_value.read.return_value = (
+                b'{"chunks":[0,1]}'
+            )
+            result = client.get_json(
+                "/chunk_list", {"prefix_key": "a b", "layer_name": "layer/0"}
+            )
 
         assert result == {"chunks": [0, 1]}
         assert urlopen.call_args.args[0] == (
@@ -104,14 +114,18 @@ class TestDiskCacheGoClient:
 
     def test_high_level_methods_preserve_endpoint_payloads(self):
         client = DiskCacheGoClient("http://engine")
-        with mock.patch.object(client, "post", return_value=b'{"matched_tokens":4}') as post:
+        with mock.patch.object(
+            client, "post", return_value=b'{"matched_tokens":4}'
+        ) as post:
             assert client.match([1, 2], ["mm"], 16) == {"matched_tokens": 4}
             post.assert_called_once_with(
                 "/match",
                 {"token_ids": [1, 2], "mm_hashes": ["mm"], "block_size": 16},
             )
 
-        with mock.patch.object(client, "get_json", return_value={"chunks": [2, 0]}) as get_json:
+        with mock.patch.object(
+            client, "get_json", return_value={"chunks": [2, 0]}
+        ) as get_json:
             assert client.chunk_list("prefix", "layer.0") == [2, 0]
             get_json.assert_called_once_with(
                 "/chunk_list",
@@ -121,6 +135,28 @@ class TestDiskCacheGoClient:
         with mock.patch.object(client, "post") as post:
             client.record_retrieved(3)
             post.assert_called_once_with("/retrieved", {"count": 3})
+
+        with mock.patch.object(
+            client,
+            "post",
+            return_value=b'{"matched_chunks":1,"matched_tokens":8,"matched_keys":["k"]}',
+        ) as post:
+            client.match_chunks(
+                "namespace",
+                [{"key": "k", "end_tokens": 8}],
+                ["tp0-pp0"],
+                resolve_shard="tp0-pp0",
+            )
+            post.assert_called_once_with(
+                "/v2/chunks/match",
+                {
+                    "namespace": "namespace",
+                    "candidates": [{"key": "k", "end_tokens": 8}],
+                    "required_shards": ["tp0-pp0"],
+                    "resolve_shard": "tp0-pp0",
+                },
+            )
+
 
 # ═══════════════════════════════════════════════════════════════════
 # ChunkKeyStrategy tests
@@ -132,6 +168,7 @@ class TestChainChunkKeyStrategy:
 
     def test_same_tokens_same_keys(self):
         from adapter.vllm.chunk_keys import ChainChunkKeyStrategy
+
         strategy = ChainChunkKeyStrategy(tokens_per_chunk=4, block_size=1)
         desc1 = strategy.describe([1, 2, 3, 4, 5, 6], "test")
         desc2 = strategy.describe([1, 2, 3, 4, 5, 6], "test")
@@ -157,6 +194,7 @@ class TestChainChunkKeyStrategy:
 
     def test_different_namespace_different_keys(self):
         from adapter.vllm.chunk_keys import ChainChunkKeyStrategy
+
         strategy = ChainChunkKeyStrategy(tokens_per_chunk=4, block_size=1)
         desc_a = strategy.describe([1, 2, 3, 4], "ns-a")
         desc_b = strategy.describe([1, 2, 3, 4], "ns-b")
@@ -165,6 +203,7 @@ class TestChainChunkKeyStrategy:
     def test_shared_prefix_same_first_chunk(self):
         """Same prefix (first chunk) should match across longer sequences."""
         from adapter.vllm.chunk_keys import ChainChunkKeyStrategy
+
         strategy = ChainChunkKeyStrategy(tokens_per_chunk=4, block_size=1)
         short = strategy.describe([1, 2, 3, 4], "test")
         long_ = strategy.describe([1, 2, 3, 4, 5, 6, 7, 8], "test")
@@ -173,6 +212,7 @@ class TestChainChunkKeyStrategy:
     def test_partial_tail_chunk(self):
         """Last chunk with fewer tokens still produces a valid 64-char key."""
         from adapter.vllm.chunk_keys import ChainChunkKeyStrategy
+
         strategy = ChainChunkKeyStrategy(tokens_per_chunk=4, block_size=1)
         desc = strategy.describe([1, 2, 3, 4, 5], "test")
         assert len(desc) == 2
@@ -186,6 +226,7 @@ class TestChainChunkKeyStrategy:
     def test_chain_dependency(self):
         """Second chunk key depends on first chunk's tokens (chain)."""
         from adapter.vllm.chunk_keys import ChainChunkKeyStrategy
+
         strategy = ChainChunkKeyStrategy(tokens_per_chunk=4, block_size=1)
         desc1 = strategy.describe([1, 2, 3, 4, 5, 6, 7, 8], "test")
         desc2 = strategy.describe([9, 10, 11, 12, 5, 6, 7, 8], "test")
@@ -197,6 +238,7 @@ class TestChainChunkKeyStrategy:
     def test_config_validation(self):
         """tokens_per_chunk must be > 0 and block_size multiple."""
         from adapter.vllm.chunk_keys import ChainChunkKeyStrategy
+
         with pytest.raises(ValueError, match="must be > 0"):
             ChainChunkKeyStrategy(tokens_per_chunk=0, block_size=1)
         with pytest.raises(ValueError, match="must be an integer multiple"):
@@ -205,6 +247,7 @@ class TestChainChunkKeyStrategy:
     def test_explicit_end(self):
         """Passing explicit end limits the described range."""
         from adapter.vllm.chunk_keys import ChainChunkKeyStrategy
+
         strategy = ChainChunkKeyStrategy(tokens_per_chunk=4, block_size=1)
         desc = strategy.describe([1, 2, 3, 4, 5, 6, 7, 8], "test", end=5)
         assert len(desc) == 2
@@ -222,19 +265,23 @@ class TestCreateChunkKeyStrategy:
             ChainChunkKeyStrategy,
             create_chunk_key_strategy,
         )
+
         strategy = create_chunk_key_strategy("chain", tokens_per_chunk=8)
         assert isinstance(strategy, ChainChunkKeyStrategy)
         assert strategy.tokens_per_chunk == 8
+
 
 class TestChunkObjectPathHelper:
 
     def test_path_format(self, tmp_path):
         from adapter.vllm.chunk_keys import chunk_object_path
+
         path = chunk_object_path(tmp_path, "mymodel", "key123", 0)
         assert path == tmp_path / "v2" / "chain" / "mymodel" / "key123" / "0.cobj"
 
     def test_safe_sanitises(self, tmp_path):
         from adapter.vllm.chunk_keys import chunk_object_path
+
         path = chunk_object_path(tmp_path, "../escape", "key", 0)
         parts = path.relative_to(tmp_path).parts
         # no ".." component allowed; dots filtered out
@@ -248,14 +295,20 @@ class TestCanonicalTensorLayout:
     def _ensure_vllm_mock():
         """Ensure vllm mock modules exist so tensor_ops imports succeed."""
         import sys
+
         if "vllm.v1.attention.backends.triton_attn" in sys.modules:
             return
         from unittest import mock
+
         _triton = mock.MagicMock()
         _triton.TritonAttentionMetadata = type("TritonAttentionMetadata", (), {})
-        for _mod in ("vllm", "vllm.v1", "vllm.v1.attention",
-                     "vllm.v1.attention.backends",
-                     "vllm.v1.attention.backends.triton_attn"):
+        for _mod in (
+            "vllm",
+            "vllm.v1",
+            "vllm.v1.attention",
+            "vllm.v1.attention.backends",
+            "vllm.v1.attention.backends.triton_attn",
+        ):
             if _mod not in sys.modules:
                 sys.modules[_mod] = mock.MagicMock()
         sys.modules["vllm.v1.attention.backends.triton_attn"] = _triton
@@ -295,7 +348,9 @@ class TestCanonicalTensorLayout:
         slot_mapping = torch.tensor([0, 5, 10])
         src = torch.randn(3, 2, hidden_dim)
         inject_kv_into_layer(layer, src, slot_mapping, MockAttnMeta(), page_size)
-        extracted = extract_kv_from_layer(layer, slot_mapping, MockAttnMeta(), page_size)
+        extracted = extract_kv_from_layer(
+            layer, slot_mapping, MockAttnMeta(), page_size
+        )
         assert torch.equal(extracted, src)
 
     def test_non_triton_preserves_multiple_tail_dimensions(self):
@@ -312,9 +367,7 @@ class TestCanonicalTensorLayout:
         slot_mapping = torch.tensor([0, 5, 10])
         src = torch.randn(3, 2, 5, 7)
 
-        inject_kv_into_layer(
-            layer, src, slot_mapping, MockAttnMeta(), block_size=4
-        )
+        inject_kv_into_layer(layer, src, slot_mapping, MockAttnMeta(), block_size=4)
         extracted = extract_kv_from_layer(
             layer, slot_mapping, MockAttnMeta(), block_size=4
         )
@@ -350,6 +403,8 @@ class TestCanonicalTensorLayout:
         layer = torch.randn(num_blocks, num_heads, 16, head_dim)
         block_size = 16
         slot_mapping = torch.tensor([0, 16, 32])
-        result = extract_kv_from_layer(layer, slot_mapping, MockTritonMeta(), block_size)
+        result = extract_kv_from_layer(
+            layer, slot_mapping, MockTritonMeta(), block_size
+        )
         assert result.shape == (3, num_heads, head_dim)
         assert result.is_contiguous()

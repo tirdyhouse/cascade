@@ -1,6 +1,7 @@
 # Cascade / LMCache 六组性能复现
 
 测试机环境已经部署完成。日常复测只需要进入目录、运行脚本、查看汇总成绩。
+首次装机、编译和环境配置见 `docs/cache-six-way-full-reproduction.md`。
 
 ## 1. 登录并进入目录
 

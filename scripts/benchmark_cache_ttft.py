@@ -170,16 +170,17 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     try:
         await client.models.list()
         documents = make_documents(args.num_documents, args.document_tokens)
-        records: list[dict[str, Any]] = []
-        for document_index, prompt in enumerate(documents):
-            record = await send_request(
-                client,
-                args.model,
-                prompt,
-                document_index,
-                args.max_tokens,
-            )
-            records.append(record)
+        semaphore = asyncio.Semaphore(args.concurrency)
+
+        async def send_bounded(document_index: int, prompt: str) -> dict[str, Any]:
+            async with semaphore:
+                record = await send_request(
+                    client,
+                    args.model,
+                    prompt,
+                    document_index,
+                    args.max_tokens,
+                )
             status = "ok" if record["success"] else "failed"
             ttft = record["ttft_seconds"]
             print(
@@ -191,6 +192,16 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 ),
                 flush=True,
             )
+            return record
+
+        phase_start = time.perf_counter()
+        records = await asyncio.gather(
+            *(
+                send_bounded(document_index, prompt)
+                for document_index, prompt in enumerate(documents)
+            )
+        )
+        phase_elapsed = time.perf_counter() - phase_start
 
         if args.expected_output is not None:
             expected_data = json.loads(args.expected_output.read_text())
@@ -208,16 +219,22 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         await client.close()
 
+    summary = summarize(records)
+    summary["wall_time_seconds"] = phase_elapsed
+    summary["request_throughput_rps"] = (
+        summary["success"] / phase_elapsed if phase_elapsed > 0 else None
+    )
     return {
         "phase": args.phase,
         "model": args.model,
         "host": args.host,
         "port": args.port,
         "num_documents": args.num_documents,
+        "concurrency": args.concurrency,
         "target_document_tokens": args.document_tokens,
         "max_tokens": args.max_tokens,
         "records": records,
-        "summary": summarize(records),
+        "summary": summary,
     }
 
 
@@ -228,6 +245,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--model", required=True)
     parser.add_argument("--num-documents", type=int, default=10)
+    parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--document-tokens", type=int, default=4096)
     parser.add_argument("--max-tokens", type=int, default=10)
     parser.add_argument("--request-timeout", type=float, default=300.0)
@@ -243,6 +261,8 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    if args.concurrency < 1:
+        parser.error("--concurrency must be at least 1")
 
     result = asyncio.run(run(args))
     args.output.parent.mkdir(parents=True, exist_ok=True)

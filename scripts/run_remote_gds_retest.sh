@@ -26,6 +26,8 @@ VLLM_PORT=${VLLM_PORT:-18205}
 ENGINE_PORT=${ENGINE_PORT:-19205}
 GPU_UTIL=${GPU_UTIL:-0.75}
 NUM_DOCUMENTS=${NUM_DOCUMENTS:-10}
+CONCURRENCY=${CONCURRENCY:-1}
+WARMUP_CONCURRENCY=${WARMUP_CONCURRENCY:-1}
 DOCUMENT_TOKENS=${DOCUMENT_TOKENS:-4096}
 MAX_TOKENS=${MAX_TOKENS:-10}
 # Comma-separated subset for quick isolated checks; default runs all rows.
@@ -200,6 +202,8 @@ record_environment() {
     printf '%s\n' \
       "mode_filter=$MODE_FILTER" \
       "num_documents=$NUM_DOCUMENTS" \
+      "query_concurrency=$CONCURRENCY" \
+      "warmup_concurrency=$WARMUP_CONCURRENCY" \
       "document_tokens=$DOCUMENT_TOKENS" \
       "max_tokens=$MAX_TOKENS" \
       "gpu_util=$GPU_UTIL" \
@@ -353,13 +357,16 @@ run_phase() {
   local mode_dir=$1
   local phase=$2
   local output_stem=${3:-$phase}
+  local phase_concurrency=$WARMUP_CONCURRENCY
   local -a expected_args=()
   if [ "$phase" = "query" ] && [ -f "$mode_dir/warmup.json" ]; then
     expected_args=(--expected-output "$mode_dir/warmup.json")
+    phase_concurrency=$CONCURRENCY
   fi
   "$PYTHON_BIN" "$BENCH_SCRIPT" \
     --phase "$phase" --host 127.0.0.1 --port "$VLLM_PORT" \
     --model "$MODEL_NAME" --num-documents "$NUM_DOCUMENTS" \
+    --concurrency "$phase_concurrency" \
     --document-tokens "$DOCUMENT_TOKENS" --max-tokens "$MAX_TOKENS" \
     --output "$mode_dir/${output_stem}.json" "${expected_args[@]}" \
     > "$mode_dir/${output_stem}.log" 2>&1

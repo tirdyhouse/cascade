@@ -188,6 +188,7 @@ def build_record(mode: str, label: str, kind: str, run_dir: Path) -> dict[str, A
         "label": label,
         "kind": kind,
         "query_source": "restart" if restarted else "in_process",
+        "query_concurrency": int(query.get("concurrency", 1)),
         "warmup": warmup["summary"],
         "query": query["summary"],
         "hit_metrics": metrics,
@@ -196,24 +197,28 @@ def build_record(mode: str, label: str, kind: str, run_dir: Path) -> dict[str, A
 
 
 def markdown(records: list[dict[str, Any]], run_dir: Path) -> str:
+    query_concurrencies = sorted({record["query_concurrency"] for record in records})
+    concurrency_label = ", ".join(str(value) for value in query_concurrencies)
     lines = [
         "# Cache GDS Retest",
         "",
         f"Raw artifacts: `{run_dir}`",
+        "",
+        f"Query concurrency: {concurrency_label}",
         "",
         "Logical lookup coverage uses every prompt token for both systems. "
         "Physical KV restore coverage uses prompt tokens minus one vLLM "
         "first-token-forward token per successful request; that forward "
         "produces logits and is not a cache miss.",
         "",
-        "| Backend | Cache scope | Query mean TTFT | p50 | p95 | Request hit rate | Logical lookup coverage | Physical KV restore coverage | Query success |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Backend | Cache scope | Query mean TTFT | p50 | p95 | Throughput | Request hit rate | Logical lookup coverage | Physical KV restore coverage | Query success |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for record in records:
         query = record["query"]
         hits = record["hit_metrics"]
         lines.append(
-            "| {label} | {query_source} | {mean} | {p50} | {p95} | {request_rate} "
+            "| {label} | {query_source} | {mean} | {p50} | {p95} | {throughput} | {request_rate} "
             "({request_hits}/{request_total}) | {logical_rate} "
             "({logical_tokens}/{prompt_tokens}) | {kv_rate} "
             "({external_kv}/{kv_target}) | {success}/{total} |".format(
@@ -222,6 +227,11 @@ def markdown(records: list[dict[str, Any]], run_dir: Path) -> str:
                 mean=display_ms(query.get("mean_ttft_seconds")),
                 p50=display_ms(query.get("p50_ttft_seconds")),
                 p95=display_ms(query.get("p95_ttft_seconds")),
+                throughput=(
+                    f"{query['request_throughput_rps']:.2f} req/s"
+                    if query.get("request_throughput_rps") is not None
+                    else "N/A"
+                ),
                 request_rate=display_percent(hits.get("request_hit_rate")),
                 request_hits=hits.get("request_hits", 0),
                 request_total=hits.get("request_total", 0),

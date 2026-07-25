@@ -1,8 +1,9 @@
 # Cascade 与 LMCache 最终对比报告
 
 > 测试日期：2026-07-25
-> 当前结论：Cascade 已在内存层追到 LMCache 的约 1ms 范围内，并在 cuFile
-> compatibility 与纯 POSIX 文件两组中反超 LMCache。
+> 当前结论：单并发时 Cascade 已在内存层追到 LMCache 的约 1ms 范围内；4 并发时
+> LMCache LocalCPU 领先 10.70%，但 Cascade 在 cuFile compatibility 与纯 POSIX
+> 文件两组中仍然反超 LMCache。
 
 ## 1. 测试口径
 
@@ -51,6 +52,34 @@ LMCache 使用同一口径，没有人为少匹配一个 token。
 
 LMCache CPU/GDS 的第 5 份文档发生近似数值输出分叉，因此输出 hash 为 9/10；该
 样本的 TTFT 仍完整计入 Mean/P50/P95。它不是 cache miss，也不是文件损坏。
+
+### 2.1 四并发复测
+
+在相同 10 份 prompt 上保持 warmup 串行，query 阶段最多同时保持 4 个在途请求。
+所有方案都使用 PIECEWISE，输出 10 tokens；吞吐量按完整 query 阶段的 10 个成功请求
+计算。
+
+| 存储层 | 方案 | Mean TTFT | P50 | P95 | 吞吐量 | 请求/Token 命中 | 输出 hash |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 内存 | **LMCache LocalCPU** | **170.822ms** | **151.311ms** | **223.253ms** | **5.974 req/s** | 10/10；40,880/40,880 | 10/10 |
+| 内存 | Cascade 4GiB pinned host tier | 189.108ms | 183.724ms | 249.831ms | 5.865 req/s | 10/10；40,880/40,880；160/160 chunks | 10/10 |
+| cuFile compatibility | **Cascade NvFile，6 workers** | **206.994ms** | **178.805ms** | **283.796ms** | **5.809 req/s** | 10/10；40,880/40,880；160/160 chunks | 10/10 |
+| cuFile compatibility | LMCache GdsBackend，重启后持久命中 | 235.504ms | 222.513ms | 323.092ms | 5.545 req/s | 10/10；40,880/40,880 | 10/10 |
+| POSIX 文件 | **Cascade，4 workers + 256MiB pinned staging** | **238.679ms** | **195.948ms** | **338.744ms** | **5.481 req/s** | 10/10；40,880/40,880；160/160 chunks | 10/10 |
+| POSIX 文件 | LMCache LocalDisk | 457.456ms | 463.235ms | 551.144ms | 4.041 req/s | 10/10；40,880/40,880 | 10/10 |
+
+同层横向差异：
+
+| 对比 | Mean 差异 | P50 差异 | 吞吐量差异 | 结论 |
+|---|---:|---:|---:|---|
+| Cascade host tier vs LMCache LocalCPU | +18.286ms（+10.70%） | +32.413ms（+21.42%） | -1.82% | 并发恢复成为下一阶段主要差距 |
+| Cascade cuFile vs LMCache GdsBackend | **-28.510ms（-12.11%）** | **-43.708ms（-19.64%）** | **+4.76%** | Cascade 继续领先 |
+| Cascade POSIX vs LMCache LocalDisk | **-218.777ms（-47.82%）** | **-267.287ms（-57.70%）** | **+35.63%** | Cascade 明显领先 |
+
+六组均为 query 并发 4、warmup 并发 1，且物理恢复覆盖均为
+40,870/40,870 tokens。LMCache GDS 在 producer 退出并重启后有 10 条真实
+`Retrieved 4088 out of 4088 required tokens`，没有把进程内状态或逻辑假命中计入
+成绩。
 
 ## 3. 为什么以前 LMCache 是约 46–50ms
 
@@ -167,6 +196,7 @@ LMCache LocalCPU 日志中的内部 retrieve 为约 18.27–18.48ms。两者端�
 | LMCache LocalCPU 有效 PIECEWISE | `/mnt/data/vllmtest/gds-retest-results/lmcache-piecewise-valid-20260725-1457/` |
 | LMCache LocalDisk 有效 PIECEWISE | `/mnt/data/vllmtest/gds-retest-results/lmcache-localdisk-piecewise-20260725-1450/` |
 | LMCache cuFile 有效 PIECEWISE | `/mnt/data/vllmtest/gds-retest-results/lmcache-gds-unregistered-valid-20260725-1520/` |
+| 六组 4 并发复测 | `/mnt/data/vllmtest/gds-retest-results/cache-sixway-c4-d06674f/` |
 | Cascade GDS 4/6/7/8-worker profiles | `/mnt/data/vllmtest/gds-retest-results/cascade-gds-*-profile-3doc-20260725/` |
 
 统一 runner：`scripts/run_remote_gds_retest.sh`。单组可通过 `MODE_FILTER` 选择，
@@ -174,7 +204,7 @@ LMCache LocalCPU 日志中的内部 retrieve 为约 18.27–18.48ms。两者端�
 
 ## 8. 验证
 
-- Python：174 passed，7 skipped；
+- Python：176 passed，7 skipped；
 - Go：`go test ./engine/pkg/cache ./engine/cmd/disk-cache` 通过；
 - `black`、`bash -n`、`git diff --check` 通过；
 - 三个 Cascade 最终组均为 10/10 输出一致、10/10 请求命中、160/160 chunks 恢复。

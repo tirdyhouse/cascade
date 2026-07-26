@@ -45,11 +45,15 @@ func (c *Collector) getGPUUtil() float64 {
 	if err != nil {
 		return 0.0
 	}
-	v, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
-	if err != nil {
+	values := parseNvidiaValues(string(out))
+	if len(values) == 0 {
 		return 0.0
 	}
-	return v / 100.0
+	var total float64
+	for _, value := range values {
+		total += value
+	}
+	return total / float64(len(values)) / 100.0
 }
 
 func (c *Collector) getGPUMemUsed() int64 {
@@ -57,11 +61,26 @@ func (c *Collector) getGPUMemUsed() int64 {
 	if err != nil {
 		return 0
 	}
-	v, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
-	if err != nil {
-		return 0
+	var total int64
+	for _, value := range parseNvidiaValues(string(out)) {
+		total += int64(value)
 	}
-	return v
+	return total
+}
+
+func parseNvidiaValues(output string) []float64 {
+	values := make([]float64, 0)
+	for _, line := range strings.Split(output, "\n") {
+		value := strings.TrimSpace(strings.SplitN(line, ",", 2)[0])
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err == nil {
+			values = append(values, parsed)
+		}
+	}
+	return values
 }
 
 func (c *Collector) getMemUsed() int64 {
@@ -131,8 +150,12 @@ func (c *Collector) GetAvailableModels() []cluster.LocalModel {
 func dirSizeGB(path string) float64 {
 	var total int64
 	filepath.Walk(path, func(_ string, fi os.FileInfo, err error) error {
-		if err != nil { return nil }
-		if !fi.IsDir() { total += fi.Size() }
+		if err != nil {
+			return nil
+		}
+		if !fi.IsDir() {
+			total += fi.Size()
+		}
 		return nil
 	})
 	return float64(total) / (1024 * 1024 * 1024)

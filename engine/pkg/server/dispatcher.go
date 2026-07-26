@@ -21,6 +21,9 @@ func NewDispatcher(registry *Registry) *Dispatcher {
 
 // Dispatch creates a command and enqueues it to the target node(s).
 func (d *Dispatcher) Dispatch(req *cluster.DispatchReq) *cluster.OK {
+	if req == nil {
+		return &cluster.OK{OK: false, Err: "dispatch request is required"}
+	}
 	// Validate action
 	validActions := map[cluster.CommandAction]bool{
 		cluster.CmdStartVLLM:     true,
@@ -56,10 +59,13 @@ func (d *Dispatcher) Dispatch(req *cluster.DispatchReq) *cluster.OK {
 		Timeout:   timeout,
 	}
 
-	d.registry.EnqueueCommand(cmd)
+	targetCount, err := d.registry.EnqueueCommand(cmd)
+	if err != nil {
+		return &cluster.OK{OK: false, Err: err.Error()}
+	}
 
-	log.Printf("[dispatch] cmd=%s action=%s target=%s", cmd.CmdID, cmd.Action, cmd.Target)
-	return &cluster.OK{OK: true}
+	log.Printf("[dispatch] cmd=%s action=%s target=%s targets=%d", cmd.CmdID, cmd.Action, cmd.Target, targetCount)
+	return &cluster.OK{OK: true, CmdID: cmd.CmdID, TargetCount: targetCount}
 }
 
 // genCmdID generates a unique command ID with target prefix.

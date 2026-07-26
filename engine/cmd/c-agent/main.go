@@ -14,12 +14,16 @@ import (
 )
 
 var (
-	serverAddr = flag.String("server", "127.0.0.1:9000", "S端 rpcx address")
-	nodeID     = flag.String("node-id", "", "Node ID (default: hostname)")
-	rpcxPort   = flag.Int("rpcx-port", 9001, "Local rpcx port for bidirectional")
-	cacheMode  = flag.String("cache-mode", "local_nvme", "Cache mode: local_nvme | shared_pool")
-	cachePath  = flag.String("cache-path", "http://127.0.0.1:9100", "Local disk-cache HTTP API base URL")
-	workDir    = flag.String("work-dir", "/root/cascade/agent", "Working directory for models, logs, and cache")
+	serverAddr      = flag.String("server", "127.0.0.1:9000", "S端 rpcx address")
+	nodeID          = flag.String("node-id", "", "Node ID (default: hostname)")
+	rpcxPort        = flag.Int("rpcx-port", 9001, "Local rpcx port for bidirectional")
+	cacheMode       = flag.String("cache-mode", "local_nvme", "Cache mode: local_nvme | shared_pool")
+	cachePath       = flag.String("cache-path", "http://127.0.0.1:9100", "Disk-cache metadata HTTP API base URL")
+	sharedCacheRoot = flag.String("shared-cache-root", "", "Shared cache filesystem root; required for cache-mode=shared_pool")
+	sharedCacheID   = flag.String("shared-cache-id", "", "Stable shared cache identity; required for cache-mode=shared_pool")
+	workDir         = flag.String("work-dir", "/root/cascade/agent", "Working directory for models, logs, and cache")
+	vllmHost        = flag.String("vllm-host", "0.0.0.0", "vLLM listen host; must be reachable by the cluster gateway")
+	vllmPort        = flag.Int("vllm-port", 8000, "vLLM HTTP port advertised to the cluster gateway")
 
 	// GPU
 	gpuType  = flag.String("gpu-type", "", "GPU type (e.g. H100)")
@@ -38,7 +42,26 @@ func main() {
 	cfg.RPCPort = *rpcxPort
 	cfg.CachePath = *cachePath
 	cfg.WorkDir = *workDir
+	cfg.VLLMHost = strings.TrimSpace(*vllmHost)
+	cfg.VLLMPort = *vllmPort
+	if cfg.VLLMHost == "" {
+		log.Fatal("vllm-host cannot be empty")
+	}
+	if cfg.VLLMPort < 1 || cfg.VLLMPort > 65535 {
+		log.Fatalf("invalid vllm-port %d", cfg.VLLMPort)
+	}
 
+	mode := cluster.CacheMode(strings.ToLower(strings.TrimSpace(*cacheMode)))
+	if mode != cluster.CacheModeLocalNVMe && mode != cluster.CacheModeSharedPool {
+		log.Fatalf("invalid cache-mode %q; expected local_nvme or shared_pool", *cacheMode)
+	}
+	cfg.CacheMode = mode
+	cfg.SharedCacheRoot = *sharedCacheRoot
+	cfg.SharedCacheID = *sharedCacheID
+	if cfg.CacheMode == cluster.CacheModeSharedPool &&
+		(strings.TrimSpace(cfg.SharedCacheRoot) == "" || strings.TrimSpace(cfg.SharedCacheID) == "") {
+		log.Fatal("shared-cache-root and shared-cache-id are required for cache-mode=shared_pool")
+	}
 
 	// Node ID
 	if *nodeID != "" {
@@ -89,6 +112,7 @@ func main() {
 
 	log.Printf("=== C端 Agent ===")
 	log.Printf("node=%s server=%s cache_mode=%s", cfg.NodeID, cfg.ServerAddr, cfg.CacheMode)
+	log.Printf("vLLM listen=%s:%d", cfg.VLLMHost, cfg.VLLMPort)
 	log.Printf("disks: %+v", cfg.Disks)
 
 	if err := agt.Start(); err != nil {

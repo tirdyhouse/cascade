@@ -36,6 +36,9 @@ func NewRouter(reg *Registry, dt *DiskTracker, meta CacheMetaBackend) *Router {
 
 // Lookup finds where a KV block is cached.
 func (r *Router) Lookup(hash uint64) (*cluster.CacheLocation, error) {
+	if r.cacheMeta == nil {
+		return nil, nil
+	}
 	// Try metadata backend first
 	loc, err := r.cacheMeta.LookupHash(hash)
 	if err == nil && loc != nil {

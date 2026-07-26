@@ -55,6 +55,17 @@ func TestRouterLookupUsesMetadataBackend(t *testing.T) {
 	}
 }
 
+func TestRouterLookupWithoutMetadataBackendReturnsMiss(t *testing.T) {
+	router := NewRouter(NewRegistry(), NewDiskTracker(), nil)
+	got, err := router.Lookup(0x1234)
+	if err != nil {
+		t.Fatalf("Lookup() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("Lookup() = %+v, want nil metadata miss", got)
+	}
+}
+
 func TestRecommendTargetLocalNVMEPicksOnlineNodeWithMostFreeDisk(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(&cluster.NodeInfo{

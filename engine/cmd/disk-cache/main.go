@@ -7,16 +7,43 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"predict/engine/pkg/cache"
 	"strconv"
+	"strings"
 )
 
 var (
-	cachePath    = flag.String("cache-path", "/tmp/disk-cache", "Cache file directory")
-	metadataPath = flag.String("metadata-path", "/tmp/disk-cache-meta", "Metadata database directory")
-	maxSize      = flag.String("max-size", "100GB", "Maximum cache size (e.g. 100GB, 1TB)")
-	listenAddr   = flag.String("listen", ":9100", "HTTP API listen address")
+	cachePath        = flag.String("cache-path", "/tmp/disk-cache", "Cache file directory")
+	metadataPath     = flag.String("metadata-path", "/tmp/disk-cache-meta", "Local Pebble metadata database directory")
+	maxSize          = flag.String("max-size", "100GB", "Maximum cache size (e.g. 100GB, 1TB)")
+	listenAddr       = flag.String("listen", ":9100", "HTTP API listen address")
+	metadataModeFlag = flag.String("metadata-mode", "local", "Metadata mode: local | shared")
+	sharedCacheID    = flag.String("shared-cache-id", "", "Required stable cache identity when metadata-mode=shared")
 )
+
+type metadataServiceConfig struct {
+	mode          string
+	sharedCacheID string
+	cacheRoot     string
+}
+
+func (c metadataServiceConfig) shared() bool {
+	return c.mode == "shared"
+}
+
+// metadataService is initialized once at process startup. Tests replace it
+// temporarily to exercise the shared HTTP contract.
+var metadataService = metadataServiceConfig{mode: "local"}
+
+type clusterInfoResponse struct {
+	APIVersion              int    `json:"api_version"`
+	MetadataMode            string `json:"metadata_mode"`
+	SharedCacheID           string `json:"shared_cache_id,omitempty"`
+	PublishedObjectVerified bool   `json:"published_object_verified"`
+	EvictionEnabled         bool   `json:"eviction_enabled"`
+}
 
 // MatchReq is the JSON body for POST /match.
 type MatchReq struct {
@@ -63,10 +90,20 @@ func main() {
 		log.Fatalf("invalid max-size: %v", err)
 	}
 
+	metadataService, err = configureMetadataService(
+		*metadataModeFlag,
+		*sharedCacheID,
+		*cachePath,
+	)
+	if err != nil {
+		log.Fatalf("invalid metadata service configuration: %v", err)
+	}
+
 	cfg := cache.DefaultConfig()
 	cfg.CachePath = *cachePath
 	cfg.MetadataPath = *metadataPath
 	cfg.MaxSizeBytes = size
+	cfg.DisableEviction = metadataService.shared()
 
 	eng, err = cache.New(cfg)
 	if err != nil {
@@ -74,8 +111,59 @@ func main() {
 	}
 	defer eng.Close()
 
-	log.Printf("disk-cache engine started on %s", *listenAddr)
+	if metadataService.shared() {
+		log.Printf(
+			"shared metadata service started on %s cache_id=%s cache_root=%s eviction=disabled",
+			*listenAddr,
+			metadataService.sharedCacheID,
+			metadataService.cacheRoot,
+		)
+	} else {
+		log.Printf("disk-cache engine started on %s", *listenAddr)
+	}
 
+	if err := http.ListenAndServe(*listenAddr, newAPIHandler()); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
+}
+
+func configureMetadataService(mode, cacheID, cacheRoot string) (metadataServiceConfig, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "local":
+		return metadataServiceConfig{mode: mode}, nil
+	case "shared":
+		if strings.TrimSpace(cacheID) == "" {
+			return metadataServiceConfig{}, errors.New("shared-cache-id is required in shared mode")
+		}
+		if !filepath.IsAbs(cacheRoot) {
+			return metadataServiceConfig{}, errors.New("cache-path must be absolute in shared mode")
+		}
+		root, err := filepath.Abs(cacheRoot)
+		if err != nil {
+			return metadataServiceConfig{}, fmt.Errorf("resolve cache-path: %w", err)
+		}
+		info, err := os.Stat(root)
+		if err != nil {
+			return metadataServiceConfig{}, fmt.Errorf("shared cache-path %q is not mounted or accessible: %w", root, err)
+		}
+		if !info.IsDir() {
+			return metadataServiceConfig{}, fmt.Errorf("shared cache-path %q is not a directory", root)
+		}
+		if _, err := cache.EnsureSharedCacheMarker(root, cacheID); err != nil {
+			return metadataServiceConfig{}, fmt.Errorf("initialize shared cache marker: %w", err)
+		}
+		return metadataServiceConfig{
+			mode:          mode,
+			sharedCacheID: cacheID,
+			cacheRoot:     root,
+		}, nil
+	default:
+		return metadataServiceConfig{}, fmt.Errorf("unknown metadata-mode %q", mode)
+	}
+}
+
+func newAPIHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/put", handlePut)
 	mux.HandleFunc("/get", handleGet)
@@ -97,10 +185,8 @@ func main() {
 	mux.HandleFunc("/v2/chunks/resolve", handleV2ResolveChunks)
 	mux.HandleFunc("/v2/chunks/invalidate", handleV2InvalidateChunk)
 	mux.HandleFunc("/v2/chunks/retrieved", handleV2Retrieved)
-
-	if err := http.ListenAndServe(*listenAddr, mux); err != nil {
-		log.Fatalf("server error: %v", err)
-	}
+	mux.HandleFunc("/v2/cluster/info", handleV2ClusterInfo)
+	return mux
 }
 
 func handlePut(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +235,10 @@ func handleExists(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleEvict(w http.ResponseWriter, r *http.Request) {
+	if metadataService.shared() {
+		http.Error(w, "eviction is disabled in shared metadata mode until distributed read leases are available", http.StatusConflict)
+		return
+	}
 	var req struct {
 		TargetBytes int64 `json:"target_bytes"`
 	}
@@ -382,6 +472,21 @@ type V2RetrievedReq struct {
 	Count int64 `json:"count"`
 }
 
+func handleV2ClusterInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(clusterInfoResponse{
+		APIVersion:              1,
+		MetadataMode:            metadataService.mode,
+		SharedCacheID:           metadataService.sharedCacheID,
+		PublishedObjectVerified: metadataService.shared(),
+		EvictionEnabled:         !metadataService.shared(),
+	})
+}
+
 func handleV2CommitChunks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "POST required", 400)
@@ -399,6 +504,16 @@ func handleV2CommitChunks(w http.ResponseWriter, r *http.Request) {
 	for i, obj := range req.Objects {
 		if obj.Size <= 0 {
 			http.Error(w, fmt.Sprintf("objects[%d]: non-positive size (%d)", i, obj.Size), 400)
+			return
+		}
+	}
+	if metadataService.shared() {
+		if err := cache.ValidatePublishedChunkObjects(metadataService.cacheRoot, req.Objects); err != nil {
+			status := http.StatusConflict
+			if errors.Is(err, cache.ErrInvalidArgument) {
+				status = http.StatusBadRequest
+			}
+			http.Error(w, fmt.Sprintf("shared object is not ready for publication: %v", err), status)
 			return
 		}
 	}

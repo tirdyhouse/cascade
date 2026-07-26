@@ -141,6 +141,9 @@ func (e *diskEngine) lockedMakeRoom(additional int64) error {
 	if additional <= 0 {
 		return nil
 	}
+	if e.cfg.DisableEviction {
+		return nil
+	}
 	if additional > e.cfg.MaxSizeBytes {
 		return fmt.Errorf("%w: incoming size %d exceeds cache capacity %d", ErrInvalidArgument, additional, e.cfg.MaxSizeBytes)
 	}
@@ -165,7 +168,7 @@ func (e *diskEngine) Put(hash uint64, filePath string, size int64) error {
 	if _, err := rootedCachePath(e.cfg.CachePath, filePath); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
-	if size > e.cfg.MaxSizeBytes {
+	if !e.cfg.DisableEviction && size > e.cfg.MaxSizeBytes {
 		return fmt.Errorf("%w: object size %d exceeds cache capacity %d", ErrInvalidArgument, size, e.cfg.MaxSizeBytes)
 	}
 
@@ -320,6 +323,9 @@ func (e *diskEngine) Evict(targetBytes int64) []BlockMeta {
 	e.evictRequests.Add(1)
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.cfg.DisableEviction {
+		return nil
+	}
 	return e.lockedEvict(targetBytes)
 }
 

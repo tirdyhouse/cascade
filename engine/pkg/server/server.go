@@ -39,8 +39,10 @@ type Server struct {
 	xaddrs     []string // known C端 addresses for push (optional)
 
 	// HTTP
-	httpServer *http.Server
-	httpClient *http.Client
+	httpServer    *http.Server
+	httpClient    *http.Client
+	gatewayClient *http.Client
+	scheduler     *GatewayScheduler
 
 	// Models
 	models *ModelRegistry
@@ -48,6 +50,7 @@ type Server struct {
 	// Config
 	config *Config
 }
+
 // Config holds S端 configuration.
 type Config struct {
 	RPCPort     int    // rpcx server port (C端 connect here)
@@ -56,20 +59,31 @@ type Config struct {
 	ModelsFile  string // path to models.json (optional)
 	ModelsDir   string // directory to auto-scan for models (optional)
 	PublicURL   string // public URL for model download links (optional)
+
+	// GatewayMaxInFlightPerNode bounds requests accepted by the global OpenAI
+	// gateway before the agent heartbeat has observed them.
+	GatewayMaxInFlightPerNode int
+	GatewayMaxRequestBytes    int64
 }
 
 // DefaultConfig returns sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		RPCPort:  9000,
-		HTTPPort: 8080,
+		RPCPort:                   9000,
+		HTTPPort:                  8080,
+		GatewayMaxInFlightPerNode: 16,
+		GatewayMaxRequestBytes:    64 << 20,
 	}
 }
 
 // New creates a new S端 Server.
 func New(cfg *Config) *Server {
+	if cfg == nil {
+		cfg = DefaultConfig()
+	}
 	reg := NewRegistry()
 	dt := NewDiskTracker()
+	gatewayTransport := http.DefaultTransport.(*http.Transport).Clone()
 
 	srv := &Server{
 		registry:    reg,
@@ -79,6 +93,8 @@ func New(cfg *Config) *Server {
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},
+		gatewayClient: &http.Client{Transport: gatewayTransport},
+		scheduler:     NewGatewayScheduler(reg, cfg.GatewayMaxInFlightPerNode),
 	}
 
 	// Router with nil meta backend for now — will be connected to disk-cache engine later
@@ -157,7 +173,9 @@ func (s *Server) startRPCX(ctx context.Context) error {
 	log.Printf("[server] rpcx listening on %s", addr)
 	go func() {
 		if err := s.rpcxServer.Serve("tcp", addr); err != nil {
-			log.Fatalf("[server] rpcx serve error: %v", err)
+			// Shutdown causes rpcx Serve to return. It must not turn a graceful
+			// server stop into a process-wide fatal exit.
+			log.Printf("[server] rpcx serve stopped: %v", err)
 		}
 	}()
 	return nil
@@ -175,8 +193,10 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	s.registerAPI(apiMux)
 
 	// Static file server
-	cwd, _ := os.Getwd()
-	staticDir := cwd + "/engine/pkg/server/web/static"
+	staticDir, err := resolveStaticDir()
+	if err != nil {
+		return err
+	}
 
 	// Single entry point: API routes → apiMux, everything else → static files
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -187,7 +207,7 @@ func (s *Server) startHTTP(ctx context.Context) error {
 			return
 		}
 
-		if len(path) >= 8 && path[:8] == "/api/v1/" {
+		if strings.HasPrefix(path, "/api/v1/") || strings.HasPrefix(path, "/v1/") || path == "/health" {
 			apiMux.ServeHTTP(w, r)
 			return
 		}
@@ -214,6 +234,42 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	return nil
 }
 
+// resolveStaticDir locates the checked-in web bundle in both supported
+// development entry points: the repository root and engine/. It also supports
+// a binary placed in the repository's bin/ directory.
+func resolveStaticDir() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory for web assets: %w", err)
+	}
+
+	roots := []string{cwd}
+	if executable, err := os.Executable(); err == nil {
+		executableDir := filepath.Dir(executable)
+		roots = append(roots, executableDir, filepath.Dir(executableDir))
+	}
+
+	seen := make(map[string]struct{})
+	for _, root := range roots {
+		for _, relative := range []string{
+			filepath.Join("engine", "pkg", "server", "web", "static"),
+			filepath.Join("pkg", "server", "web", "static"),
+		} {
+			candidate := filepath.Join(root, relative)
+			if _, checked := seen[candidate]; checked {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			index, err := os.Stat(filepath.Join(candidate, "index.html"))
+			if err == nil && !index.IsDir() {
+				return candidate, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("web static assets not found from working directory %q", cwd)
+}
+
 // Stop gracefully shuts down the server.
 func (s *Server) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -231,7 +287,16 @@ func (s *Server) Stop() {
 // ── REST API ────────────────────────────────────────────────────────────
 
 func (s *Server) registerAPI(mux *http.ServeMux) {
+	// Cluster-wide OpenAI-compatible data plane. These routes select a healthy
+	// vLLM replica; callers must not pin a node ID.
+	mux.HandleFunc("GET /health", s.apiGatewayHealth)
+	mux.HandleFunc("GET /v1/models", s.apiGatewayModels)
+	mux.HandleFunc("POST /v1/chat/completions", s.apiGatewayInference)
+	mux.HandleFunc("POST /v1/completions", s.apiGatewayInference)
+	mux.HandleFunc("POST /v1/embeddings", s.apiGatewayInference)
+
 	mux.HandleFunc("GET /api/v1/cluster/status", s.apiClusterStatus)
+	mux.HandleFunc("GET /api/v1/gateway/status", s.apiGatewayStatus)
 	mux.HandleFunc("GET /api/v1/nodes", s.apiListNodes)
 	mux.HandleFunc("GET /api/v1/nodes/{id}", s.apiNodeDetail)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/logs", s.apiNodeLogs)
@@ -245,13 +310,22 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 }
 
 func jsonResp(w http.ResponseWriter, data interface{}) {
+	jsonRespStatus(w, http.StatusOK, data)
+}
+
+func jsonRespStatus(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
 }
 
 func (s *Server) apiClusterStatus(w http.ResponseWriter, r *http.Request) {
 	summary := s.registry.Summary()
 	jsonResp(w, summary)
+}
+
+func (s *Server) apiGatewayStatus(w http.ResponseWriter, r *http.Request) {
+	jsonResp(w, s.gatewayStatus())
 }
 
 func (s *Server) apiListNodes(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +350,10 @@ func (s *Server) apiDispatchCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok := s.dispatcher.Dispatch(&req)
+	if !ok.OK {
+		jsonRespStatus(w, http.StatusBadRequest, ok)
+		return
+	}
 	jsonResp(w, ok)
 }
 
@@ -288,8 +366,11 @@ func (s *Server) apiModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // fetchVLLMMetric parses a single float64 value from vLLM's Prometheus /metrics.
-func (s *Server) fetchVLLMMetric(nodeIP, metricName string) float64 {
-	target := fmt.Sprintf("http://%s:8000/metrics", nodeIP)
+func (s *Server) fetchVLLMMetric(nodeIP string, vllmPort int, metricName string) float64 {
+	target, err := vllmEndpointURL(nodeIP, vllmPort, "/metrics", "")
+	if err != nil {
+		return 0
+	}
 	resp, err := s.httpClient.Get(target)
 	if err != nil {
 		return 0
@@ -315,7 +396,6 @@ func (s *Server) fetchVLLMMetric(nodeIP, metricName string) float64 {
 	}
 	return 0
 }
-
 
 // fetchGoEngineBlocksRetrieved queries the node's Go disk-cache engine /stats for BlocksRetrieved.
 func (s *Server) fetchGoEngineBlocksRetrieved(nodeIP string) int64 {
@@ -351,8 +431,6 @@ func (s *Server) fetchGoEngineBlocksStored(nodeIP string) int64 {
 	return stats.BlocksStored
 }
 
-
-
 // apiNodeVLLMChat proxies a chat completion request to the node's vLLM instance,
 func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -372,8 +450,12 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Proxy to vLLM (always port 8000 on the node)
-	target := fmt.Sprintf("http://%s:8000/v1/chat/completions", detail.Info.IP)
+	// Proxy to the explicitly advertised vLLM endpoint.
+	target, err := vllmEndpointURL(detail.Info.IP, detail.Info.VLLMPort, "/v1/chat/completions", r.URL.RawQuery)
+	if err != nil {
+		http.Error(w, `{"error":"invalid vLLM endpoint: `+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
 	req, err := http.NewRequestWithContext(r.Context(), "POST", target, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, `{"error":"create request: `+err.Error()+`"}`, 500)
@@ -415,10 +497,10 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		responseMap["_cache"] = map[string]interface{}{
-			"hit_tokens":          hitTokens,
-			"disk_blocks":         diskBlocks,
-			"disk_blocks_total":   diskRetrievedAfter,
-			"disk_blocks_stored":  diskStored,
+			"hit_tokens":         hitTokens,
+			"disk_blocks":        diskBlocks,
+			"disk_blocks_total":  diskRetrievedAfter,
+			"disk_blocks_stored": diskStored,
 		}
 		respBody, _ = json.Marshal(responseMap)
 	}
@@ -437,7 +519,11 @@ func (s *Server) apiNodeVLLMModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := fmt.Sprintf("http://%s:8000/v1/models", detail.Info.IP)
+	target, err := vllmEndpointURL(detail.Info.IP, detail.Info.VLLMPort, "/v1/models", r.URL.RawQuery)
+	if err != nil {
+		http.Error(w, `{"error":"invalid vLLM endpoint: `+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
 	resp, err := s.httpClient.Get(target)
 	if err != nil {
 		http.Error(w, `{"error":"vLLM proxy: `+err.Error()+`"}`, 502)
@@ -481,7 +567,11 @@ func (s *Server) apiNodeVLLMMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := fmt.Sprintf("http://%s:8000/metrics", detail.Info.IP)
+	target, err := vllmEndpointURL(detail.Info.IP, detail.Info.VLLMPort, "/metrics", r.URL.RawQuery)
+	if err != nil {
+		http.Error(w, `{"error":"invalid vLLM endpoint: `+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
 	resp, err := s.httpClient.Get(target)
 	if err != nil {
 		http.Error(w, `{"error":"vLLM metrics proxy: `+err.Error()+`"}`, 502)
@@ -497,10 +587,10 @@ func (s *Server) apiNodeVLLMMetrics(w http.ResponseWriter, r *http.Request) {
 
 	// Parse key cache metrics from Prometheus text format
 	metrics := map[string]float64{
-		"prefix_cache_queries_total":      0,
-		"prefix_cache_hits_total":         0,
+		"prefix_cache_queries_total":          0,
+		"prefix_cache_hits_total":             0,
 		"external_prefix_cache_queries_total": 0,
-		"kv_cache_usage_perc":            0,
+		"kv_cache_usage_perc":                 0,
 	}
 	lines := strings.Split(string(body), "\n")
 	for _, line := range lines {
@@ -586,10 +676,10 @@ func (s *Server) apiNodeLogs(w http.ResponseWriter, r *http.Request) {
 		newOffset = total
 	}
 	jsonResp(w, cluster.LogChunk{
-		NodeID:   id,
-		Lines:    out,
-		Offset:   int64(newOffset),
-		EOF:      newOffset >= total,
+		NodeID: id,
+		Lines:  out,
+		Offset: int64(newOffset),
+		EOF:    newOffset >= total,
 	})
 }
 
@@ -614,12 +704,7 @@ func (s *clusterSvc) Heartbeat(ctx context.Context, args *cluster.MachineStatus,
 type cmdSvc struct{ reg *Registry }
 
 func (s *cmdSvc) FetchCommands(ctx context.Context, nodeID string, reply *[]*cluster.Command) error {
-	state := s.reg.GetNode(nodeID)
-	if state == nil {
-		return nil
-	}
-	*reply = state.commands
-	state.commands = nil
+	*reply = s.reg.FetchCommands(nodeID)
 	return nil
 }
 
@@ -677,8 +762,8 @@ func (s *adminSvc) CommandHistory(ctx context.Context, _ *cluster.Empty, reply *
 
 // Ensure compiler compliance
 var (
-	_ cluster.ClusterService  = (*clusterSvc)(nil)
-	_ cluster.CommandService  = (*cmdSvc)(nil)
-	_ cluster.QueryService    = (*querySvc)(nil)
-	_ cluster.AdminService    = (*adminSvc)(nil)
+	_ cluster.ClusterService = (*clusterSvc)(nil)
+	_ cluster.CommandService = (*cmdSvc)(nil)
+	_ cluster.QueryService   = (*querySvc)(nil)
+	_ cluster.AdminService   = (*adminSvc)(nil)
 )

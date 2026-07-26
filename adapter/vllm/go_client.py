@@ -49,6 +49,12 @@ class DiskCacheGoClient:
         except Exception:
             return False
 
+    def cluster_info(self, timeout: float = 3.0) -> dict[str, Any]:
+        data = self.get_json("/v2/cluster/info", timeout=timeout)
+        if not isinstance(data, dict):
+            raise ValueError("cluster info response must be a JSON object")
+        return data
+
     def chunk_put(
         self, prefix_key: str, layer_name: str, chunk_idx: int, num_tokens: int
     ) -> None:

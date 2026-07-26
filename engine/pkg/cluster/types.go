@@ -35,7 +35,7 @@ type DiskUsage struct {
 type CacheMode string
 
 const (
-	CacheModeLocalNVMe CacheMode = "local_nvme"  // standalone: cache on local NVMe, route by ip+disk
+	CacheModeLocalNVMe  CacheMode = "local_nvme"  // standalone: cache on local NVMe, route by ip+disk
 	CacheModeSharedPool CacheMode = "shared_pool" // pooled: cache on shared storage, any node can serve
 )
 
@@ -45,19 +45,24 @@ const (
 
 // NodeInfo is the static information a C端 agent reports when registering.
 type NodeInfo struct {
-	NodeID    string     `json:"node_id"`
-	Hostname  string     `json:"hostname"`
-	IP        string     `json:"ip"`         // management / data IP
-	RPCPort   int        `json:"rpc_port"`   // port this agent listens on for rpcx bidirectional
-	CacheMode CacheMode  `json:"cache_mode"` // "local_nvme" | "shared_pool"
+	NodeID    string    `json:"node_id"`
+	Hostname  string    `json:"hostname"`
+	IP        string    `json:"ip"`         // management / data IP
+	RPCPort   int       `json:"rpc_port"`   // port this agent listens on for rpcx bidirectional
+	VLLMPort  int       `json:"vllm_port"`  // HTTP port exposed by the local vLLM server
+	CacheMode CacheMode `json:"cache_mode"` // "local_nvme" | "shared_pool"
+	// SharedCacheID identifies one logical shared cache pool. It must match
+	// across every shared_pool node, while their mount paths may differ.
+	SharedCacheID    string `json:"shared_cache_id,omitempty"`
+	CacheMetadataURL string `json:"cache_metadata_url,omitempty"`
 
 	// Hardware
-	GPUType   string     `json:"gpu_type"`   // "H100"
-	GPUMemMB  int64      `json:"gpu_mem_mb"`
-	GPUCount  int        `json:"gpu_count"`
+	GPUType  string `json:"gpu_type"` // "H100"
+	GPUMemMB int64  `json:"gpu_mem_mb"`
+	GPUCount int    `json:"gpu_count"`
 
 	// Disks — critical for local_nvme mode (multi-disk awareness)
-	Disks     []DiskInfo `json:"disks"`
+	Disks []DiskInfo `json:"disks"`
 }
 
 // NodeStatus represents the current health of a node.
@@ -77,7 +82,7 @@ type MachineStatus struct {
 	Seq       int64  `json:"seq"` // monotonically increasing sequence, for dedup
 
 	// Machine metrics
-	GPUUtil      float64 `json:"gpu_util"`       // 0.0-1.0
+	GPUUtil      float64 `json:"gpu_util"` // 0.0-1.0
 	GPUMemUsedMB int64   `json:"gpu_mem_used_mb"`
 	MemUsedMB    int64   `json:"mem_used_mb"`
 	CPULoad      float64 `json:"cpu_load"`
@@ -92,11 +97,11 @@ type MachineStatus struct {
 	LoadingPct int32  `json:"loading_pct"` // 0-100
 
 	// KV Cache stats (from local disk-cache engine)
-	CacheBlocks      int64   `json:"cache_blocks"`
-	CacheBytes       int64   `json:"cache_bytes"`
-	CacheHitRate     float64 `json:"cache_hit_rate"`
-	CacheRetrieved   int64   `json:"cache_retrieved"`
-	CacheEvicted     int64   `json:"cache_evicted"`
+	CacheBlocks    int64   `json:"cache_blocks"`
+	CacheBytes     int64   `json:"cache_bytes"`
+	CacheHitRate   float64 `json:"cache_hit_rate"`
+	CacheRetrieved int64   `json:"cache_retrieved"`
+	CacheEvicted   int64   `json:"cache_evicted"`
 
 	// Models available locally (from scanning <work-dir>/models/)
 	AvailableModels []LocalModel `json:"available_models,omitempty"`
@@ -132,9 +137,9 @@ type Command struct {
 	CmdID     string            `json:"cmd_id"`
 	Action    CommandAction     `json:"action"`
 	Params    map[string]string `json:"params"`
-	Target    string            `json:"target"`     // target node_id, "" = broadcast
+	Target    string            `json:"target"` // target node_id, "" = broadcast
 	CreatedAt int64             `json:"created_at"`
-	Timeout   int               `json:"timeout"`    // seconds
+	Timeout   int               `json:"timeout"` // seconds
 }
 
 // ============================================================================
@@ -150,14 +155,14 @@ type LocalModel struct {
 
 // ModelInfo describes a model available on S端 for distribution.
 type ModelInfo struct {
-	Name        string `json:"name"`
-	Path        string `json:"path"`        // full filesystem path on S端
+	Name string `json:"name"`
+	Path string `json:"path"` // full filesystem path on S端
 
-	DownloadURL string `json:"download_url"`
-	DefaultGPUMem   string `json:"default_gpu_mem"`
-	SupportsPrefix  bool   `json:"supports_prefix"`
-	SupportsDiskCache bool `json:"supports_disk_cache"`
-	Quantization string `json:"quantization,omitempty"` // awq, gptq, fp8, etc. (auto-detected from model files)
+	DownloadURL       string `json:"download_url"`
+	DefaultGPUMem     string `json:"default_gpu_mem"`
+	SupportsPrefix    bool   `json:"supports_prefix"`
+	SupportsDiskCache bool   `json:"supports_disk_cache"`
+	Quantization      string `json:"quantization,omitempty"` // awq, gptq, fp8, etc. (auto-detected from model files)
 
 	SizeGB float64 `json:"size_gb"` // directory size in GB, 0 if unknown
 
@@ -178,12 +183,14 @@ type LogChunk struct {
 
 // CmdResult is the execution result reported back to S端.
 type CmdResult struct {
-	CmdID    string `json:"cmd_id"`
-	NodeID   string `json:"node_id"`
-	Status   string `json:"status"`   // "running"|"success"|"failed"|"timeout"
-	Output   string `json:"output"`
-	Error    string `json:"error"`
-	Progress int32  `json:"progress"` // 0-100
+	CmdID     string        `json:"cmd_id"`
+	NodeID    string        `json:"node_id"`
+	Action    CommandAction `json:"action,omitempty"`
+	Status    string        `json:"status"` // "queued"|"running"|"success"|"failed"|"timeout"
+	Output    string        `json:"output"`
+	Error     string        `json:"error"`
+	Progress  int32         `json:"progress"` // 0-100
+	Timestamp int64         `json:"timestamp"`
 }
 
 // ============================================================================
@@ -193,8 +200,8 @@ type CmdResult struct {
 // CacheLocation is the result of a cache lookup.
 // Fields populated depend on cache mode.
 type CacheLocation struct {
-	Hash     uint64 `json:"hash"`
-	Size     int64  `json:"size"`
+	Hash uint64 `json:"hash"`
+	Size int64  `json:"size"`
 
 	// Mode 1 (local_nvme): IP + exact disk path
 	NodeID   string `json:"node_id,omitempty"`
@@ -212,21 +219,24 @@ type CacheLocation struct {
 
 // NodeSummary is a compact view of a node for listing.
 type NodeSummary struct {
-	NodeID          string      `json:"node_id"`
-	IP              string      `json:"ip"`
-	Status          NodeStatus  `json:"status"`       // node connection status: online/offline
-	VLLMStatus      string      `json:"vllm_status"`  // vLLM process: running/stopped/loading/error
-	GPUUtil         float64     `json:"gpu_util"`
-	GPUMemUsed      int64       `json:"gpu_mem_used"`
-	ModelName       string      `json:"model_name"`
-	CacheBlocks     int64       `json:"cache_blocks"`
-	HitRate         float64     `json:"hit_rate"`
-	CacheRetrieved  int64       `json:"cache_retrieved"`
-	CacheEvicted    int64       `json:"cache_evicted"`
-	QueueLen        int32       `json:"queue_len"`
-	LoadingPct      int32       `json:"loading_pct"`
-	LastSeen        int64       `json:"last_seen"`
-	Disks           []DiskUsage `json:"disks"`
+	NodeID          string       `json:"node_id"`
+	IP              string       `json:"ip"`
+	VLLMPort        int          `json:"vllm_port"`
+	CacheMode       CacheMode    `json:"cache_mode"`
+	SharedCacheID   string       `json:"shared_cache_id,omitempty"`
+	Status          NodeStatus   `json:"status"`      // node connection status: online/offline
+	VLLMStatus      string       `json:"vllm_status"` // vLLM process: running/stopped/loading/error
+	GPUUtil         float64      `json:"gpu_util"`
+	GPUMemUsed      int64        `json:"gpu_mem_used"`
+	ModelName       string       `json:"model_name"`
+	CacheBlocks     int64        `json:"cache_blocks"`
+	HitRate         float64      `json:"hit_rate"`
+	CacheRetrieved  int64        `json:"cache_retrieved"`
+	CacheEvicted    int64        `json:"cache_evicted"`
+	QueueLen        int32        `json:"queue_len"`
+	LoadingPct      int32        `json:"loading_pct"`
+	LastSeen        int64        `json:"last_seen"`
+	Disks           []DiskUsage  `json:"disks"`
 	AvailableModels []LocalModel `json:"available_models,omitempty"`
 }
 
@@ -243,9 +253,9 @@ type ClusterSummary struct {
 
 // NodeDetail is the full detail of a single node.
 type NodeDetail struct {
-	Info   *NodeInfo    `json:"info"`
+	Info   *NodeInfo      `json:"info"`
 	Status *MachineStatus `json:"status"`
-	Recent []*CmdResult `json:"recent"`
+	Recent []*CmdResult   `json:"recent"`
 }
 
 // ============================================================================
@@ -257,6 +267,7 @@ type RegisterReply struct {
 	ClusterSize int       `json:"cluster_size"`
 	CacheMode   CacheMode `json:"cache_mode"`
 	Accepted    bool      `json:"accepted"`
+	Reason      string    `json:"reason,omitempty"`
 }
 
 type HeartbeatReply struct {
@@ -268,8 +279,10 @@ type HeartbeatReply struct {
 
 // OK is a generic success/error reply.
 type OK struct {
-	OK  bool   `json:"ok"`
-	Err string `json:"err,omitempty"`
+	OK          bool   `json:"ok"`
+	Err         string `json:"err,omitempty"`
+	CmdID       string `json:"cmd_id,omitempty"`
+	TargetCount int    `json:"target_count,omitempty"`
 }
 
 // Empty is a placeholder for methods that need no args/reply payload.
@@ -282,8 +295,8 @@ func FormatHash(hash uint64) string {
 
 // DispatchReq is the request payload for S端 AdminService.DispatchCommand.
 type DispatchReq struct {
-	Action  CommandAction        `json:"action"`
-	Params  map[string]string    `json:"params"`
-	Target  string               `json:"target"` // node_id or "*" for broadcast
-	Timeout int                  `json:"timeout"`
+	Action  CommandAction     `json:"action"`
+	Params  map[string]string `json:"params"`
+	Target  string            `json:"target"` // node_id or "*" for broadcast
+	Timeout int               `json:"timeout"`
 }

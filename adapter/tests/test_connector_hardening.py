@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -88,6 +89,8 @@ from adapter.vllm.connector_common import (
     _PendingLoadSpec,
     _RequestTracker,
     _WriterState,
+    _config_bool,
+    _validate_shared_cache_marker,
 )
 from adapter.vllm.chunk_keys import ChunkDescriptor
 
@@ -141,6 +144,46 @@ class DummyConnector(DiskCacheConnectorCommonMixin):
 
     def _is_disk_cache_meta(self, meta) -> bool:
         return isinstance(meta, DiskCacheMeta)
+
+
+def test_config_bool_handles_agent_string_values():
+    assert _config_bool(True, "flag") is True
+    assert _config_bool("true", "flag") is True
+    assert _config_bool("false", "flag") is False
+    assert _config_bool("0", "flag") is False
+    with pytest.raises(ValueError, match="flag must be a boolean"):
+        _config_bool("not-a-bool", "flag")
+
+
+def test_shared_metadata_health_requires_matching_service_identity(tmp_path):
+    conn = DummyConnector(tmp_path)
+    conn._shared_cache = True
+    conn._shared_cache_id = "nvfile-prod"
+    conn._go.health_check.return_value = True
+    conn._go.cluster_info.return_value = {
+        "api_version": 1,
+        "metadata_mode": "shared",
+        "shared_cache_id": "nvfile-prod",
+        "published_object_verified": True,
+        "eviction_enabled": False,
+    }
+
+    assert conn._health_check() is True
+
+    conn._go.cluster_info.return_value["shared_cache_id"] = "other-cache"
+    assert conn._health_check() is False
+
+
+def test_shared_cache_marker_rejects_wrong_mount(tmp_path):
+    marker_path = tmp_path / ".cascade-shared-cache.json"
+    marker_path.write_text(
+        json.dumps({"format_version": 1, "shared_cache_id": "nvfile-prod"}),
+        encoding="utf-8",
+    )
+    _validate_shared_cache_marker(tmp_path, "nvfile-prod")
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        _validate_shared_cache_marker(tmp_path, "other-cache")
 
 
 def test_connector_requires_piecewise_cudagraph():

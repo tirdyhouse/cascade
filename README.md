@@ -53,7 +53,7 @@ NVMe is not a replacement for hot GPU KV. It is a high-capacity tier for cold or
 | Storage backends | ✅ Working | POSIX backend plus GDS/NvFile backend with automatic fallback. |
 | Cache-hit validation | ✅ Working | Isolated script starts disk-cache + vLLM and checks retrieved block counters and cached token stats. |
 | A100 validation | ✅ Working | Real A100 run with Qwen2.5-7B-Instruct and vLLM 0.21.0. |
-| Cluster scheduling | 🚧 Roadmap | GPU-aware dispatch, RDMA pooled NVMe, and multi-node coordination are planned. |
+| Cluster gateway | 🧪 MVP | OpenAI-compatible routing across healthy vLLM replicas; HA, cache-aware matching, and distributed GC remain planned. |
 
 ---
 

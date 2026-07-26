@@ -179,7 +179,7 @@ func (e *diskEngine) CommitChunks(objects []ChunkObject) error {
 			}
 			continue
 		}
-		if obj.Size > e.cfg.MaxSizeBytes-totalNewSize {
+		if !e.cfg.DisableEviction && obj.Size > e.cfg.MaxSizeBytes-totalNewSize {
 			return fmt.Errorf("%w: batch size exceeds cache capacity %d", ErrInvalidArgument, e.cfg.MaxSizeBytes)
 		}
 		totalNewSize += obj.Size

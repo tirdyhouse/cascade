@@ -1,1114 +1,1054 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Cascade · Cluster Manager</title>
-<style>
-:root {
-  --bg-0: #1e1e1e;
-  --bg-1: #252526;
-  --bg-2: #2d2d2d;
-  --bg-3: #3c3c3c;
-  --bg-sidebar: #333333;
-  --border: #404040;
-  --border-active: #007acc;
-  --text-0: #cccccc;
-  --text-1: #969696;
-  --text-2: #6a6a6a;
-  --accent: #007acc;
-  --accent-hover: #1a8ad4;
-  --green: #4ec9b0;
-  --orange: #ce9178;
-  --red: #f44747;
-  --yellow: #dcdcaa;
-  --purple: #c586c0;
-  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'SF Mono', 'Consolas', monospace;
-}
-
-* { box-sizing: border-box; margin: 0; padding: 0; }
-
-body {
-  font-family: var(--font);
-  background: var(--bg-0);
-  color: var(--text-0);
-  font-size: 13px;
-  height: 100vh;
-  overflow: hidden;
-}
-
-/* ─── App Layout ─── */
-.app {
-  display: grid;
-  grid-template-columns: 260px 1fr 320px;
-  grid-template-rows: 38px 1fr 24px;
-  height: 100vh;
-}
-
-/* ─── Title Bar ─── */
-.titlebar {
-  grid-column: 1 / -1;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  gap: 12px;
-}
-
-.titlebar-logo {
-  font-weight: 700;
-  font-size: 13px;
-  color: var(--accent);
-}
-
-.titlebar-nav {
-  display: flex;
-  gap: 2px;
-}
-
-.titlebar-btn {
-  padding: 4px 10px;
-  background: none;
-  border: none;
-  color: var(--text-1);
-  cursor: pointer;
-  border-radius: 3px;
-  font-size: 12px;
-}
-
-.titlebar-btn:hover {
-  background: var(--bg-3);
-  color: var(--text-0);
-}
-
-.titlebar-btn.active {
-  background: var(--accent);
-  color: #fff;
-}
-
-.titlebar-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text-1);
-}
-
-/* ─── Sidebar (Resource Tree) ─── */
-.sidebar {
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
-  overflow-y: auto;
-}
-
-.sidebar-header {
-  padding: 8px 12px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-1);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.tree {
-  padding: 4px 0;
-}
-
-.tree-item {
-  display: flex;
-  align-items: center;
-  padding: 4px 12px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.tree-item:hover {
-  background: var(--bg-3);
-}
-
-.tree-item.selected {
-  background: var(--accent);
-  color: #fff;
-}
-
-.tree-toggle {
-  width: 16px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  color: var(--text-2);
-}
-
-.tree-icon {
-  width: 16px;
-  height: 16px;
-  margin-right: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-}
-
-.tree-label {
-  flex: 1;
-  font-size: 12px;
-}
-
-.tree-badge {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: var(--bg-3);
-  color: var(--text-1);
-  margin-left: 8px;
-}
-
-.tree-children {
-  padding-left: 16px;
-}
-
-/* ─── Main Content ─── */
-.main {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-/* ─── Toolbar ─── */
-.toolbar {
-  background: var(--bg-1);
-  border-bottom: 1px solid var(--border);
-  padding: 6px 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.toolbar-btn {
-  padding: 4px 10px;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  color: var(--text-0);
-  cursor: pointer;
-  border-radius: 3px;
-  font-size: 12px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.toolbar-btn:hover {
-  background: var(--bg-3);
-  border-color: var(--border-active);
-}
-
-.toolbar-btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-.toolbar-btn.primary:hover {
-  background: var(--accent-hover);
-}
-
-.toolbar-btn.danger {
-  color: var(--red);
-}
-
-.toolbar-btn.danger:hover {
-  background: var(--red);
-  color: #fff;
-}
-
-.toolbar-sep {
-  width: 1px;
-  height: 20px;
-  background: var(--border);
-}
-
-.toolbar-spacer {
-  flex: 1;
-}
-
-.toolbar-info {
-  font-size: 11px;
-  color: var(--text-1);
-}
-
-/* ─── Content Area ─── */
-.content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px;
-}
-
-/* ─── VM/Node Table ─── */
-.vm-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.vm-table th {
-  padding: 6px 10px;
-  text-align: left;
-  font-weight: 600;
-  color: var(--text-1);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  background: var(--bg-1);
-  cursor: pointer;
-  user-select: none;
-}
-
-.vm-table th:hover {
-  color: var(--text-0);
-}
-
-.vm-table td {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-}
-
-.vm-table tr:hover td {
-  background: var(--bg-2);
-}
-
-.vm-table tr.selected td {
-  background: var(--accent);
-  color: #fff;
-}
-
-/* ─── Status Indicators ─── */
-.status {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.status-dot.running { background: var(--green); }
-.status-dot.stopped { background: var(--red); }
-.status-dot.loading { background: var(--orange); animation: pulse 1s infinite; }
-.status-dot.idle { background: var(--text-2); }
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-
-/* ─── Progress Bar ─── */
-.progress {
-  width: 60px;
-  height: 14px;
-  background: var(--bg-3);
-  border-radius: 2px;
-  overflow: hidden;
-  display: inline-flex;
-  align-items: center;
-}
-
-.progress-fill {
-  height: 100%;
-  transition: width 0.3s;
-}
-
-.progress-fill.low { background: var(--green); }
-.progress-fill.mid { background: var(--orange); }
-.progress-fill.high { background: var(--red); }
-
-.progress-text {
-  font-size: 10px;
-  font-family: var(--font-mono);
-  margin-left: 6px;
-  min-width: 30px;
-}
-
-/* ─── Right Panel (Details) ─── */
-.right-panel {
-  background: var(--bg-1);
-  border-left: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.panel-tabs {
-  display: flex;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-2);
-}
-
-.panel-tab {
-  padding: 8px 14px;
-  font-size: 12px;
-  color: var(--text-1);
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-}
-
-.panel-tab:hover {
-  color: var(--text-0);
-}
-
-.panel-tab.active {
-  color: var(--text-0);
-  border-bottom-color: var(--accent);
-}
-
-.panel-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px;
-}
-
-/* ─── Detail Sections ─── */
-.detail-section {
-  margin-bottom: 16px;
-}
-
-.detail-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-1);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 8px;
-}
-
-.detail-row {
-  display: flex;
-  justify-content: space-between;
-  padding: 3px 0;
-  font-size: 12px;
-}
-
-.detail-label {
-  color: var(--text-1);
-}
-
-.detail-value {
-  font-family: var(--font-mono);
-  color: var(--text-0);
-}
-
-/* ─── Log Console ─── */
-.log-console {
-  background: var(--bg-0);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 8px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.5;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-.log-line {
-  color: var(--text-1);
-}
-
-.log-line.info { color: var(--green); }
-.log-line.warn { color: var(--orange); }
-.log-line.error { color: var(--red); }
-
-/* ─── Status Bar ─── */
-.statusbar {
-  grid-column: 1 / -1;
-  background: var(--accent);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  font-size: 11px;
-  gap: 16px;
-}
-
-.statusbar-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-/* ─── Context Menu ─── */
-.context-menu {
-  position: fixed;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 4px 0;
-  min-width: 180px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-  z-index: 1000;
-  display: none;
-}
-
-.context-menu.visible {
-  display: block;
-}
-
-.context-item {
-  padding: 6px 14px;
-  font-size: 12px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.context-item:hover {
-  background: var(--accent);
-  color: #fff;
-}
-
-.context-sep {
-  height: 1px;
-  background: var(--border);
-  margin: 4px 0;
-}
-
-/* ─── Empty State ─── */
-.empty-state {
-  text-align: center;
-  padding: 40px;
-  color: var(--text-2);
-}
-
-.empty-icon {
-  font-size: 32px;
-  margin-bottom: 12px;
-  opacity: 0.5;
-}
-
-.empty-text {
-  font-size: 13px;
-}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Cascade Control Plane</title>
+  <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<div class="app">
-  <!-- Title Bar -->
-  <header class="titlebar">
-    <span class="titlebar-logo">⚡ Cascade</span>
-    <nav class="titlebar-nav">
-      <button class="titlebar-btn active">Cluster</button>
-      <button class="titlebar-btn">Storage</button>
-      <button class="titlebar-btn">Network</button>
-      <button class="titlebar-btn">Tasks</button>
-    </nav>
-    <div class="titlebar-right">
-      <span>🟢 Connected</span>
-      <span>|</span>
-      <span id="current-time">--:--:--</span>
-    </div>
-  </header>
-
-  <!-- Sidebar (Resource Tree) -->
-  <aside class="sidebar">
-    <div class="sidebar-header">
-      <span>Resources</span>
-      <button class="toolbar-btn" style="padding: 2px 6px; font-size: 10px;">+ New</button>
-    </div>
-    <div class="tree" id="resource-tree">
-      <!-- Cluster Root -->
-      <div class="tree-item selected" data-id="cluster">
-        <span class="tree-toggle">▼</span>
-        <span class="tree-icon">🏠</span>
-        <span class="tree-label">Cascade Cluster</span>
-        <span class="tree-badge" id="node-count">0</span>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand" aria-label="Cascade Control Plane">
+        <span class="brand-mark">C</span>
+        <span>Cascade</span>
+        <span class="product-label">CONTROL PLANE</span>
       </div>
-      
-      <!-- Nodes Container -->
-      <div class="tree-children" id="nodes-tree">
-        <!-- Dynamic nodes will be inserted here -->
+
+      <nav class="topnav" aria-label="Console views">
+        <button type="button" class="active" data-view="cluster">Cluster</button>
+        <button type="button" data-view="tasks">Commands</button>
+        <button type="button" data-view="models">Models and Gateway</button>
+      </nav>
+
+      <div class="topbar-meta">
+        <span class="connection" id="connection-state" aria-live="polite">
+          <span class="signal loading"></span>
+          <span class="connection-text">Connecting</span>
+        </span>
+        <span id="last-refresh">Awaiting cluster state</span>
+        <button class="button" type="button" data-action="refresh">Refresh</button>
       </div>
-      
-      <!-- Storage -->
-      <div class="tree-item" data-id="storage">
-        <span class="tree-toggle">▶</span>
-        <span class="tree-icon">💾</span>
-        <span class="tree-label">Storage</span>
-      </div>
-      
-      <!-- Templates -->
-      <div class="tree-item" data-id="templates">
-        <span class="tree-toggle">▶</span>
-        <span class="tree-icon">📦</span>
-        <span class="tree-label">Model Templates</span>
-      </div>
-    </div>
-  </aside>
+    </header>
 
-  <!-- Main Content -->
-  <main class="main">
-    <!-- Toolbar -->
-    <div class="toolbar">
-      <button class="toolbar-btn primary" onclick="doStart()">▶ Start</button>
-      <button class="toolbar-btn danger" onclick="doStop()">⏹ Stop</button>
-      <button class="toolbar-btn" onclick="doRestart()">↻ Restart</button>
-      <span class="toolbar-sep"></span>
-      <button class="toolbar-btn" onclick="doMigrate()">⇄ Migrate</button>
-      <button class="toolbar-btn" onclick="doDistribute()">📦 Distribute Model</button>
-      <span class="toolbar-sep"></span>
-      <button class="toolbar-btn" onclick="doConsole()">>_ Console</button>
-      <span class="toolbar-spacer"></span>
-      <span class="toolbar-info" id="selection-info">0 selected</span>
-    </div>
-
-    <!-- VM/Node Table -->
-    <div class="content">
-      <table class="vm-table">
-        <thead>
-          <tr>
-            <th style="width: 30px;"><input type="checkbox" id="select-all"></th>
-            <th>Node</th>
-            <th>Status</th>
-            <th>GPU</th>
-            <th>GPU Mem</th>
-            <th>Model</th>
-            <th>vLLM</th>
-            <th>Cache</th>
-            <th>Hit Rate</th>
-            <th>Uptime</th>
-          </tr>
-        </thead>
-        <tbody id="vm-tbody">
-          <!-- Dynamic rows -->
-        </tbody>
-      </table>
-    </div>
-  </main>
-
-  <!-- Right Panel (Details) -->
-  <aside class="right-panel">
-    <div class="panel-tabs">
-      <div class="panel-tab active">Summary</div>
-      <div class="panel-tab">Hardware</div>
-      <div class="panel-tab">Cache</div>
-      <div class="panel-tab">Console</div>
-    </div>
-    <div class="panel-content" id="detail-panel">
-      <div class="empty-state">
-        <div class="empty-icon">📋</div>
-        <div class="empty-text">Select a node to view details</div>
-      </div>
-    </div>
-  </aside>
-
-  <!-- Status Bar -->
-  <footer class="statusbar">
-    <span class="statusbar-item" id="status-nodes">Nodes: 0</span>
-    <span class="statusbar-item" id="status-running">Running: 0</span>
-    <span class="statusbar-item" id="status-gpu">Avg GPU: 0%</span>
-    <span class="statusbar-item" id="status-hitrate">Hit Rate: 0%</span>
-    <span class="statusbar-item" id="status-blocks">Cache: 0 blocks</span>
-  </footer>
-</div>
-
-<!-- Context Menu -->
-<div class="context-menu" id="context-menu">
-  <div class="context-item" onclick="doStart()">▶ Start vLLM</div>
-  <div class="context-item" onclick="doStop()">⏹ Stop</div>
-  <div class="context-item" onclick="doRestart()">↻ Restart</div>
-  <div class="context-sep"></div>
-  <div class="context-item" onclick="doDistribute()">📦 Distribute Model</div>
-  <div class="context-item" onclick="doMigrate()">⇄ Migrate</div>
-  <div class="context-sep"></div>
-  <div class="context-item" onclick="doConsole()">>_ Open Console</div>
-  <div class="context-item" onclick="doLogs()">📜 View Logs</div>
-  <div class="context-sep"></div>
-  <div class="context-item" style="color: var(--red);" onclick="doRemove()">✕ Remove</div>
-</div>
-
-<script>
-// ─── State ───
-let nodes = [];
-let selectedNodes = new Set();
-let selectedNode = null;
-
-// ─── Mock Data (for demo without backend) ───
-const mockNodes = [
-  {
-    node_id: 'gpu-node-01',
-    ip: '192.168.1.101',
-    role: 'prefill',
-    status: 'online',
-    vllm_status: 'running',
-    gpu_util: 0.72,
-    gpu_mem_used: 28672,
-    info: { gpu_type: 'A100-80GB', gpu_mem_mb: 81920 },
-    model_name: 'Qwen2.5-72B-Instruct',
-    cache_blocks: 15420,
-    hit_rate: 87.3,
-    disks: [{ path: '/mnt/nvme0', free_gb: 1536 }]
-  },
-  {
-    node_id: 'gpu-node-02',
-    ip: '192.168.1.102',
-    role: 'prefill',
-    status: 'online',
-    vllm_status: 'running',
-    gpu_util: 0.58,
-    gpu_mem_used: 24576,
-    info: { gpu_type: 'A100-80GB', gpu_mem_mb: 81920 },
-    model_name: 'Qwen2.5-72B-Instruct',
-    cache_blocks: 12850,
-    hit_rate: 82.1,
-    disks: [{ path: '/mnt/nvme0', free_gb: 2048 }]
-  },
-  {
-    node_id: 'gpu-node-03',
-    ip: '192.168.1.103',
-    role: 'decode',
-    status: 'online',
-    vllm_status: 'running',
-    gpu_util: 0.89,
-    gpu_mem_used: 32768,
-    info: { gpu_type: 'H100-80GB', gpu_mem_mb: 81920 },
-    model_name: 'Qwen2.5-72B-Instruct',
-    cache_blocks: 28900,
-    hit_rate: 91.5,
-    disks: [{ path: '/mnt/nvme0', free_gb: 1024 }]
-  },
-  {
-    node_id: 'gpu-node-04',
-    ip: '192.168.1.104',
-    role: 'decode',
-    status: 'online',
-    vllm_status: 'running',
-    gpu_util: 0.95,
-    gpu_mem_used: 36864,
-    info: { gpu_type: 'H100-80GB', gpu_mem_mb: 81920 },
-    model_name: 'Qwen2.5-72B-Instruct',
-    cache_blocks: 31200,
-    hit_rate: 93.2,
-    disks: [{ path: '/mnt/nvme0', free_gb: 768 }]
-  },
-  {
-    node_id: 'gpu-node-05',
-    ip: '192.168.1.105',
-    role: 'storage',
-    status: 'online',
-    vllm_status: 'stopped',
-    gpu_util: 0,
-    gpu_mem_used: 0,
-    info: { gpu_type: null, gpu_mem_mb: 0 },
-    model_name: null,
-    cache_blocks: 45200,
-    hit_rate: 0,
-    disks: [
-      { path: '/mnt/nvme0', free_gb: 3072 },
-      { path: '/mnt/nvme1', free_gb: 3072 },
-      { path: '/mnt/nvme2', free_gb: 4096 }
-    ]
-  },
-  {
-    node_id: 'gpu-node-06',
-    ip: '192.168.1.106',
-    role: 'decode',
-    status: 'online',
-    vllm_status: 'loading',
-    gpu_util: 0.12,
-    gpu_mem_used: 8192,
-    info: { gpu_type: 'L40S-48GB', gpu_mem_mb: 49152 },
-    model_name: 'Llama-3.1-70B',
-    cache_blocks: 2100,
-    hit_rate: 45.6,
-    disks: [{ path: '/mnt/nvme0', free_gb: 1800 }]
-  }
-];
-
-// Use mock data if API fails
-let useMockData = true;
-
-// ─── Tree Management ───
-function updateTree() {
-  const tree = document.getElementById('nodes-tree');
-  const grouped = {};
-  
-  nodes.forEach(n => {
-    const role = n.role || 'unknown';
-    if (!grouped[role]) grouped[role] = [];
-    grouped[role].push(n);
-  });
-  
-  let html = '';
-  
-  const roleOrder = ['prefill', 'decode', 'storage'];
-  const roleIcons = { prefill: '⚡', decode: '↻', storage: '💾' };
-  
-  roleOrder.forEach(role => {
-    const items = grouped[role];
-    if (!items || items.length === 0) return;
-    
-    html += `
-      <div class="tree-item" data-role="${role}">
-        <span class="tree-toggle">▼</span>
-        <span class="tree-icon">${roleIcons[role] || '●'}</span>
-        <span class="tree-label">${role.charAt(0).toUpperCase() + role.slice(1)} Nodes</span>
-        <span class="tree-badge">${items.length}</span>
-      </div>
-      <div class="tree-children">
-    `;
-    
-    items.forEach(n => {
-      const status = n.vllm_status || 'stopped';
-      const statusClass = status === 'running' ? 'running' : status === 'loading' ? 'loading' : 'stopped';
-      html += `
-        <div class="tree-item ${selectedNode === n.node_id ? 'selected' : ''}" 
-             data-id="${n.node_id}" onclick="selectNode('${n.node_id}')">
-          <span class="tree-toggle"></span>
-          <span class="tree-icon"><span class="status-dot ${statusClass}"></span></span>
-          <span class="tree-label">${n.node_id || 'Node'}</span>
-        </div>
-      `;
-    });
-    
-    html += '</div>';
-  });
-  
-  tree.innerHTML = html;
-}
-
-// ─── Table Management ───
-function updateTable() {
-  const tbody = document.getElementById('vm-tbody');
-  
-  if (nodes.length === 0) {
-    tbody.innerHTML = `
-      <tr><td colspan="10" class="empty-state">
-        <div class="empty-icon">🔌</div>
-        <div class="empty-text">No nodes connected</div>
-      </td></tr>
-    `;
-    return;
-  }
-  
-  tbody.innerHTML = nodes.map(n => {
-    const gpuPct = ((n.gpu_util || 0) * 100).toFixed(0);
-    const memPct = n.info?.gpu_mem_mb ? ((n.gpu_mem_used || 0) / n.info.gpu_mem_mb * 100).toFixed(0) : 0;
-    const status = n.vllm_status || 'stopped';
-    const statusClass = status === 'running' ? 'running' : status === 'loading' ? 'loading' : 'stopped';
-    const isSelected = selectedNodes.has(n.node_id);
-    
-    return `
-      <tr class="${isSelected ? 'selected' : ''}" 
-          onclick="selectNode('${n.node_id}', event)"
-          oncontextmenu="showContextMenu(event, '${n.node_id}')">
-        <td><input type="checkbox" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation()"></td>
-        <td><strong>${n.node_id || 'Node'}</strong><br><span style="color: var(--text-1); font-size: 11px;">${n.ip || ''}</span></td>
-        <td>
-          <span class="status">
-            <span class="status-dot ${statusClass}"></span>
-            ${status}
-          </span>
-        </td>
-        <td>
-          <div style="display: flex; align-items: center;">
-            <div class="progress">
-              <div class="progress-fill ${getBarClass(gpuPct)}" style="width: ${gpuPct}%"></div>
-            </div>
-            <span class="progress-text">${gpuPct}%</span>
+    <main class="main-shell">
+      <section class="view active" id="cluster-view" data-view-panel="cluster">
+        <div class="overview-band">
+          <div class="overview-intro">
+            <p class="eyebrow">Live cluster state</p>
+            <h1>Inference fleet</h1>
+            <p>Agent heartbeats, cache telemetry, command progress, and gateway admission state.</p>
           </div>
-        </td>
-        <td>${n.gpu_mem_used ? (n.gpu_mem_used / 1024).toFixed(1) : '0'} / ${n.info?.gpu_mem_mb ? (n.info.gpu_mem_mb / 1024).toFixed(0) : '?'} GB</td>
-        <td>${n.model_name || '—'}</td>
-        <td><span class="status"><span class="status-dot ${statusClass}"></span>${status}</span></td>
-        <td>${(n.cache_blocks || 0).toLocaleString()}</td>
-        <td>${(n.hit_rate || 0).toFixed(1)}%</td>
-        <td style="color: var(--text-1);">3d 12h</td>
-      </tr>
-    `;
-  }).join('');
-}
-
-// ─── Detail Panel ───
-function updateDetail() {
-  const panel = document.getElementById('detail-panel');
-  
-  if (!selectedNode) {
-    panel.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-icon">📋</div>
-        <div class="empty-text">Select a node to view details</div>
-      </div>
-    `;
-    return;
-  }
-  
-  const n = nodes.find(n => n.node_id === selectedNode);
-  if (!n) return;
-  
-  const gpuPct = ((n.gpu_util || 0) * 100).toFixed(0);
-  const memUsed = n.gpu_mem_used ? (n.gpu_mem_used / 1024).toFixed(1) : '0';
-  const memTotal = n.info?.gpu_mem_mb ? (n.info.gpu_mem_mb / 1024).toFixed(0) : '?';
-  
-  panel.innerHTML = `
-    <div class="detail-section">
-      <div class="detail-title">Node Information</div>
-      <div class="detail-row">
-        <span class="detail-label">Node ID</span>
-        <span class="detail-value">${n.node_id}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">IP Address</span>
-        <span class="detail-value">${n.ip || '—'}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Role</span>
-        <span class="detail-value">${n.role || 'storage'}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Status</span>
-        <span class="detail-value">${n.status || 'unknown'}</span>
-      </div>
-    </div>
-    
-    <div class="detail-section">
-      <div class="detail-title">GPU</div>
-      <div class="detail-row">
-        <span class="detail-label">Type</span>
-        <span class="detail-value">${n.info?.gpu_type || '—'}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Utilization</span>
-        <span class="detail-value">${gpuPct}%</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Memory</span>
-        <span class="detail-value">${memUsed} / ${memTotal} GB</span>
-      </div>
-    </div>
-    
-    <div class="detail-section">
-      <div class="detail-title">vLLM Service</div>
-      <div class="detail-row">
-        <span class="detail-label">Status</span>
-        <span class="detail-value">${n.vllm_status || 'stopped'}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Model</span>
-        <span class="detail-value">${n.model_name || '—'}</span>
-      </div>
-    </div>
-    
-    <div class="detail-section">
-      <div class="detail-title">Cache</div>
-      <div class="detail-row">
-        <span class="detail-label">Blocks</span>
-        <span class="detail-value">${(n.cache_blocks || 0).toLocaleString()}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Hit Rate</span>
-        <span class="detail-value">${(n.hit_rate || 0).toFixed(1)}%</span>
-      </div>
-    </div>
-    
-    <div class="detail-section">
-      <div class="detail-title">Disks</div>
-      ${(n.disks || []).map(d => `
-        <div class="detail-row">
-          <span class="detail-label">${d.path || '—'}</span>
-          <span class="detail-value">${d.free_gb ? (d.free_gb / 1024).toFixed(1) + ' TB free' : '—'}</span>
+          <div class="metrics" aria-live="polite">
+            <div class="metric">
+              <span class="metric-label">Agents online</span>
+              <strong class="metric-value" id="metric-online">-</strong>
+              <span class="metric-detail" id="metric-online-detail">Waiting for data</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Serving vLLM</span>
+              <strong class="metric-value" id="metric-serving">-</strong>
+              <span class="metric-detail" id="metric-serving-detail">Waiting for data</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Cache blocks</span>
+              <strong class="metric-value" id="metric-cache">-</strong>
+              <span class="metric-detail" id="metric-cache-detail">Waiting for data</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Cache hit rate</span>
+              <strong class="metric-value" id="metric-hit-rate">-</strong>
+              <span class="metric-detail" id="metric-hit-rate-detail">Waiting for data</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Gateway replicas</span>
+              <strong class="metric-value" id="metric-gateway">-</strong>
+              <span class="metric-detail" id="metric-gateway-detail">Waiting for data</span>
+            </div>
+          </div>
         </div>
-      `).join('')}
-    </div>
-    
-    <div class="detail-section">
-      <div class="detail-title">Recent Logs</div>
-      <div class="log-console">
-        <div class="log-line info">[INFO] vLLM service ${n.vllm_status === 'running' ? 'running' : 'stopped'}</div>
-        <div class="log-line info">[INFO] Model loaded: ${n.model_name || 'none'}</div>
-        <div class="log-line">[INFO] Cache initialized: ${(n.cache_blocks || 0)} blocks</div>
-        <div class="log-line info">[INFO] Ready to serve requests</div>
-      </div>
-    </div>
-  `;
-}
 
-// ─── Utility ───
-function getBarClass(value) {
-  if (value < 50) return 'low';
-  if (value < 80) return 'mid';
-  return 'high';
-}
+        <div class="workspace-grid">
+          <section class="data-surface" aria-labelledby="nodes-heading">
+            <div class="surface-heading">
+              <div class="heading-copy">
+                <h2 id="nodes-heading">Registered agents</h2>
+                <p id="nodes-summary">Loading registered agents</p>
+              </div>
+              <div class="command-bar" aria-label="Node operations">
+                <button class="button primary" type="button" data-action="start" data-requires-node>Start vLLM</button>
+                <button class="button" type="button" data-action="restart" data-requires-node>Restart</button>
+                <button class="button danger" type="button" data-action="stop" data-requires-node>Stop</button>
+                <button class="button" type="button" data-action="download" data-requires-node>Download model</button>
+              </div>
+            </div>
+            <div class="table-scroll">
+              <table aria-describedby="nodes-summary">
+                <thead>
+                  <tr>
+                    <th scope="col">Node</th>
+                    <th scope="col">Health</th>
+                    <th scope="col">Service</th>
+                    <th scope="col">Model</th>
+                    <th scope="col">GPU</th>
+                    <th scope="col">Queue</th>
+                    <th scope="col">Cache</th>
+                    <th scope="col">Last heartbeat</th>
+                  </tr>
+                </thead>
+                <tbody id="nodes-table-body"></tbody>
+              </table>
+            </div>
+          </section>
 
-function selectNode(id, event) {
-  if (event && event.ctrlKey) {
-    if (selectedNodes.has(id)) {
-      selectedNodes.delete(id);
-    } else {
-      selectedNodes.add(id);
+          <aside class="inspector" aria-labelledby="inspector-title">
+            <div class="inspector-heading">
+              <div>
+                <p class="eyebrow">Inspector</p>
+                <h2 id="inspector-title">Cluster overview</h2>
+              </div>
+              <span class="status-chip" id="inspector-chip">Live</span>
+            </div>
+            <div class="inspector-body" id="inspector-content"></div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="tasks-view" data-view-panel="tasks">
+        <div class="view-heading">
+          <div>
+            <p class="eyebrow">Command history</p>
+            <h1>Agent operations</h1>
+            <p>Every row is an event emitted by the command dispatcher or a registered Agent.</p>
+          </div>
+          <button class="button" type="button" data-action="refresh">Refresh history</button>
+        </div>
+        <section class="tasks-surface" aria-labelledby="tasks-heading">
+          <div class="surface-heading">
+            <div class="heading-copy">
+              <h2 id="tasks-heading">Recent events</h2>
+              <p id="tasks-summary">Loading command events</p>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="task-table" aria-describedby="tasks-summary">
+              <thead>
+                <tr>
+                  <th scope="col">Time</th>
+                  <th scope="col">Command</th>
+                  <th scope="col">Action</th>
+                  <th scope="col">Target</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Message</th>
+                </tr>
+              </thead>
+              <tbody id="tasks-table-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="models-view" data-view-panel="models">
+        <div class="view-heading">
+          <div>
+            <p class="eyebrow">Distribution and routing</p>
+            <h1>Models and gateway</h1>
+            <p>Inventory published by the control server and currently eligible OpenAI-compatible replicas.</p>
+          </div>
+          <button class="button" type="button" data-action="refresh">Refresh inventory</button>
+        </div>
+        <div class="model-layout">
+          <section class="models-surface" aria-labelledby="models-heading">
+            <div class="surface-heading">
+              <div class="heading-copy">
+                <h2 id="models-heading">Model catalog</h2>
+                <p id="models-summary">Loading model catalog</p>
+              </div>
+            </div>
+            <div class="table-scroll">
+              <table aria-describedby="models-summary">
+                <thead>
+                  <tr>
+                    <th scope="col">Model</th>
+                    <th scope="col">Quantization</th>
+                    <th scope="col">Size</th>
+                    <th scope="col">Prefix cache</th>
+                    <th scope="col">Disk cache</th>
+                    <th scope="col">Source</th>
+                  </tr>
+                </thead>
+                <tbody id="models-table-body"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <aside class="models-surface" aria-labelledby="gateway-heading">
+            <div class="surface-heading">
+              <div class="heading-copy">
+                <h2 id="gateway-heading">Gateway admission</h2>
+                <p id="gateway-summary">Loading gateway state</p>
+              </div>
+            </div>
+            <div class="model-facts" id="gateway-content"></div>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="operation-dialog" aria-labelledby="operation-title">
+    <form class="dialog-form" id="operation-form" method="dialog">
+      <header class="dialog-header">
+        <div>
+          <h2 id="operation-title">Operation</h2>
+          <p id="operation-subtitle"></p>
+        </div>
+        <button class="icon-button" type="button" data-action="close-dialog" aria-label="Close dialog" title="Close">x</button>
+      </header>
+      <div class="dialog-content" id="operation-content"></div>
+      <footer class="dialog-footer">
+        <button class="button" type="button" data-action="close-dialog">Cancel</button>
+        <button class="button primary" type="submit" id="operation-submit">Queue command</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+  <script>
+    "use strict";
+
+    const POLL_INTERVAL_MS = 5000;
+    const state = {
+      activeView: "cluster",
+      cluster: null,
+      gateway: null,
+      models: [],
+      commands: [],
+      selectedNodeID: null,
+      nodeDetail: null,
+      nodeDetailError: "",
+      loading: true,
+      refreshing: false,
+      error: "",
+      secondaryErrors: {},
+      refreshedAt: null,
+      commandBusy: false,
+      modal: null,
+    };
+
+    const elements = {
+      connection: document.getElementById("connection-state"),
+      lastRefresh: document.getElementById("last-refresh"),
+      nodesSummary: document.getElementById("nodes-summary"),
+      nodesBody: document.getElementById("nodes-table-body"),
+      inspectorTitle: document.getElementById("inspector-title"),
+      inspectorChip: document.getElementById("inspector-chip"),
+      inspectorContent: document.getElementById("inspector-content"),
+      tasksSummary: document.getElementById("tasks-summary"),
+      tasksBody: document.getElementById("tasks-table-body"),
+      modelsSummary: document.getElementById("models-summary"),
+      modelsBody: document.getElementById("models-table-body"),
+      gatewaySummary: document.getElementById("gateway-summary"),
+      gatewayContent: document.getElementById("gateway-content"),
+      dialog: document.getElementById("operation-dialog"),
+      dialogForm: document.getElementById("operation-form"),
+      dialogTitle: document.getElementById("operation-title"),
+      dialogSubtitle: document.getElementById("operation-subtitle"),
+      dialogContent: document.getElementById("operation-content"),
+      dialogSubmit: document.getElementById("operation-submit"),
+      toastRegion: document.getElementById("toast-region"),
+    };
+
+    function escapeHTML(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#039;");
     }
-  } else {
-    selectedNodes.clear();
-    selectedNodes.add(id);
-  }
-  selectedNode = id;
-  updateTable();
-  updateTree();
-  updateDetail();
-  document.getElementById('selection-info').textContent = `${selectedNodes.size} selected`;
-}
 
-// ─── Context Menu ───
-function showContextMenu(e, nodeId) {
-  e.preventDefault();
-  selectedNode = nodeId;
-  selectedNodes.clear();
-  selectedNodes.add(nodeId);
-  updateTable();
-  updateDetail();
-  
-  const menu = document.getElementById('context-menu');
-  menu.style.left = e.clientX + 'px';
-  menu.style.top = e.clientY + 'px';
-  menu.classList.add('visible');
-}
-
-document.addEventListener('click', () => {
-  document.getElementById('context-menu').classList.remove('visible');
-});
-
-// ─── Actions ───
-function doStart() {
-  const selected = Array.from(selectedNodes);
-  if (selected.length === 0) {
-    alert('Please select one or more nodes first');
-    return;
-  }
-  alert(`Start vLLM on: ${selected.join(', ')}`);
-}
-
-function doStop() {
-  const selected = Array.from(selectedNodes);
-  if (selected.length === 0) {
-    alert('Please select one or more nodes first');
-    return;
-  }
-  alert(`Stop vLLM on: ${selected.join(', ')}`);
-}
-
-function doRestart() {
-  const selected = Array.from(selectedNodes);
-  if (selected.length === 0) {
-    alert('Please select one or more nodes first');
-    return;
-  }
-  alert(`Restart vLLM on: ${selected.join(', ')}`);
-}
-
-function doMigrate() {
-  alert('Migrate workload to another node');
-}
-
-function doDistribute() {
-  alert('Distribute model to selected nodes');
-}
-
-function doConsole() {
-  if (!selectedNode) {
-    alert('Please select a node first');
-    return;
-  }
-  alert(`Open console for: ${selectedNode}`);
-}
-
-function doLogs() {
-  if (!selectedNode) {
-    alert('Please select a node first');
-    return;
-  }
-  alert(`View logs for: ${selectedNode}`);
-}
-
-function doRemove() {
-  const selected = Array.from(selectedNodes);
-  if (selected.length === 0) {
-    alert('Please select one or more nodes first');
-    return;
-  }
-  if (confirm(`Remove nodes: ${selected.join(', ')}?`)) {
-    alert('Nodes removed');
-  }
-}
-
-// ─── Data Loading ───
-async function load() {
-  try {
-    const r = await fetch('/api/v1/cluster/status');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = await r.json();
-    nodes = d.nodes || [];
-    useMockData = false;
-  } catch (e) {
-    // Use mock data if API unavailable
-    if (useMockData) {
-      nodes = mockNodes;
+    function nodes() {
+      return Array.isArray(state.cluster?.nodes) ? state.cluster.nodes : [];
     }
-  }
-  
-  // Update stats
-  const online = nodes.filter(n => n.status === 'online').length;
-  const running = nodes.filter(n => n.vllm_status === 'running').length;
-  const avgGpu = nodes.length > 0 
-    ? (nodes.reduce((sum, n) => sum + (n.gpu_util || 0) * 100, 0) / nodes.length).toFixed(1)
-    : '0';
-  const totalBlocks = nodes.reduce((sum, n) => sum + (n.cache_blocks || 0), 0);
-  const avgHitRate = nodes.length > 0
-    ? (nodes.reduce((sum, n) => sum + (n.hit_rate || 0), 0) / nodes.length).toFixed(1)
-    : '0';
-  
-  document.getElementById('node-count').textContent = nodes.length;
-  document.getElementById('status-nodes').textContent = `Nodes: ${nodes.length}`;
-  document.getElementById('status-running').textContent = `Running: ${running}`;
-  document.getElementById('status-gpu').textContent = `Avg GPU: ${avgGpu}%`;
-  document.getElementById('status-hitrate').textContent = `Hit Rate: ${avgHitRate}%`;
-  document.getElementById('status-blocks').textContent = `Cache: ${totalBlocks.toLocaleString()} blocks`;
-  
-  // Update UI
-  updateTree();
-  updateTable();
-  updateDetail();
-}
 
-// ─── Time Update ───
-function updateTime() {
-  document.getElementById('current-time').textContent = new Date().toLocaleTimeString();
-}
+    function selectedNode() {
+      return nodes().find((node) => node.node_id === state.selectedNodeID) || null;
+    }
 
-// ─── Init ───
-load();
-updateTime();
-setInterval(load, 5000);
-setInterval(updateTime, 1000);
+    function safeStatus(value, fallback = "unknown") {
+      const normalized = String(value || fallback).toLowerCase();
+      return ["online", "offline", "running", "stopped", "loading", "error", "queued", "success", "failed", "timeout"].includes(normalized)
+        ? normalized
+        : fallback;
+    }
 
-// Select-all checkbox
-document.getElementById('select-all').addEventListener('change', (e) => {
-  if (e.target.checked) {
-    nodes.forEach(n => selectedNodes.add(n.node_id));
-  } else {
-    selectedNodes.clear();
-  }
-  updateTable();
-});
-</script>
+    function titleCase(value) {
+      const text = String(value || "unknown").replaceAll("_", " ");
+      return text.replace(/\b\w/g, (character) => character.toUpperCase());
+    }
+
+    function clamp(value, min, max) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return min;
+      return Math.min(max, Math.max(min, number));
+    }
+
+    function formatInteger(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? Math.round(number).toLocaleString() : "Not reported";
+    }
+
+    function formatPercent(value, digits = 1) {
+      const number = Number(value);
+      return Number.isFinite(number) ? `${number.toFixed(digits)}%` : "Not reported";
+    }
+
+    function formatGPUPercent(value) {
+      return formatPercent(clamp(value, 0, 1) * 100, 0);
+    }
+
+    function formatBytes(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number < 0) return "Not reported";
+      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+      let size = number;
+      let unit = 0;
+      while (size >= 1024 && unit < units.length - 1) {
+        size /= 1024;
+        unit += 1;
+      }
+      const digits = size >= 10 || unit === 0 ? 0 : 1;
+      return `${size.toFixed(digits)} ${units[unit]}`;
+    }
+
+    function formatGB(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number < 0) return "Not reported";
+      if (number >= 1024) return `${(number / 1024).toFixed(1)} TiB`;
+      return `${number.toFixed(number >= 10 ? 0 : 1)} GiB`;
+    }
+
+    function formatMemoryMB(value) {
+      const megabytes = Number(value);
+      if (!Number.isFinite(megabytes) || megabytes < 0) return "Not reported";
+      const gibibytes = megabytes / 1024;
+      if (gibibytes >= 1024) return `${(gibibytes / 1024).toFixed(1)} TiB`;
+      return `${gibibytes.toFixed(gibibytes >= 10 ? 0 : 1)} GiB`;
+    }
+
+    function timestampToDate(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number <= 0) return null;
+      return new Date(Math.floor(number / 1000000));
+    }
+
+    function formatTime(value) {
+      const date = timestampToDate(value);
+      if (!date || Number.isNaN(date.getTime())) return "Not reported";
+      return date.toLocaleString([], {
+        month: "short",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    }
+
+    function formatAge(value) {
+      const date = timestampToDate(value);
+      if (!date || Number.isNaN(date.getTime())) return "Not reported";
+      const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+      if (seconds < 10) return "just now";
+      if (seconds < 60) return `${seconds}s ago`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      return `${Math.floor(minutes / 60)}h ago`;
+    }
+
+    function eventMessage(event) {
+      return event.error || event.output || "No agent output reported";
+    }
+
+    function actionLabel(action) {
+      return {
+        start_vllm: "Start vLLM",
+        stop_vllm: "Stop vLLM",
+        restart_vllm: "Restart vLLM",
+        download_model: "Download model",
+        load_model: "Load model",
+        unload_model: "Unload model",
+        update_config: "Update configuration",
+        exec_shell: "Run shell command",
+      }[action] || titleCase(action || "command");
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        ...options,
+        headers: {
+          Accept: "application/json",
+          ...(options.body ? { "Content-Type": "application/json" } : {}),
+          ...(options.headers || {}),
+        },
+      });
+      const text = await response.text();
+      let data = null;
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch (_) {
+          data = { error: text };
+        }
+      }
+      if (!response.ok) {
+        const message = data?.err || data?.error?.message || data?.error || `Request failed with HTTP ${response.status}`;
+        throw new Error(String(message));
+      }
+      return data;
+    }
+
+    async function refresh({ initial = false } = {}) {
+      if (state.refreshing) return;
+      state.refreshing = true;
+      if (initial) state.loading = true;
+      render();
+
+      try {
+        const cluster = await api("/api/v1/cluster/status");
+        state.cluster = cluster;
+        state.error = "";
+        const results = await Promise.allSettled([
+          api("/api/v1/gateway/status"),
+          api("/api/v1/models"),
+          api("/api/v1/commands"),
+        ]);
+        const [gatewayResult, modelsResult, commandsResult] = results;
+        state.secondaryErrors = {};
+        if (gatewayResult.status === "fulfilled") state.gateway = gatewayResult.value;
+        else state.secondaryErrors.gateway = gatewayResult.reason?.message || "Gateway state unavailable";
+        if (modelsResult.status === "fulfilled") state.models = Array.isArray(modelsResult.value) ? modelsResult.value : [];
+        else state.secondaryErrors.models = modelsResult.reason?.message || "Model catalog unavailable";
+        if (commandsResult.status === "fulfilled") state.commands = Array.isArray(commandsResult.value) ? commandsResult.value : [];
+        else state.secondaryErrors.commands = commandsResult.reason?.message || "Command history unavailable";
+
+        const node = selectedNode();
+        if (state.selectedNodeID && !node) {
+          state.selectedNodeID = null;
+          state.nodeDetail = null;
+          state.nodeDetailError = "";
+        }
+        const selectedNodeID = state.selectedNodeID;
+        if (selectedNodeID) {
+          try {
+            const detail = await api(`/api/v1/nodes/${encodeURIComponent(selectedNodeID)}`);
+            if (state.selectedNodeID === selectedNodeID) {
+              state.nodeDetail = detail;
+              state.nodeDetailError = "";
+            }
+          } catch (error) {
+            if (state.selectedNodeID === selectedNodeID) {
+              state.nodeDetail = null;
+              state.nodeDetailError = error.message;
+            }
+          }
+        }
+        state.refreshedAt = new Date();
+      } catch (error) {
+        state.error = error.message || "Unable to reach the control server";
+      } finally {
+        state.loading = false;
+        state.refreshing = false;
+        render();
+      }
+    }
+
+    function render() {
+      renderNavigation();
+      renderConnection();
+      renderOverview();
+      renderNodes();
+      renderInspector();
+      renderTasks();
+      renderModels();
+      renderOperationAvailability();
+    }
+
+    function renderNavigation() {
+      document.querySelectorAll("[data-view]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.view === state.activeView);
+      });
+      document.querySelectorAll("[data-view-panel]").forEach((panel) => {
+        panel.classList.toggle("active", panel.dataset.viewPanel === state.activeView);
+      });
+    }
+
+    function renderConnection() {
+      const signal = elements.connection.querySelector(".signal");
+      const text = elements.connection.querySelector(".connection-text");
+      signal.className = "signal";
+      if (state.refreshing && !state.cluster) {
+        signal.classList.add("loading");
+        text.textContent = "Connecting";
+      } else if (state.error) {
+        signal.classList.add("error");
+        text.textContent = "Server unavailable";
+      } else if (state.cluster) {
+        signal.classList.add("live");
+        text.textContent = "Live";
+      } else {
+        signal.classList.add("loading");
+        text.textContent = "Loading";
+      }
+      if (state.error) {
+        elements.lastRefresh.textContent = state.error;
+      } else if (state.refreshedAt) {
+        elements.lastRefresh.textContent = `Updated ${state.refreshedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+      } else {
+        elements.lastRefresh.textContent = "Awaiting cluster state";
+      }
+    }
+
+    function setMetric(id, value, detail) {
+      document.getElementById(`metric-${id}`).textContent = value;
+      document.getElementById(`metric-${id}-detail`).textContent = detail;
+    }
+
+    function renderOverview() {
+      const cluster = state.cluster;
+      const gateway = state.gateway;
+      if (!cluster) {
+        const message = state.error ? "Control server unavailable" : "Waiting for data";
+        setMetric("online", "-", message);
+        setMetric("serving", "-", message);
+        setMetric("cache", "-", message);
+        setMetric("hit-rate", "-", message);
+        setMetric("gateway", "-", message);
+        return;
+      }
+      const nodeList = nodes();
+      const serving = nodeList.filter((node) => safeStatus(node.vllm_status, "stopped") === "running").length;
+      setMetric("online", `${cluster.online_nodes ?? 0}/${cluster.total_nodes ?? nodeList.length}`, `${nodeList.length} registered agent${nodeList.length === 1 ? "" : "s"}`);
+      setMetric("serving", formatInteger(serving), `${nodeList.filter((node) => safeStatus(node.vllm_status, "stopped") === "loading").length} loading`);
+      setMetric("cache", formatInteger(cluster.total_blocks ?? 0), formatBytes(cluster.total_bytes ?? 0));
+      setMetric("hit-rate", formatPercent(cluster.hit_rate ?? 0), `${cluster.cache_mode || "No cache mode reported"}`);
+      if (gateway) {
+        setMetric("gateway", formatInteger(gateway.eligible_nodes ?? 0), `${Array.isArray(gateway.models) ? gateway.models.length : 0} routed model${gateway.models?.length === 1 ? "" : "s"}`);
+      } else {
+        setMetric("gateway", "-", state.secondaryErrors.gateway || "Gateway state unavailable");
+      }
+    }
+
+    function renderNodes() {
+      const nodeList = nodes();
+      if (!state.cluster && state.loading) {
+        elements.nodesSummary.textContent = "Loading registered agents";
+        elements.nodesBody.innerHTML = tableState("Loading cluster state", "The control server is being queried.", 8, "loading");
+        return;
+      }
+      if (state.error && !state.cluster) {
+        elements.nodesSummary.textContent = "Cluster state unavailable";
+        elements.nodesBody.innerHTML = tableState("Unable to load agents", state.error, 8, "error");
+        return;
+      }
+      elements.nodesSummary.textContent = `${nodeList.length} registered agent${nodeList.length === 1 ? "" : "s"}; click an agent to inspect its live state.`;
+      if (!nodeList.length) {
+        elements.nodesBody.innerHTML = tableState("No agents are registered", "Start a Cascade Agent and connect it to this control server.", 8, "empty");
+        return;
+      }
+      elements.nodesBody.innerHTML = nodeList
+        .slice()
+        .sort((left, right) => String(left.node_id).localeCompare(String(right.node_id)))
+        .map((node) => {
+          const nodeState = safeStatus(node.status, "offline");
+          const serviceState = safeStatus(node.vllm_status, "stopped");
+          const gpu = clamp(node.gpu_util, 0, 1) * 100;
+          const gpuClass = gpu >= 90 ? "danger" : gpu >= 75 ? "warn" : "";
+          const model = node.model_name || "No model";
+          const isSelected = node.node_id === state.selectedNodeID;
+          const selected = isSelected ? " selected" : "";
+          const endpoint = node.ip ? `${node.ip}:${node.vllm_port || 8000}` : "Endpoint not reported";
+          const cache = `${formatInteger(node.cache_blocks ?? 0)} blocks`;
+          return `<tr class="${selected}" data-node-id="${escapeHTML(node.node_id)}" tabindex="0" aria-selected="${isSelected}">
+            <td><div class="node-name">${escapeHTML(node.node_id)}</div><div class="subvalue">${escapeHTML(endpoint)}</div></td>
+            <td><span class="state-label"><span class="status-dot ${nodeState}"></span>${escapeHTML(titleCase(nodeState))}</span></td>
+            <td><span class="service-state"><span class="status-dot ${serviceState}"></span>${escapeHTML(titleCase(serviceState))}</span></td>
+            <td><div class="node-name">${escapeHTML(model)}</div><div class="subvalue">${escapeHTML(node.cache_mode || "cache mode not reported")}</div></td>
+            <td><div class="meter"><span class="meter-track"><span class="meter-fill ${gpuClass}" style="width:${gpu.toFixed(1)}%"></span></span><span class="meter-value">${escapeHTML(formatGPUPercent(node.gpu_util))}</span></div></td>
+            <td><span class="number">${escapeHTML(formatInteger(node.queue_len ?? 0))}</span></td>
+            <td><div class="number">${escapeHTML(cache)}</div><div class="subvalue">${escapeHTML(formatPercent(node.hit_rate ?? 0))} hit</div></td>
+            <td><span class="number">${escapeHTML(formatAge(node.last_seen))}</span></td>
+          </tr>`;
+        })
+        .join("");
+    }
+
+    function tableState(title, detail, columns, kind) {
+      return `<tr><td colspan="${columns}"><div class="${kind}-state"><strong>${escapeHTML(title)}</strong><span>${escapeHTML(detail)}</span></div></td></tr>`;
+    }
+
+    function renderInspector() {
+      const node = selectedNode();
+      if (!node) {
+        renderClusterInspector();
+        return;
+      }
+      elements.inspectorTitle.textContent = node.node_id;
+      elements.inspectorChip.textContent = titleCase(safeStatus(node.vllm_status, "stopped"));
+      elements.inspectorChip.className = `status-chip ${safeStatus(node.vllm_status, "stopped")}`;
+      if (state.nodeDetailError) {
+        elements.inspectorContent.innerHTML = `<div class="error-state"><strong>Agent details unavailable</strong><span>${escapeHTML(state.nodeDetailError)}</span></div>`;
+        return;
+      }
+      if (!state.nodeDetail) {
+        elements.inspectorContent.innerHTML = `<div class="loading-state"><strong>Loading agent details</strong><span>Fetching the latest cache and service state.</span></div>`;
+        return;
+      }
+      const detail = state.nodeDetail;
+      const info = detail.info || {};
+      const runtime = detail.status || {};
+      const disks = Array.isArray(runtime.disks) ? runtime.disks : Array.isArray(node.disks) ? node.disks : [];
+      const events = Array.isArray(detail.recent) ? detail.recent.slice().sort(sortEvents).slice(0, 5) : [];
+      const vllmEndpoint = info.ip ? `${info.ip}:${info.vllm_port || 8000}` : "Not reported";
+      const cacheIdentity = info.shared_cache_id || "Local node storage";
+      elements.inspectorContent.innerHTML = `
+        <section class="inspector-section">
+          <span class="section-kicker">Identity</span>
+          <div class="detail-list">
+            ${detailRow("Endpoint", vllmEndpoint)}
+            ${detailRow("Host", info.hostname || "Not reported")}
+            ${detailRow("Cache mode", info.cache_mode || node.cache_mode || "Not reported")}
+            ${detailRow("Cache identity", cacheIdentity)}
+          </div>
+        </section>
+        <section class="inspector-section">
+          <span class="section-kicker">Service and hardware</span>
+          <div class="detail-list">
+            ${detailRow("vLLM", runtime.vllm_status || node.vllm_status || "Not reported")}
+            ${detailRow("Model", runtime.model_name || node.model_name || "No model")}
+            ${detailRow("GPU", info.gpu_type ? `${info.gpu_count || 1} x ${info.gpu_type}` : "Not reported")}
+            ${detailRow("GPU memory", gpuMemory(runtime, info))}
+            ${detailRow("Queue", formatInteger(runtime.queue_len ?? node.queue_len ?? 0))}
+          </div>
+        </section>
+        <section class="inspector-section">
+          <span class="section-kicker">Cache state</span>
+          <div class="detail-list">
+            ${detailRow("Blocks", formatInteger(runtime.cache_blocks ?? node.cache_blocks ?? 0))}
+            ${detailRow("Stored bytes", formatBytes(runtime.cache_bytes ?? 0))}
+            ${detailRow("Hit rate", formatPercent(runtime.cache_hit_rate ?? node.hit_rate ?? 0))}
+            ${detailRow("Retrieved", formatInteger(runtime.cache_retrieved ?? node.cache_retrieved ?? 0))}
+          </div>
+        </section>
+        <section class="inspector-section">
+          <span class="section-kicker">Storage</span>
+          ${renderDisks(disks)}
+        </section>
+        <section class="inspector-section">
+          <span class="section-kicker">Recent command events</span>
+          ${renderEventList(events)}
+        </section>`;
+    }
+
+    function renderClusterInspector() {
+      const gateway = state.gateway;
+      elements.inspectorTitle.textContent = "Cluster overview";
+      elements.inspectorChip.textContent = state.error ? "Unavailable" : "Live";
+      elements.inspectorChip.className = `status-chip ${state.error ? "failed" : "success"}`;
+      if (!state.cluster && state.loading) {
+        elements.inspectorContent.innerHTML = `<div class="loading-state"><strong>Loading control plane</strong><span>Waiting for the first state snapshot.</span></div>`;
+        return;
+      }
+      if (state.error && !state.cluster) {
+        elements.inspectorContent.innerHTML = `<div class="error-state"><strong>Control server unavailable</strong><span>${escapeHTML(state.error)}</span></div>`;
+        return;
+      }
+      const recent = state.commands.slice().sort(sortEvents).slice(0, 5);
+      const inFlight = gateway ? Object.values(gateway.inflight_by_node || {}).reduce((sum, value) => sum + Number(value || 0), 0) : 0;
+      const models = gateway && Array.isArray(gateway.models) ? gateway.models : [];
+      elements.inspectorContent.innerHTML = `
+        <section class="inspector-section">
+          <span class="section-kicker">Gateway</span>
+          <div class="detail-list">
+            ${detailRow("Eligible replicas", formatInteger(gateway?.eligible_nodes ?? 0))}
+            ${detailRow("In flight", formatInteger(inFlight))}
+            ${detailRow("Per-node limit", formatInteger(gateway?.max_inflight_per_node ?? 0))}
+            ${detailRow("Routed models", formatInteger(models.length))}
+          </div>
+        </section>
+        <section class="inspector-section">
+          <span class="section-kicker">Shared cache</span>
+          <div class="detail-list">
+            ${detailRow("Mode", state.cluster?.cache_mode || "Not reported")}
+            ${detailRow("Total blocks", formatInteger(state.cluster?.total_blocks ?? 0))}
+            ${detailRow("Stored bytes", formatBytes(state.cluster?.total_bytes ?? 0))}
+            ${detailRow("Average hit rate", formatPercent(state.cluster?.hit_rate ?? 0))}
+          </div>
+        </section>
+        <section class="inspector-section">
+          <span class="section-kicker">Recent command events</span>
+          ${renderEventList(recent)}
+        </section>`;
+    }
+
+    function detailRow(label, value) {
+      return `<div class="detail-row"><span>${escapeHTML(label)}</span><span title="${escapeHTML(value)}">${escapeHTML(value)}</span></div>`;
+    }
+
+    function gpuMemory(runtime, info) {
+      const used = Number(runtime.gpu_mem_used_mb);
+      const total = Number(info.gpu_mem_mb);
+      if (!Number.isFinite(used) && !Number.isFinite(total)) return "Not reported";
+      const usedText = Number.isFinite(used) ? formatMemoryMB(used) : "Not reported";
+      const totalText = Number.isFinite(total) ? formatMemoryMB(total) : "Not reported";
+      return `${usedText} / ${totalText}`;
+    }
+
+    function renderDisks(disks) {
+      if (!disks.length) {
+        return `<div class="detail-list">${detailRow("Disks", "Not reported")}</div>`;
+      }
+      return `<div class="detail-list">${disks.map((disk) => {
+        const path = disk.path || "Unnamed disk";
+        const free = Number.isFinite(Number(disk.free_gb)) ? `${formatGB(disk.free_gb)} free` : "Capacity not reported";
+        return detailRow(path, free);
+      }).join("")}</div>`;
+    }
+
+    function sortEvents(left, right) {
+      return Number(right.timestamp || 0) - Number(left.timestamp || 0);
+    }
+
+    function renderEventList(events) {
+      if (!events.length) {
+        return `<div class="detail-list">${detailRow("Events", "No command events reported")}</div>`;
+      }
+      return `<div class="command-events">${events.map((event) => {
+        const status = safeStatus(event.status, "queued");
+        return `<div class="command-event ${status}">
+          <div class="event-main" title="${escapeHTML(actionLabel(event.action))}">${escapeHTML(actionLabel(event.action))} - ${escapeHTML(titleCase(status))}</div>
+          <div class="event-meta" title="${escapeHTML(eventMessage(event))}">${escapeHTML(formatTime(event.timestamp))} - ${escapeHTML(eventMessage(event))}</div>
+        </div>`;
+      }).join("")}</div>`;
+    }
+
+    function renderTasks() {
+      const events = state.commands.slice().sort(sortEvents);
+      if (!state.cluster && state.loading) {
+        elements.tasksSummary.textContent = "Loading command events";
+        elements.tasksBody.innerHTML = tableState("Loading command history", "The dispatcher history is being queried.", 6, "loading");
+        return;
+      }
+      if (state.secondaryErrors.commands) {
+        elements.tasksSummary.textContent = "Command history unavailable";
+        elements.tasksBody.innerHTML = tableState("Unable to load command history", state.secondaryErrors.commands, 6, "error");
+        return;
+      }
+      elements.tasksSummary.textContent = `${events.length} event${events.length === 1 ? "" : "s"} retained by the command registry.`;
+      if (!events.length) {
+        elements.tasksBody.innerHTML = tableState("No command events", "Dispatch an operation from a selected agent to create a real command record.", 6, "empty");
+        return;
+      }
+      elements.tasksBody.innerHTML = events.map((event) => {
+        const status = safeStatus(event.status, "queued");
+        return `<tr>
+          <td><span class="number">${escapeHTML(formatTime(event.timestamp))}</span></td>
+          <td><span class="number">${escapeHTML(event.cmd_id || "Not reported")}</span></td>
+          <td><span class="number">${escapeHTML(actionLabel(event.action))}</span></td>
+          <td><span class="number">${escapeHTML(event.node_id || "Not reported")}</span></td>
+          <td><span class="status-chip ${status}">${escapeHTML(titleCase(status))}</span></td>
+          <td><div class="message-cell" title="${escapeHTML(eventMessage(event))}">${escapeHTML(eventMessage(event))}</div></td>
+        </tr>`;
+      }).join("");
+    }
+
+    function renderModels() {
+      const models = Array.isArray(state.models) ? state.models.slice().sort((left, right) => String(left.name).localeCompare(String(right.name))) : [];
+      if (!state.cluster && state.loading) {
+        elements.modelsSummary.textContent = "Loading model catalog";
+        elements.modelsBody.innerHTML = tableState("Loading model catalog", "The control server is being queried.", 6, "loading");
+        renderGatewayLoading();
+        return;
+      }
+      if (state.secondaryErrors.models) {
+        elements.modelsSummary.textContent = "Model catalog unavailable";
+        elements.modelsBody.innerHTML = tableState("Unable to load model catalog", state.secondaryErrors.models, 6, "error");
+      } else if (!models.length) {
+        elements.modelsSummary.textContent = "No models published by the control server";
+        elements.modelsBody.innerHTML = tableState("No registered models", "Configure a models directory or models metadata file on the control server.", 6, "empty");
+      } else {
+        elements.modelsSummary.textContent = `${models.length} model${models.length === 1 ? "" : "s"} published for distribution.`;
+        elements.modelsBody.innerHTML = models.map((model) => `<tr>
+          <td><div class="node-name">${escapeHTML(model.name)}</div><div class="subvalue">${escapeHTML(model.path || "Path not reported")}</div></td>
+          <td><span class="number">${escapeHTML(model.quantization || "Not reported")}</span></td>
+          <td><span class="number">${escapeHTML(Number(model.size_gb) > 0 ? formatGB(model.size_gb) : "Not reported")}</span></td>
+          <td><span class="number">${escapeHTML(model.supports_prefix ? "Supported" : "Not reported")}</span></td>
+          <td><span class="number">${escapeHTML(model.supports_disk_cache ? "Supported" : "Not reported")}</span></td>
+          <td><span class="number">${escapeHTML(model.download_url ? "Available" : "Not reported")}</span></td>
+        </tr>`).join("");
+      }
+      renderGateway();
+    }
+
+    function renderGatewayLoading() {
+      elements.gatewaySummary.textContent = "Loading gateway state";
+      elements.gatewayContent.innerHTML = `<div class="loading-state"><strong>Loading gateway</strong><span>Waiting for scheduler state.</span></div>`;
+    }
+
+    function renderGateway() {
+      if (state.secondaryErrors.gateway) {
+        elements.gatewaySummary.textContent = "Gateway state unavailable";
+        elements.gatewayContent.innerHTML = `<div class="error-state"><strong>Unable to load gateway state</strong><span>${escapeHTML(state.secondaryErrors.gateway)}</span></div>`;
+        return;
+      }
+      const gateway = state.gateway || {};
+      const models = Array.isArray(gateway.models) ? gateway.models : [];
+      const inFlight = gateway.inflight_by_node || {};
+      const quarantined = gateway.quarantined_until || {};
+      const totalInFlight = Object.values(inFlight).reduce((sum, value) => sum + Number(value || 0), 0);
+      elements.gatewaySummary.textContent = `${gateway.eligible_nodes ?? 0} eligible replica${gateway.eligible_nodes === 1 ? "" : "s"}; ${models.length} routed model${models.length === 1 ? "" : "s"}.`;
+      elements.gatewayContent.innerHTML = `
+        <div class="fact-grid">
+          <div class="fact"><span>Eligible replicas</span><strong>${escapeHTML(formatInteger(gateway.eligible_nodes ?? 0))}</strong></div>
+          <div class="fact"><span>Requests in flight</span><strong>${escapeHTML(formatInteger(totalInFlight))}</strong></div>
+          <div class="fact"><span>Per-node limit</span><strong>${escapeHTML(formatInteger(gateway.max_inflight_per_node ?? 0))}</strong></div>
+          <div class="fact"><span>Quarantined nodes</span><strong>${escapeHTML(formatInteger(Object.keys(quarantined).length))}</strong></div>
+        </div>
+        <div class="inspector-section" style="margin:18px -18px -18px;">
+          <span class="section-kicker">Routed models</span>
+          ${models.length ? `<ul class="gateway-list">${models.map((model) => `<li><code title="${escapeHTML(model)}">${escapeHTML(model)}</code><span>active</span></li>`).join("")}</ul>` : `<div class="detail-list">${detailRow("Models", "No eligible model replicas")}</div>`}
+        </div>`;
+    }
+
+    function renderOperationAvailability() {
+      const enabled = Boolean(selectedNode()) && !state.commandBusy;
+      document.querySelectorAll("[data-requires-node]").forEach((button) => {
+        button.disabled = !enabled;
+      });
+    }
+
+    function selectNode(nodeID) {
+      if (!nodes().some((node) => node.node_id === nodeID)) return;
+      state.selectedNodeID = nodeID;
+      state.nodeDetail = null;
+      state.nodeDetailError = "";
+      render();
+      refreshNodeDetail(nodeID);
+    }
+
+    async function refreshNodeDetail(nodeID) {
+      try {
+        state.nodeDetail = await api(`/api/v1/nodes/${encodeURIComponent(nodeID)}`);
+        if (state.selectedNodeID === nodeID) {
+          state.nodeDetailError = "";
+          renderInspector();
+        }
+      } catch (error) {
+        if (state.selectedNodeID === nodeID) {
+          state.nodeDetail = null;
+          state.nodeDetailError = error.message;
+          renderInspector();
+        }
+      }
+    }
+
+    function targetOptions(selectedTarget) {
+      const options = [`<option value="*"${selectedTarget === "*" ? " selected" : ""}>All registered agents</option>`];
+      nodes().slice().sort((left, right) => String(left.node_id).localeCompare(String(right.node_id))).forEach((node) => {
+        options.push(`<option value="${escapeHTML(node.node_id)}"${node.node_id === selectedTarget ? " selected" : ""}>${escapeHTML(node.node_id)} (${escapeHTML(node.ip || "IP not reported")})</option>`);
+      });
+      return options.join("");
+    }
+
+    function modelOptions() {
+      const current = selectedNode()?.model_name;
+      const names = new Set(state.models.map((model) => model.name).filter(Boolean));
+      if (current) names.add(current);
+      return Array.from(names).sort().map((name) => `<option value="${escapeHTML(name)}"></option>`).join("");
+    }
+
+    function openServeDialog(action) {
+      const node = selectedNode();
+      if (!node) return;
+      const currentModel = node.model_name || "";
+      const matched = state.models.find((model) => model.name === currentModel);
+      state.modal = { kind: "serve", action };
+      elements.dialogTitle.textContent = action === "restart_vllm" ? "Restart vLLM" : "Start vLLM";
+      elements.dialogSubtitle.textContent = "The command is queued to the selected Agent and executed on its next command poll.";
+      elements.dialogSubmit.textContent = action === "restart_vllm" ? "Queue restart" : "Queue start";
+      elements.dialogSubmit.className = "button primary";
+      elements.dialogContent.innerHTML = `
+        <div class="form-grid">
+          <div class="form-field"><label for="command-target">Target</label><select id="command-target" name="target">${targetOptions(node.node_id)}</select></div>
+          <div class="form-field"><label for="command-model">Model</label><input id="command-model" name="model" list="available-models" required value="${escapeHTML(currentModel)}" placeholder="Model path or registered model name"><datalist id="available-models">${modelOptions()}</datalist><p class="help-text">A model is required by the Agent to start vLLM.</p></div>
+          <div class="form-field"><label for="command-gpu-util">GPU memory utilization</label><input id="command-gpu-util" name="gpu_util" type="number" min="0.1" max="1" step="0.01" required value="0.9"></div>
+          <div class="form-field"><label for="command-quantization">Quantization</label><input id="command-quantization" name="quantization" value="${escapeHTML(matched?.quantization || "")}" placeholder="Optional, for example awq"></div>
+          <label class="check-field"><input type="checkbox" name="enable_disk_cache" checked> Enable Cascade disk cache</label>
+        </div>`;
+      openDialog();
+    }
+
+    function openStopDialog() {
+      const node = selectedNode();
+      if (!node) return;
+      state.modal = { kind: "stop", action: "stop_vllm" };
+      elements.dialogTitle.textContent = "Stop vLLM";
+      elements.dialogSubtitle.textContent = "This sends a real stop command to the selected Agent.";
+      elements.dialogSubmit.textContent = "Queue stop";
+      elements.dialogSubmit.className = "button danger";
+      elements.dialogContent.innerHTML = `
+        <div class="form-grid">
+          <div class="form-field"><label for="command-target">Target</label><select id="command-target" name="target">${targetOptions(node.node_id)}</select></div>
+          <div class="confirmation-copy">The selected Agent will stop its managed vLLM process. The operation will appear in command history as soon as it is queued.</div>
+        </div>`;
+      openDialog();
+    }
+
+    function openDownloadDialog() {
+      const node = selectedNode();
+      if (!node) return;
+      state.modal = { kind: "download", action: "download_model" };
+      elements.dialogTitle.textContent = "Download model";
+      elements.dialogSubtitle.textContent = "The Agent downloads the specified source into its configured model directory.";
+      elements.dialogSubmit.textContent = "Queue download";
+      elements.dialogSubmit.className = "button primary";
+      elements.dialogContent.innerHTML = `
+        <div class="form-grid">
+          <div class="form-field"><label for="command-target">Target</label><select id="command-target" name="target">${targetOptions(node.node_id)}</select></div>
+          <div class="form-field"><label for="command-model">Model name</label><input id="command-model" name="model" list="available-models" required placeholder="Registered model name"><datalist id="available-models">${modelOptions()}</datalist></div>
+          <div class="form-field"><label for="download-url">Download URL</label><input id="download-url" name="download_url" type="url" required placeholder="https://host.example/models/model/"><p class="help-text">The Agent requires both a model name and a source URL.</p></div>
+        </div>`;
+      openDialog();
+    }
+
+    function openDialog() {
+      if (!elements.dialog.open) elements.dialog.showModal();
+      const firstInput = elements.dialogContent.querySelector("input, select");
+      if (firstInput) firstInput.focus();
+    }
+
+    function closeDialog() {
+      state.modal = null;
+      if (elements.dialog.open) elements.dialog.close();
+    }
+
+    async function submitOperation(event) {
+      event.preventDefault();
+      if (!state.modal || state.commandBusy) return;
+      const modal = state.modal;
+      const formData = new FormData(elements.dialogForm);
+      const target = String(formData.get("target") || "").trim();
+      const action = modal.action;
+      const params = {};
+      if (modal.kind === "serve") {
+        const model = String(formData.get("model") || "").trim();
+        if (!model) {
+          showToast("Model is required to start vLLM.", "error");
+          return;
+        }
+        params.model = model;
+        params.gpu_util = String(formData.get("gpu_util") || "0.9");
+        params.enable_disk_cache = formData.get("enable_disk_cache") ? "true" : "false";
+        const quantization = String(formData.get("quantization") || "").trim();
+        if (quantization) params.quantization = quantization;
+      } else if (modal.kind === "download") {
+        const model = String(formData.get("model") || "").trim();
+        const downloadURL = String(formData.get("download_url") || "").trim();
+        if (!model || !downloadURL) {
+          showToast("Model name and download URL are required.", "error");
+          return;
+        }
+        params.model = model;
+        params.download_url = downloadURL;
+      }
+      if (!target) {
+        showToast("Choose a command target.", "error");
+        return;
+      }
+
+      state.commandBusy = true;
+      closeDialog();
+      renderOperationAvailability();
+      try {
+        const result = await api("/api/v1/command", {
+          method: "POST",
+          body: JSON.stringify({ action, target, params, timeout: modal.kind === "download" ? 3600 : 600 }),
+        });
+        showToast(`${actionLabel(action)} queued as ${result.cmd_id} for ${result.target_count} target${result.target_count === 1 ? "" : "s"}.`, "success");
+        await refresh();
+      } catch (error) {
+        showToast(error.message || "Command dispatch failed.", "error");
+      } finally {
+        state.commandBusy = false;
+        renderOperationAvailability();
+      }
+    }
+
+    function showToast(message, type = "info") {
+      const toast = document.createElement("div");
+      toast.className = `toast ${type}`;
+      const text = document.createElement("span");
+      text.textContent = message;
+      toast.appendChild(text);
+      elements.toastRegion.appendChild(toast);
+      window.setTimeout(() => toast.remove(), 5000);
+    }
+
+    function hydrateDownloadURL() {
+      if (state.modal?.kind !== "download") return;
+      const modelInput = document.getElementById("command-model");
+      const urlInput = document.getElementById("download-url");
+      if (!modelInput || !urlInput) return;
+      const match = state.models.find((model) => model.name === modelInput.value.trim());
+      if (match?.download_url && !urlInput.dataset.userEdited) {
+        urlInput.value = match.download_url;
+      }
+    }
+
+    document.addEventListener("click", (event) => {
+      const viewButton = event.target.closest("button[data-view]");
+      if (viewButton) {
+        state.activeView = viewButton.dataset.view;
+        renderNavigation();
+        return;
+      }
+      const actionButton = event.target.closest("[data-action]");
+      if (actionButton) {
+        const action = actionButton.dataset.action;
+        if (action === "refresh") refresh();
+        if (action === "start") openServeDialog("start_vllm");
+        if (action === "restart") openServeDialog("restart_vllm");
+        if (action === "stop") openStopDialog();
+        if (action === "download") openDownloadDialog();
+        if (action === "close-dialog") closeDialog();
+        return;
+      }
+      const row = event.target.closest("tr[data-node-id]");
+      if (row) selectNode(row.dataset.nodeId);
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const row = event.target.closest?.("tr[data-node-id]");
+      if (row && (event.key === "Enter" || event.key === " ")) {
+        event.preventDefault();
+        selectNode(row.dataset.nodeId);
+      }
+    });
+
+    elements.dialogForm.addEventListener("submit", submitOperation);
+    elements.dialog.addEventListener("input", (event) => {
+      if (event.target.id === "download-url") event.target.dataset.userEdited = "true";
+      if (event.target.id === "command-model") hydrateDownloadURL();
+    });
+    elements.dialog.addEventListener("close", () => {
+      state.modal = null;
+    });
+
+    render();
+    refresh({ initial: true });
+    window.setInterval(() => refresh(), POLL_INTERVAL_MS);
+  </script>
 </body>
 </html>

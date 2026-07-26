@@ -12,11 +12,13 @@ import (
 )
 
 var (
-	rpcxPort    = flag.Int("rpcx-port", 9000, "rpcx server port for C端 communication")
-	httpPort    = flag.Int("http-port", 8080, "HTTP port for REST API + Web UI")
-	modelsFile  = flag.String("models-file", "", "Path to models.json (optional)")
-	modelsDir   = flag.String("models-dir", "", "Directory to auto-scan for models (optional)")
-	publicURL   = flag.String("public-url", "", "Public URL for model download links (optional)")
+	rpcxPort               = flag.Int("rpcx-port", 9000, "rpcx server port for C端 communication")
+	httpPort               = flag.Int("http-port", 8080, "HTTP port for REST API + Web UI")
+	modelsFile             = flag.String("models-file", "", "Path to models.json (optional)")
+	modelsDir              = flag.String("models-dir", "", "Directory to auto-scan for models (optional)")
+	publicURL              = flag.String("public-url", "", "Public URL for model download links (optional)")
+	gatewayMaxInFlight     = flag.Int("gateway-max-inflight-per-node", 16, "Maximum active gateway requests per vLLM node")
+	gatewayMaxRequestBytes = flag.Int64("gateway-max-request-bytes", 64<<20, "Maximum OpenAI gateway request body size in bytes")
 )
 
 func main() {
@@ -28,8 +30,14 @@ func main() {
 	cfg.ModelsFile = *modelsFile
 	cfg.ModelsDir = *modelsDir
 	cfg.PublicURL = *publicURL
-
-
+	cfg.GatewayMaxInFlightPerNode = *gatewayMaxInFlight
+	cfg.GatewayMaxRequestBytes = *gatewayMaxRequestBytes
+	if cfg.GatewayMaxInFlightPerNode <= 0 {
+		log.Fatal("gateway-max-inflight-per-node must be greater than zero")
+	}
+	if cfg.GatewayMaxRequestBytes <= 0 {
+		log.Fatal("gateway-max-request-bytes must be greater than zero")
+	}
 
 	srv := server.New(cfg)
 
@@ -49,6 +57,7 @@ func main() {
 	log.Printf("=== S端 Cluster Server ===")
 	log.Printf("rpcx :%d  ← C端 agents connect here", cfg.RPCPort)
 	log.Printf("HTTP :%d  ← Web UI: http://localhost:%d", cfg.HTTPPort, cfg.HTTPPort)
+	log.Printf("Gateway :%d  ← OpenAI API: http://localhost:%d/v1", cfg.HTTPPort, cfg.HTTPPort)
 
 	if err := srv.Start(ctx); err != nil {
 		log.Fatalf("server start error: %v", err)

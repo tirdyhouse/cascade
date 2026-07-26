@@ -48,6 +48,44 @@ from vllm.logger import init_logger
 logger = init_logger("vllm.disk_cache")
 
 
+def _config_bool(value: Any, name: str) -> bool:
+    """Parse a connector boolean from either JSON or agent string config."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    raise ValueError(f"{name} must be a boolean, got {value!r}")
+
+
+def _validate_shared_cache_marker(cache_root: Path, shared_cache_id: str) -> None:
+    """Verify that this node mounted the same cache root as the metadata host."""
+    marker_path = cache_root / ".cascade-shared-cache.json"
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            f"cannot read shared cache marker {marker_path}: {exc}"
+        ) from exc
+    if not isinstance(marker, dict):
+        raise RuntimeError(f"invalid shared cache marker {marker_path}")
+    if marker.get("format_version") != 1:
+        raise RuntimeError(
+            f"unsupported shared cache marker format at {marker_path}: "
+            f"{marker.get('format_version')!r}"
+        )
+    if marker.get("shared_cache_id") != shared_cache_id:
+        raise RuntimeError(
+            f"shared cache marker id at {marker_path} does not match "
+            f"disk_cache_shared_id {shared_cache_id!r}"
+        )
+
+
 # ── Public metadata container ──────────────────────────────────────────
 
 
@@ -1198,6 +1236,28 @@ class DiskCacheConnectorCommonMixin:
         self.cache_root = Path(extra.get("disk_cache_path", "/tmp/disk-cache"))
         self.go_addr = extra.get("disk_cache_engine_addr", "http://localhost:9100")
         self._go = DiskCacheGoClient(self.go_addr)
+        self._shared_cache = _config_bool(
+            extra.get("disk_cache_shared", False),
+            "disk_cache_shared",
+        )
+        self._shared_cache_id = str(extra.get("disk_cache_shared_id", "")).strip()
+        if self._shared_cache:
+            if not self.cache_root.is_absolute():
+                raise ValueError(
+                    "disk_cache_path must be absolute when disk_cache_shared=true"
+                )
+            if not self._shared_cache_id:
+                raise ValueError(
+                    "disk_cache_shared_id is required when disk_cache_shared=true"
+                )
+            if not self.cache_root.is_dir():
+                raise RuntimeError(
+                    f"shared cache root is not mounted or accessible: {self.cache_root}"
+                )
+            _validate_shared_cache_marker(
+                self.cache_root,
+                self._shared_cache_id,
+            )
 
         # Block and chunk configuration
         self._block_size = vllm_config.cache_config.block_size
@@ -1445,6 +1505,11 @@ class DiskCacheConnectorCommonMixin:
         # ── Runtime state ───────────────────────────────────────────
         self._vllm_config = vllm_config
         self._connected = self._health_check()
+        if self._shared_cache and not self._connected:
+            raise RuntimeError(
+                "shared cache metadata service is unavailable or does not match "
+                f"shared cache id {self._shared_cache_id!r}"
+            )
 
         # Per-request pending loads (keyed by request_id)
         self._pending_loads: dict[str, _PendingLoadSpec] = {}
@@ -1484,7 +1549,8 @@ class DiskCacheConnectorCommonMixin:
                     exc_info=True,
                 )
         self.node_id = socket.gethostname()
-        self.cache_root.mkdir(parents=True, exist_ok=True)
+        if not self._shared_cache:
+            self.cache_root.mkdir(parents=True, exist_ok=True)
         # Resolve this once.  Per-request loading validates every object path
         # against it; resolving the root again for every 256-token object was
         # visible on remote filesystems in the cache-hit critical path.
@@ -3099,6 +3165,18 @@ class DiskCacheConnectorCommonMixin:
 
     def _health_check(self) -> bool:
         try:
-            return self._go.health_check()
+            if not self._go.health_check():
+                return False
+            if not getattr(self, "_shared_cache", False):
+                return True
+            info = self._go.cluster_info()
+            return (
+                info.get("api_version") == 1
+                and info.get("metadata_mode") == "shared"
+                and info.get("shared_cache_id")
+                == getattr(self, "_shared_cache_id", "")
+                and info.get("published_object_verified") is True
+                and info.get("eviction_enabled") is False
+            )
         except Exception:
             return False

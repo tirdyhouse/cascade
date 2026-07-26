@@ -113,6 +113,11 @@ type Config struct {
 	MaxSizeBytes   int64
 	EvictionPolicy string
 	MetadataPath   string
+
+	// DisableEviction keeps published objects available until an external
+	// lifecycle manager removes them. It is used by the shared-cache metadata
+	// service until distributed read leases and garbage collection are present.
+	DisableEviction bool
 }
 
 func DefaultConfig() Config {

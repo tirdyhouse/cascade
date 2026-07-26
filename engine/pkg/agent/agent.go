@@ -2,8 +2,12 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,12 +38,16 @@ type Agent struct {
 
 // Config holds C端 agent configuration.
 type Config struct {
-	NodeID      string
-	ServerAddr  string // S端 rpcx address
-	RPCPort     int    // local rpcx port for bidirectional (optional)
-	CacheMode   cluster.CacheMode
-	CachePath   string // path to local disk-cache API
-	WorkDir     string // working directory for models, logs, cache
+	NodeID          string
+	ServerAddr      string // S端 rpcx address
+	RPCPort         int    // local rpcx port for bidirectional (optional)
+	CacheMode       cluster.CacheMode
+	CachePath       string // disk-cache metadata API base URL
+	SharedCacheRoot string // shared filesystem root when CacheModeSharedPool
+	SharedCacheID   string // stable shared cache identity when CacheModeSharedPool
+	WorkDir         string // working directory for models, logs, cache
+	VLLMHost        string // host passed to vLLM; must be reachable by cluster-server
+	VLLMPort        int    // HTTP port passed to vLLM and advertised to cluster-server
 
 	// Hardware
 	GPUType  string
@@ -55,6 +63,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		RPCPort:   9001,
 		CacheMode: cluster.CacheModeLocalNVMe,
+		VLLMHost:  defaultVLLMHost,
+		VLLMPort:  defaultVLLMPort,
 	}
 }
 
@@ -129,19 +139,25 @@ func (a *Agent) Stop() {
 
 func (a *Agent) register() error {
 	info := &cluster.NodeInfo{
-		NodeID:    a.config.NodeID,
-		Hostname:  a.config.NodeID, // simplified; could use os.Hostname()
-		IP:        getOutboundIP(),
-		RPCPort:   a.config.RPCPort,
-		CacheMode: a.config.CacheMode,
-		GPUType:   a.config.GPUType,
-		GPUMemMB:  a.config.GPUMemMB,
-		GPUCount:  a.config.GPUCount,
-		Disks:     a.config.Disks,
+		NodeID:           a.config.NodeID,
+		Hostname:         a.config.NodeID, // simplified; could use os.Hostname()
+		IP:               getOutboundIP(),
+		RPCPort:          a.config.RPCPort,
+		VLLMPort:         a.vllmPort(),
+		CacheMode:        a.config.CacheMode,
+		SharedCacheID:    a.config.SharedCacheID,
+		CacheMetadataURL: a.config.CachePath,
+		GPUType:          a.config.GPUType,
+		GPUMemMB:         a.config.GPUMemMB,
+		GPUCount:         a.config.GPUCount,
+		Disks:            a.config.Disks,
 	}
 	reply, err := a.client.Register(info)
 	if err != nil {
 		return err
+	}
+	if !reply.Accepted {
+		return fmt.Errorf("cluster registration rejected: %s", reply.Reason)
 	}
 	log.Printf("[agent] register reply: accepted=%v cluster_size=%d mode=%s",
 		reply.Accepted, reply.ClusterSize, reply.CacheMode)
@@ -171,7 +187,6 @@ func (a *Agent) heartbeat(cmdCh chan<- *cluster.Command) error {
 	// Available models
 	status.AvailableModels = a.collector.GetAvailableModels()
 
-
 	// vLLM health check: transition loading→running / running→error
 	switch status.VLLMStatus {
 	case "running":
@@ -182,6 +197,9 @@ func (a *Agent) heartbeat(cmdCh chan<- *cluster.Command) error {
 		if a.vllmHealthy() {
 			status.VLLMStatus = "running"
 		}
+	}
+	if status.VLLMStatus == "running" {
+		status.QueueLen = a.vllmQueueLen()
 	}
 	status.ModelName = a.process.ModelName()
 
@@ -250,7 +268,6 @@ func (a *Agent) executeStartVLLM(cmd *cluster.Command) {
 		return
 	}
 
-
 	// If raw_args is provided, use it directly as the full command line
 	if raw := cmd.Params["raw_args"]; raw != "" {
 		output, err := a.process.StartRaw(raw, a.config.WorkDir)
@@ -267,7 +284,16 @@ func (a *Agent) executeStartVLLM(cmd *cluster.Command) {
 		return
 	}
 
-	model := cmd.Params["model"]
+	model := strings.TrimSpace(cmd.Params["model"])
+	if model == "" {
+		a.reportResult(&cluster.CmdResult{
+			CmdID:  cmd.CmdID,
+			NodeID: a.config.NodeID,
+			Status: "failed",
+			Error:  "model parameter required",
+		})
+		return
+	}
 	gpuUtil := cmd.Params["gpu_util"]
 	if gpuUtil == "" {
 		gpuUtil = "0.9"
@@ -276,12 +302,18 @@ func (a *Agent) executeStartVLLM(cmd *cluster.Command) {
 	enableDiskCache := cmd.Params["enable_disk_cache"]
 
 	output, err := a.process.Start(&StartOptions{
-		Model:         model,
-		GPUUtil:       gpuUtil,
-		PrefixCaching: enablePrefix == "true",
-		DiskCache:     enableDiskCache == "true",
-		WorkDir:       a.config.WorkDir,
-		Quantization:  cmd.Params["quantization"],
+		Model:           model,
+		GPUUtil:         gpuUtil,
+		PrefixCaching:   enablePrefix == "true",
+		DiskCache:       enableDiskCache == "true",
+		WorkDir:         a.config.WorkDir,
+		Quantization:    cmd.Params["quantization"],
+		CacheMode:       a.config.CacheMode,
+		CacheEngineAddr: a.config.CachePath,
+		SharedCacheRoot: a.config.SharedCacheRoot,
+		SharedCacheID:   a.config.SharedCacheID,
+		VLLMHost:        a.config.VLLMHost,
+		VLLMPort:        a.vllmPort(),
 	})
 	result := &cluster.CmdResult{
 		CmdID:  cmd.CmdID,
@@ -430,7 +462,7 @@ func (a *Agent) commandLoop(cmdCh <-chan *cluster.Command) {
 // vllmHealthy checks if the vLLM HTTP API is reachable.
 func (a *Agent) vllmHealthy() bool {
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get("http://127.0.0.1:8000/health")
+	resp, err := client.Get(a.vllmLocalURL("/health"))
 	if err != nil {
 		return false
 	}
@@ -438,3 +470,69 @@ func (a *Agent) vllmHealthy() bool {
 	return resp.StatusCode == 200
 }
 
+func (a *Agent) vllmPort() int {
+	if a.config.VLLMPort > 0 {
+		return a.config.VLLMPort
+	}
+	return defaultVLLMPort
+}
+
+func (a *Agent) vllmLocalURL(path string) string {
+	return fmt.Sprintf("http://127.0.0.1:%d%s", a.vllmPort(), path)
+}
+
+// vllmQueueLen reads the gauges exposed by current and older vLLM metric
+// names. The gateway also tracks its own in-flight work between heartbeats.
+func (a *Agent) vllmQueueLen() int32 {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(a.vllmLocalURL("/metrics"))
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0
+	}
+	return parseVLLMQueueLen(string(body))
+}
+
+func parseVLLMQueueLen(metrics string) int32 {
+	metricNames := map[string]struct{}{
+		"vllm:num_requests_running": {},
+		"vllm:num_requests_waiting": {},
+		"vllm_num_requests_running": {},
+		"vllm_num_requests_waiting": {},
+	}
+	var total int64
+	for _, line := range strings.Split(metrics, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		name := strings.SplitN(fields[0], "{", 2)[0]
+		if _, ok := metricNames[name]; !ok {
+			continue
+		}
+		value, err := strconv.ParseFloat(fields[1], 64)
+		if err != nil || value <= 0 {
+			continue
+		}
+		count := int64(value)
+		if value > float64(count) {
+			count++
+		}
+		total += count
+		if total >= int64(^uint32(0)>>1) {
+			return int32(^uint32(0) >> 1)
+		}
+	}
+	return int32(total)
+}

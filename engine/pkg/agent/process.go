@@ -7,10 +7,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"predict/engine/pkg/cluster"
+)
+
+const (
+	defaultVLLMHost = "0.0.0.0"
+	defaultVLLMPort = 8000
 )
 
 // vllmBinary returns the path to the vllm binary.
@@ -25,6 +33,7 @@ func vllmBinary() string {
 	}
 	return "vllm"
 }
+
 // pythonBin returns the venv Python interpreter path.
 func pythonBin() string {
 	for _, p := range []string{
@@ -39,29 +48,34 @@ func pythonBin() string {
 }
 
 // StartOptions holds parameters for starting vLLM.
-// StartOptions holds parameters for starting vLLM.
 type StartOptions struct {
-	Model         string
-	GPUUtil       string
-	PrefixCaching bool
-	DiskCache     bool
-	WorkDir       string
-	Quantization  string // awq, gptq, etc.
-	VLLMPath      string // path to vllm binary, auto-detected if empty
-
-
+	Model           string
+	GPUUtil         string
+	PrefixCaching   bool
+	DiskCache       bool
+	WorkDir         string
+	Quantization    string // awq, gptq, etc.
+	VLLMPath        string // path to vllm binary, auto-detected if empty
+	CacheMode       cluster.CacheMode
+	CacheEngineAddr string
+	SharedCacheRoot string
+	SharedCacheID   string
+	VLLMHost        string
+	VLLMPort        int
 }
 
 // ProcessManager handles vLLM process lifecycle.
 type ProcessManager struct {
 	cfg *Config
 
-	mu         sync.Mutex
-	cmd        *exec.Cmd
-	status     string // "stopped" | "running" | "loading" | "error"
-	modelName  string
-	logFile    string // path to current vLLM log file
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	status    string // "stopped" | "running" | "loading" | "error"
+	modelName string
+	logFile   string // path to current vLLM log file
 }
+
+const diskCacheConnectorModule = "adapter.vllm.connector_v21"
 
 // NewProcessManager creates a ProcessManager.
 func NewProcessManager(cfg *Config) *ProcessManager {
@@ -71,6 +85,102 @@ func NewProcessManager(cfg *Config) *ProcessManager {
 	}
 }
 
+// buildVLLMArgs constructs the serving command without spawning a process.
+// Keeping this separate makes the shared-cache contract testable before any
+// GPU process is started.
+func buildVLLMArgs(opts *StartOptions) ([]string, error) {
+	if opts == nil {
+		return nil, fmt.Errorf("start options are required")
+	}
+	if opts.DiskCache && opts.PrefixCaching {
+		return nil, fmt.Errorf("vLLM prefix caching must be disabled when Cascade disk cache is enabled")
+	}
+
+	localModel := opts.Model
+	if opts.WorkDir != "" && !strings.HasPrefix(opts.Model, "/") {
+		localModel = filepath.Join(opts.WorkDir, "models", opts.Model)
+	}
+	args := []string{"serve", localModel, "--gpu-memory-utilization", opts.GPUUtil}
+	vllmHost := strings.TrimSpace(opts.VLLMHost)
+	if vllmHost == "" {
+		vllmHost = defaultVLLMHost
+	}
+	vllmPort := opts.VLLMPort
+	if vllmPort <= 0 {
+		vllmPort = defaultVLLMPort
+	}
+	if vllmPort > 65535 {
+		return nil, fmt.Errorf("invalid vLLM port %d", vllmPort)
+	}
+	args = append(args, "--host", vllmHost, "--port", strconv.Itoa(vllmPort))
+	if opts.Quantization != "" {
+		args = append(args, "--quantization", opts.Quantization)
+		if opts.Quantization == "awq" {
+			args = append(args, "--dtype", "float16")
+		}
+	}
+
+	// Disk cache: local mode owns a node-private directory. Shared-pool mode
+	// must use the already-mounted common root and one central metadata API.
+	if !opts.DiskCache {
+		return args, nil
+	}
+
+	diskCachePath := filepath.Join(opts.WorkDir, "cache")
+	shared := opts.CacheMode == cluster.CacheModeSharedPool
+	if shared {
+		sharedRoot := strings.TrimSpace(opts.SharedCacheRoot)
+		sharedID := strings.TrimSpace(opts.SharedCacheID)
+		if sharedRoot == "" || sharedID == "" {
+			return nil, fmt.Errorf("shared cache requires shared cache root and cache id")
+		}
+		if !filepath.IsAbs(sharedRoot) {
+			return nil, fmt.Errorf("shared cache root must be absolute: %q", sharedRoot)
+		}
+		info, err := os.Stat(sharedRoot)
+		if err != nil {
+			return nil, fmt.Errorf("shared cache root is not accessible: %w", err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("shared cache root is not a directory: %q", sharedRoot)
+		}
+		diskCachePath = sharedRoot
+	} else if err := os.MkdirAll(diskCachePath, 0755); err != nil {
+		return nil, fmt.Errorf("create local cache directory: %w", err)
+	}
+
+	engineAddr := strings.TrimSpace(opts.CacheEngineAddr)
+	if engineAddr == "" {
+		engineAddr = "http://127.0.0.1:9100"
+	}
+	extra := map[string]interface{}{
+		"disk_cache_path":        diskCachePath,
+		"disk_cache_engine_addr": engineAddr,
+	}
+	if shared {
+		extra["disk_cache_shared"] = true
+		extra["disk_cache_shared_id"] = strings.TrimSpace(opts.SharedCacheID)
+	}
+	kvConfig := map[string]interface{}{
+		"kv_connector":              "DiskCacheConnector",
+		"kv_role":                   "kv_both",
+		"kv_connector_module_path":  diskCacheConnectorModule,
+		"kv_connector_extra_config": extra,
+	}
+	kvJSON, err := json.Marshal(kvConfig)
+	if err != nil {
+		return nil, fmt.Errorf("encode KV transfer config: %w", err)
+	}
+	args = append(
+		args,
+		"--no-enable-prefix-caching",
+		"--kv-transfer-config",
+		string(kvJSON),
+		"--enable-prompt-tokens-details",
+	)
+	return args, nil
+}
+
 // Start launches a vLLM serve process with the given options.
 func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 	pm.mu.Lock()
@@ -78,6 +188,11 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 
 	if pm.cmd != nil && pm.cmd.Process != nil {
 		return "", fmt.Errorf("vLLM already running (model=%s)", pm.modelName)
+	}
+
+	args, err := buildVLLMArgs(opts)
+	if err != nil {
+		return "", err
 	}
 
 	// Prepare log file
@@ -90,35 +205,6 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 		return "", fmt.Errorf("create log file: %w", err)
 	}
 
-	// Build vLLM args — model is just the name, prepend local models dir
-	localModel := opts.Model
-	if opts.WorkDir != "" && !strings.HasPrefix(opts.Model, "/") {
-		localModel = filepath.Join(opts.WorkDir, "models", opts.Model)
-	}
-	args := []string{"serve", localModel}
-	args = append(args, "--gpu-memory-utilization", opts.GPUUtil)
-	if opts.Quantization != "" {
-		args = append(args, "--quantization", opts.Quantization)
-		if opts.Quantization == "awq" {
-			args = append(args, "--dtype", "float16")
-		}
-	}
-	// Disk cache: ensure cache dir exists and pass --kv-transfer-config
-	if opts.DiskCache {
-		diskCachePath := filepath.Join(opts.WorkDir, "cache")
-		os.MkdirAll(diskCachePath, 0755)
-		kvConfig := map[string]interface{}{
-			"kv_connector": "DiskCacheConnector",
-			"kv_role":      "kv_both",
-			"kv_connector_extra_config": map[string]string{
-				"disk_cache_path": diskCachePath,
-			},
-		}
-		kvJSON, _ := json.Marshal(kvConfig)
-		args = append(args, "--kv-transfer-config", string(kvJSON))
-		// Enable prompt_tokens_details.cached_tokens in the API response
-		args = append(args, "--enable-prompt-tokens-details")
-	}
 	pm.cmd = exec.Command(vllmBinary(), args...)
 	pm.cmd.Stdout = f
 	pm.cmd.Stderr = f
@@ -189,6 +275,20 @@ func (pm *ProcessManager) StartRaw(raw, workDir string) (string, error) {
 		}
 	}
 	args = append(args, rawParts...)
+	if !containsVLLMFlag(rawParts, "--host") {
+		host := strings.TrimSpace(pm.cfg.VLLMHost)
+		if host == "" {
+			host = defaultVLLMHost
+		}
+		args = append(args, "--host", host)
+	}
+	if !containsVLLMFlag(rawParts, "--port") {
+		port := pm.cfg.VLLMPort
+		if port <= 0 {
+			port = defaultVLLMPort
+		}
+		args = append(args, "--port", strconv.Itoa(port))
+	}
 	// Prepare log file
 	logDir := filepath.Join(workDir, "logs")
 	os.MkdirAll(logDir, 0755)
@@ -236,6 +336,7 @@ func (pm *ProcessManager) StartRaw(raw, workDir string) (string, error) {
 
 	return fmt.Sprintf("started pid=%d log=%s", pm.cmd.Process.Pid, logFile), nil
 }
+
 // DownloadModel downloads a model from URL into workDir/models/.
 func (pm *ProcessManager) DownloadModel(model, url, workDir string) (string, error) {
 	modelDir := filepath.Join(workDir, "models", model)
@@ -264,6 +365,7 @@ func (pm *ProcessManager) DownloadModel(model, url, workDir string) (string, err
 	os.WriteFile(filepath.Join(modelDir, ".downloaded"), []byte("ok\n"), 0644)
 	return fmt.Sprintf("downloaded %s (%.1f GB)", model, dirSizeGB(modelDir)), nil
 }
+
 // Stop terminates the vLLM process and all its children.
 func (pm *ProcessManager) Stop() (string, error) {
 	pm.mu.Lock()
@@ -373,3 +475,11 @@ func splitArgs(raw string) []string {
 	return args
 }
 
+func containsVLLMFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag || strings.HasPrefix(arg, flag+"=") {
+			return true
+		}
+	}
+	return false
+}

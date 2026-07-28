@@ -70,6 +70,7 @@ type ProcessManager struct {
 
 	mu        sync.Mutex
 	cmd       *exec.Cmd
+	done      chan struct{}
 	status    string // "stopped" | "running" | "loading" | "error"
 	modelName string
 	logFile   string // path to current vLLM log file
@@ -205,12 +206,12 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 		return "", fmt.Errorf("create log file: %w", err)
 	}
 
-	pm.cmd = exec.Command(vllmBinary(), args...)
-	pm.cmd.Stdout = f
-	pm.cmd.Stderr = f
-	pm.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd := exec.Command(vllmBinary(), args...)
+	cmd.Stdout = f
+	cmd.Stderr = f
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	if err := pm.cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		f.Close()
 		// Write the error to the log file so it shows in Live Log
 		os.WriteFile(logFile, []byte(fmt.Sprintf("Failed to start vLLM: %v\n", err)), 0644)
@@ -218,36 +219,16 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 		return fmt.Sprintf("Failed to start vLLM: %v", err), fmt.Errorf("start vLLM: %w", err)
 	}
 
+	pm.cmd = cmd
+	pm.done = make(chan struct{})
 	pm.status = "loading"
 	pm.modelName = opts.Model
 	pm.logFile = logFile
-	log.Printf("[process] started vLLM (pid=%d) model=%s log=%s", pm.cmd.Process.Pid, opts.Model, logFile)
+	log.Printf("[process] started vLLM (pid=%d) model=%s log=%s", cmd.Process.Pid, opts.Model, logFile)
 
-	// Wait in background
-	go func() {
-		err := pm.cmd.Wait()
-		f.Close()
-		pm.mu.Lock()
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.Exited() && !exitErr.Success() {
-				// Killed intentionally via Stop() — keep current status
-				if pm.status != "stopped" {
-					pm.status = "error"
-				}
-			} else {
-				pm.status = "error"
-			}
-			log.Printf("[process] vLLM exited: %v", err)
-		} else {
-			pm.status = "stopped"
-			log.Println("[process] vLLM exited cleanly")
-		}
-		pm.modelName = ""
-		pm.cmd = nil
-		pm.mu.Unlock()
-	}()
+	go pm.waitForExit(cmd, f)
 
-	return fmt.Sprintf("started pid=%d log=%s", pm.cmd.Process.Pid, logFile), nil
+	return fmt.Sprintf("started pid=%d log=%s", cmd.Process.Pid, logFile), nil
 }
 
 // StartRaw starts vLLM with a raw command line string.
@@ -303,38 +284,57 @@ func (pm *ProcessManager) StartRaw(raw, workDir string) (string, error) {
 		return "", fmt.Errorf("create log file: %w", err)
 	}
 
-	pm.cmd = exec.Command(vllmBinary(), args...)
-	pm.cmd.Stdout = f
-	pm.cmd.Stderr = f
-	pm.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd := exec.Command(vllmBinary(), args...)
+	cmd.Stdout = f
+	cmd.Stderr = f
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	if err := pm.cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		f.Close()
 		pm.status = "error"
 		return "", fmt.Errorf("start vLLM: %w", err)
 	}
 
+	pm.cmd = cmd
+	pm.done = make(chan struct{})
 	pm.status = "loading"
 	pm.modelName = modelName
 	pm.logFile = logFile
-	log.Printf("[process] started vLLM (pid=%d) raw=%s", pm.cmd.Process.Pid, raw)
+	log.Printf("[process] started vLLM (pid=%d) raw=%s", cmd.Process.Pid, raw)
 
-	go func() {
-		err := pm.cmd.Wait()
-		f.Close()
-		pm.mu.Lock()
-		if err != nil {
+	go pm.waitForExit(cmd, f)
+
+	return fmt.Sprintf("started pid=%d log=%s", cmd.Process.Pid, logFile), nil
+}
+
+// waitForExit is the sole owner of cmd.Wait. Stop only signals the process
+// group and waits on done; calling Wait from both paths races and can turn a
+// clean operator stop into a false error state.
+func (pm *ProcessManager) waitForExit(cmd *exec.Cmd, logFile *os.File) {
+	err := cmd.Wait()
+	_ = logFile.Close()
+
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if pm.cmd != cmd {
+		return
+	}
+	if err != nil {
+		if pm.status != "stopped" {
 			pm.status = "error"
-			log.Printf("[process] vLLM exited: %v", err)
-		} else {
-			pm.status = "stopped"
 		}
-		pm.modelName = ""
-		pm.cmd = nil
-		pm.mu.Unlock()
-	}()
-
-	return fmt.Sprintf("started pid=%d log=%s", pm.cmd.Process.Pid, logFile), nil
+		log.Printf("[process] vLLM exited: %v", err)
+	} else if pm.status != "stopped" {
+		pm.status = "stopped"
+		log.Println("[process] vLLM exited cleanly")
+	}
+	pm.modelName = ""
+	pm.cmd = nil
+	done := pm.done
+	pm.done = nil
+	if done != nil {
+		close(done)
+	}
 }
 
 // DownloadModel downloads a model from URL into workDir/models/.
@@ -369,36 +369,48 @@ func (pm *ProcessManager) DownloadModel(model, url, workDir string) (string, err
 // Stop terminates the vLLM process and all its children.
 func (pm *ProcessManager) Stop() (string, error) {
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
 	if pm.cmd == nil || pm.cmd.Process == nil {
+		pm.mu.Unlock()
 		return "", fmt.Errorf("vLLM not running")
 	}
 
 	pid := pm.cmd.Process.Pid
+	cmd := pm.cmd
+	done := pm.done
+	// Mark the stop before signalling. The sole Wait owner preserves this
+	// operator-requested state even when the process exits with SIGTERM.
+	pm.status = "stopped"
+	pm.modelName = ""
+	pm.mu.Unlock()
+
 	// Kill the entire process group (vLLM spawns EngineCore subprocesses
 	// that hold GPU memory; killing only the parent leaves orphans).
 	pgid, err := syscall.Getpgid(pid)
 	if err == nil {
-		syscall.Kill(-pgid, syscall.SIGTERM)
+		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		// Give it a moment to exit cleanly, then force-kill
-		done := make(chan struct{})
-		go func() {
-			pm.cmd.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			syscall.Kill(-pgid, syscall.SIGKILL)
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				_ = syscall.Kill(-pgid, syscall.SIGKILL)
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+				}
+			}
 		}
 	} else {
 		// Fallback: kill just the process
-		pm.cmd.Process.Kill()
+		_ = cmd.Process.Kill()
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+			}
+		}
 	}
 
-	pm.status = "stopped"
-	pm.modelName = ""
 	log.Printf("[process] killed vLLM process group (pid=%d)", pid)
 	return fmt.Sprintf("killed pid=%d (process group)", pid), nil
 }

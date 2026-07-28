@@ -2,7 +2,10 @@ package agent
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"predict/engine/pkg/cluster"
 )
@@ -14,6 +17,43 @@ func argValue(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func TestProcessManagerStopPreservesStoppedState(t *testing.T) {
+	binDir := t.TempDir()
+	fakeVLLM := filepath.Join(binDir, "vllm")
+	if err := os.WriteFile(fakeVLLM, []byte("#!/bin/sh\ntrap 'exit 0' TERM\nwhile :; do sleep 1; done\n"), 0755); err != nil {
+		t.Fatalf("write fake vllm: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	pm := NewProcessManager(&Config{})
+	if _, err := pm.Start(&StartOptions{
+		Model:   "test-model",
+		GPUUtil: "0.01",
+		WorkDir: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := pm.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		pm.mu.Lock()
+		status, activeCmd := pm.status, pm.cmd
+		pm.mu.Unlock()
+		if status == "stopped" && activeCmd == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	pm.mu.Lock()
+	status, activeCmd := pm.status, pm.cmd
+	pm.mu.Unlock()
+	t.Fatalf("state after Stop() = status=%q cmd=%v, want stopped with no process", status, activeCmd)
 }
 
 func hasArg(args []string, wanted string) bool {

@@ -24,6 +24,11 @@ var (
 	workDir         = flag.String("work-dir", "/root/cascade/agent", "Working directory for models, logs, and cache")
 	vllmHost        = flag.String("vllm-host", "0.0.0.0", "vLLM listen host; must be reachable by the cluster gateway")
 	vllmPort        = flag.Int("vllm-port", 8000, "vLLM HTTP port advertised to the cluster gateway")
+	advertiseHost   = flag.String("advertise-host", "", "Gateway-reachable host or IP for this Agent; defaults to auto-detected outbound IP")
+	vllmPath        = flag.String("vllm-path", "", "Path to the vLLM executable; defaults to Cascade venv or PATH")
+	diagnosticsHost = flag.String("diagnostics-host", "0.0.0.0", "Read-only Agent diagnostics listen host")
+	diagnosticsPort = flag.Int("diagnostics-port", 9002, "Read-only Agent diagnostics port; <=0 disables it")
+	diagnosticsURL  = flag.String("diagnostics-url", "", "Externally reachable Agent diagnostics URL override")
 
 	// GPU
 	gpuType  = flag.String("gpu-type", "", "GPU type (e.g. H100)")
@@ -31,7 +36,7 @@ var (
 	gpuCount = flag.Int("gpu-count", 1, "Number of GPUs")
 
 	// Disks
-	disksRaw = flag.String("disks", "", "Comma-separated disk paths and sizes: /mnt/nvme0:3500,/mnt/nvme1:3500")
+	disksRaw = flag.String("disks", "", "Comma-separated filesystem paths; optional legacy :capacity suffix is ignored at runtime")
 )
 
 func main() {
@@ -44,11 +49,19 @@ func main() {
 	cfg.WorkDir = *workDir
 	cfg.VLLMHost = strings.TrimSpace(*vllmHost)
 	cfg.VLLMPort = *vllmPort
+	cfg.AdvertiseHost = strings.TrimSpace(*advertiseHost)
+	cfg.VLLMPath = strings.TrimSpace(*vllmPath)
+	cfg.DiagnosticsHost = strings.TrimSpace(*diagnosticsHost)
+	cfg.DiagnosticsPort = *diagnosticsPort
+	cfg.DiagnosticsURL = strings.TrimSpace(*diagnosticsURL)
 	if cfg.VLLMHost == "" {
 		log.Fatal("vllm-host cannot be empty")
 	}
 	if cfg.VLLMPort < 1 || cfg.VLLMPort > 65535 {
 		log.Fatalf("invalid vllm-port %d", cfg.VLLMPort)
+	}
+	if cfg.DiagnosticsPort > 65535 {
+		log.Fatalf("invalid diagnostics-port %d", cfg.DiagnosticsPort)
 	}
 
 	mode := cluster.CacheMode(strings.ToLower(strings.TrimSpace(*cacheMode)))
@@ -92,7 +105,10 @@ func main() {
 				}
 			}
 			cfg.Disks = append(cfg.Disks, cluster.DiskInfo{
-				Path:    path,
+				Path: path,
+				// Runtime capacity is collected with statfs. Keep accepting the
+				// legacy suffix for CLI compatibility, but never publish it as a
+				// live disk metric.
 				TotalGB: sizeGB,
 				FreeGB:  sizeGB,
 			})
@@ -113,6 +129,9 @@ func main() {
 	log.Printf("=== C端 Agent ===")
 	log.Printf("node=%s server=%s cache_mode=%s", cfg.NodeID, cfg.ServerAddr, cfg.CacheMode)
 	log.Printf("vLLM listen=%s:%d", cfg.VLLMHost, cfg.VLLMPort)
+	if cfg.DiagnosticsPort > 0 {
+		log.Printf("agent diagnostics listen=%s:%d", cfg.DiagnosticsHost, cfg.DiagnosticsPort)
+	}
 	log.Printf("disks: %+v", cfg.Disks)
 
 	if err := agt.Start(); err != nil {

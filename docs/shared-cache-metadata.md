@@ -81,12 +81,14 @@ make build-cs
 每台 GPU 节点都使用相同的 cache ID 和 metadata URL：
 
 ~~~bash
-./bin/c-agent --server <cluster-server-host>:9000 --node-id gpu-node-01 --cache-mode shared_pool --cache-path http://<metadata-host>:9100 --shared-cache-root "$CACHE_ROOT" --shared-cache-id "$CACHE_ID" --gpu-type <GPU型号> --gpu-mem <显存MB> --gpu-count <GPU数量> --work-dir /var/lib/cascade/agent
+./bin/c-agent --server <cluster-server-host>:9000 --node-id gpu-node-01 --cache-mode shared_pool --cache-path http://<metadata-host>:9100 --shared-cache-root "$CACHE_ROOT" --shared-cache-id "$CACHE_ID" --gpu-type <GPU型号> --gpu-mem <显存MB> --gpu-count <GPU数量> --work-dir /var/lib/cascade/agent --vllm-host 0.0.0.0 --vllm-port 8000 --advertise-host <gpu-node-data-ip>
 ~~~
 
 Agent 会把共享目录、metadata URL 和 cache ID 写入 vLLM 的
 kv_connector_extra_config。S 端会拒绝注册到同一 shared-pool、但 cache ID 不同的
 节点；集群汇总也会对同一共享 metadata service 的 cache 统计去重。
+
+`--advertise-host` 必须是 S 端网关可直接访问的推理网地址，不应依赖默认的出站网卡自动探测。这样管理网、存储网与推理网分离时，网关仍会路由到正确的 vLLM endpoint。
 
 确认注册：
 

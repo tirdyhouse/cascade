@@ -34,19 +34,6 @@ func vllmBinary() string {
 	return "vllm"
 }
 
-// pythonBin returns the venv Python interpreter path.
-func pythonBin() string {
-	for _, p := range []string{
-		"/root/cascade/.venv-cascade/bin/python3",
-		"python3",
-	} {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return "python3"
-}
-
 // StartOptions holds parameters for starting vLLM.
 type StartOptions struct {
 	Model           string
@@ -74,6 +61,9 @@ type ProcessManager struct {
 	status    string // "stopped" | "running" | "loading" | "error"
 	modelName string
 	logFile   string // path to current vLLM log file
+
+	downloadMu sync.Mutex
+	downloads  map[string]struct{}
 }
 
 const diskCacheConnectorModule = "adapter.vllm.connector_v21"
@@ -81,8 +71,9 @@ const diskCacheConnectorModule = "adapter.vllm.connector_v21"
 // NewProcessManager creates a ProcessManager.
 func NewProcessManager(cfg *Config) *ProcessManager {
 	return &ProcessManager{
-		cfg:    cfg,
-		status: "stopped",
+		cfg:       cfg,
+		status:    "stopped",
+		downloads: make(map[string]struct{}),
 	}
 }
 
@@ -191,6 +182,13 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 		return "", fmt.Errorf("vLLM already running (model=%s)", pm.modelName)
 	}
 
+	if opts == nil {
+		return "", fmt.Errorf("start options are required")
+	}
+	if _, err := readyModelDir(opts.WorkDir, opts.Model); err != nil {
+		return "", err
+	}
+
 	args, err := buildVLLMArgs(opts)
 	if err != nil {
 		return "", err
@@ -206,7 +204,11 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 		return "", fmt.Errorf("create log file: %w", err)
 	}
 
-	cmd := exec.Command(vllmBinary(), args...)
+	vllmPath := strings.TrimSpace(opts.VLLMPath)
+	if vllmPath == "" {
+		vllmPath = vllmBinary()
+	}
+	cmd := exec.Command(vllmPath, args...)
 	cmd.Stdout = f
 	cmd.Stderr = f
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -225,82 +227,6 @@ func (pm *ProcessManager) Start(opts *StartOptions) (string, error) {
 	pm.modelName = opts.Model
 	pm.logFile = logFile
 	log.Printf("[process] started vLLM (pid=%d) model=%s log=%s", cmd.Process.Pid, opts.Model, logFile)
-
-	go pm.waitForExit(cmd, f)
-
-	return fmt.Sprintf("started pid=%d log=%s", cmd.Process.Pid, logFile), nil
-}
-
-// StartRaw starts vLLM with a raw command line string.
-// The raw string is split and executed as: vllm serve <raw_args>
-
-// StartRaw starts vLLM with a raw command line string.
-// The raw string is split and executed as: vllm serve <raw_args>
-// Example raw: "Qwen2.5-7B-Instruct --gpu-memory-utilization 0.9 --enable-prefix-caching --kv-connector disk-cache"
-func (pm *ProcessManager) StartRaw(raw, workDir string) (string, error) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	if pm.cmd != nil && pm.cmd.Process != nil {
-		return "", fmt.Errorf("vLLM already running (model=%s)", pm.modelName)
-	}
-
-	// Split raw string into args
-	args := []string{"serve"}
-	rawParts := splitArgs(raw)
-	// Prepend local models dir if model is a relative name
-	if len(rawParts) > 0 && !strings.HasPrefix(rawParts[0], "/") && workDir != "" {
-		modelPath := filepath.Join(workDir, "models", rawParts[0])
-		if _, err := os.Stat(modelPath); err == nil {
-			rawParts[0] = modelPath
-		}
-	}
-	args = append(args, rawParts...)
-	if !containsVLLMFlag(rawParts, "--host") {
-		host := strings.TrimSpace(pm.cfg.VLLMHost)
-		if host == "" {
-			host = defaultVLLMHost
-		}
-		args = append(args, "--host", host)
-	}
-	if !containsVLLMFlag(rawParts, "--port") {
-		port := pm.cfg.VLLMPort
-		if port <= 0 {
-			port = defaultVLLMPort
-		}
-		args = append(args, "--port", strconv.Itoa(port))
-	}
-	// Prepare log file
-	logDir := filepath.Join(workDir, "logs")
-	os.MkdirAll(logDir, 0755)
-	modelName := ""
-	if len(args) > 1 {
-		modelName = args[1]
-	}
-	logName := filepath.Base(modelName)
-	logFile := filepath.Join(logDir, "vllm-"+logName+".log")
-	f, err := os.Create(logFile)
-	if err != nil {
-		return "", fmt.Errorf("create log file: %w", err)
-	}
-
-	cmd := exec.Command(vllmBinary(), args...)
-	cmd.Stdout = f
-	cmd.Stderr = f
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	if err := cmd.Start(); err != nil {
-		f.Close()
-		pm.status = "error"
-		return "", fmt.Errorf("start vLLM: %w", err)
-	}
-
-	pm.cmd = cmd
-	pm.done = make(chan struct{})
-	pm.status = "loading"
-	pm.modelName = modelName
-	pm.logFile = logFile
-	log.Printf("[process] started vLLM (pid=%d) raw=%s", cmd.Process.Pid, raw)
 
 	go pm.waitForExit(cmd, f)
 
@@ -337,35 +263,6 @@ func (pm *ProcessManager) waitForExit(cmd *exec.Cmd, logFile *os.File) {
 	}
 }
 
-// DownloadModel downloads a model from URL into workDir/models/.
-func (pm *ProcessManager) DownloadModel(model, url, workDir string) (string, error) {
-	modelDir := filepath.Join(workDir, "models", model)
-	if err := os.MkdirAll(modelDir, 0755); err != nil {
-		return "", fmt.Errorf("create model dir: %w", err)
-	}
-
-	log.Printf("[process] downloading model %s from %s", model, url)
-
-	var cmd *exec.Cmd
-	if strings.Contains(url, "huggingface.co") {
-		cmd = exec.Command("huggingface-cli", "download",
-			model, "--local-dir", modelDir, "--local-dir-use-symlinks", "False")
-	} else if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
-		cmd = exec.Command("wget", "-c", "-P", modelDir, url)
-	} else {
-		marker := filepath.Join(modelDir, ".downloaded")
-		os.WriteFile(marker, []byte("placeholder\n"), 0644)
-		return fmt.Sprintf("placeholder model %s at %s", model, modelDir), nil
-	}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(output), fmt.Errorf("download failed: %w", err)
-	}
-	os.WriteFile(filepath.Join(modelDir, ".downloaded"), []byte("ok\n"), 0644)
-	return fmt.Sprintf("downloaded %s (%.1f GB)", model, dirSizeGB(modelDir)), nil
-}
-
 // Stop terminates the vLLM process and all its children.
 func (pm *ProcessManager) Stop() (string, error) {
 	pm.mu.Lock()
@@ -397,6 +294,8 @@ func (pm *ProcessManager) Stop() (string, error) {
 				select {
 				case <-done:
 				case <-time.After(time.Second):
+					pm.markStopTimeout(cmd)
+					return fmt.Sprintf("sent SIGTERM and SIGKILL to pid=%d", pid), fmt.Errorf("vLLM process did not exit after SIGKILL")
 				}
 			}
 		}
@@ -407,12 +306,22 @@ func (pm *ProcessManager) Stop() (string, error) {
 			select {
 			case <-done:
 			case <-time.After(time.Second):
+				pm.markStopTimeout(cmd)
+				return fmt.Sprintf("sent kill to pid=%d", pid), fmt.Errorf("vLLM process did not exit")
 			}
 		}
 	}
 
 	log.Printf("[process] killed vLLM process group (pid=%d)", pid)
 	return fmt.Sprintf("killed pid=%d (process group)", pid), nil
+}
+
+func (pm *ProcessManager) markStopTimeout(cmd *exec.Cmd) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if pm.cmd == cmd {
+		pm.status = "error"
+	}
 }
 
 // LogFile returns the current vLLM log file path.
@@ -422,31 +331,6 @@ func (pm *ProcessManager) LogFile() string {
 	return pm.logFile
 }
 
-// LoadModel stub.
-func (pm *ProcessManager) LoadModel(model string) (string, error) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-	if pm.cmd == nil || pm.cmd.Process == nil {
-		return "", fmt.Errorf("vLLM not running")
-	}
-	pm.modelName = model
-	pm.status = "loading"
-	return fmt.Sprintf("loading model %s...", model), nil
-}
-
-// UnloadModel stub.
-func (pm *ProcessManager) UnloadModel() (string, error) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-	if pm.modelName == "" {
-		return "", fmt.Errorf("no model loaded")
-	}
-	oldModel := pm.modelName
-	pm.modelName = ""
-	pm.status = "running"
-	return fmt.Sprintf("unloaded %s", oldModel), nil
-}
-
 // Status returns the current process status.
 func (pm *ProcessManager) Status() string {
 	pm.mu.Lock()
@@ -454,44 +338,30 @@ func (pm *ProcessManager) Status() string {
 	return pm.status
 }
 
+// MarkRunning records a completed health check. Process creation alone is not
+// considered a successful vLLM start because EngineCore can still fail during
+// model initialization.
+func (pm *ProcessManager) MarkRunning() {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if pm.cmd != nil && pm.status == "loading" {
+		pm.status = "running"
+	}
+}
+
+// MarkError records an observed health-check failure for a process that has
+// not yet exited. The exit watcher remains the sole owner of cleanup.
+func (pm *ProcessManager) MarkError() {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if pm.cmd != nil && pm.status != "stopped" {
+		pm.status = "error"
+	}
+}
+
 // ModelName returns the currently loaded model name.
 func (pm *ProcessManager) ModelName() string {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	return pm.modelName
-}
-
-// splitArgs splits a raw command string into args, respecting quoted strings.
-func splitArgs(raw string) []string {
-	var args []string
-	var cur strings.Builder
-	inQuote := false
-	for i := 0; i < len(raw); i++ {
-		c := raw[i]
-		if c == '"' {
-			inQuote = !inQuote
-			continue
-		}
-		if c == ' ' && !inQuote {
-			if cur.Len() > 0 {
-				args = append(args, cur.String())
-				cur.Reset()
-			}
-			continue
-		}
-		cur.WriteByte(c)
-	}
-	if cur.Len() > 0 {
-		args = append(args, cur.String())
-	}
-	return args
-}
-
-func containsVLLMFlag(args []string, flag string) bool {
-	for _, arg := range args {
-		if arg == flag || strings.HasPrefix(arg, flag+"=") {
-			return true
-		}
-	}
-	return false
 }

@@ -27,11 +27,31 @@ func TestProcessManagerStopPreservesStoppedState(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
+	workDir := t.TempDir()
+	modelDir := filepath.Join(workDir, "models", "test-model")
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		t.Fatalf("create model dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "config.json"), []byte("test"), 0644); err != nil {
+		t.Fatalf("write model file: %v", err)
+	}
+	if err := writeModelState(modelDir, localModelState{
+		Name:       "test-model",
+		TotalBytes: 4,
+		Files: []cluster.ModelFile{{
+			Path:   "config.json",
+			Size:   4,
+			SHA256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+		}},
+	}); err != nil {
+		t.Fatalf("write model readiness state: %v", err)
+	}
+
 	pm := NewProcessManager(&Config{})
 	if _, err := pm.Start(&StartOptions{
 		Model:   "test-model",
 		GPUUtil: "0.01",
-		WorkDir: t.TempDir(),
+		WorkDir: workDir,
 	}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -54,6 +74,47 @@ func TestProcessManagerStopPreservesStoppedState(t *testing.T) {
 	status, activeCmd := pm.status, pm.cmd
 	pm.mu.Unlock()
 	t.Fatalf("state after Stop() = status=%q cmd=%v, want stopped with no process", status, activeCmd)
+}
+
+func TestProcessManagerUsesExplicitVLLMPath(t *testing.T) {
+	binDir := t.TempDir()
+	fakeVLLM := filepath.Join(binDir, "custom-vllm")
+	if err := os.WriteFile(fakeVLLM, []byte("#!/bin/sh\ntrap 'exit 0' TERM\nwhile :; do sleep 1; done\n"), 0755); err != nil {
+		t.Fatalf("write fake vllm: %v", err)
+	}
+
+	workDir := t.TempDir()
+	modelDir := filepath.Join(workDir, "models", "test-model")
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		t.Fatalf("create model dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "config.json"), []byte("test"), 0644); err != nil {
+		t.Fatalf("write model file: %v", err)
+	}
+	if err := writeModelState(modelDir, localModelState{
+		Name:       "test-model",
+		TotalBytes: 4,
+		Files: []cluster.ModelFile{{
+			Path:   "config.json",
+			Size:   4,
+			SHA256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+		}},
+	}); err != nil {
+		t.Fatalf("write model readiness state: %v", err)
+	}
+
+	pm := NewProcessManager(&Config{})
+	if _, err := pm.Start(&StartOptions{
+		Model:    "test-model",
+		GPUUtil:  "0.01",
+		WorkDir:  workDir,
+		VLLMPath: fakeVLLM,
+	}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := pm.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
 }
 
 func hasArg(args []string, wanted string) bool {

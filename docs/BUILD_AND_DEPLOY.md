@@ -69,10 +69,11 @@ cd engine && GOOS=linux GOARCH=amd64 go build -o disk-cache-linux ./cmd/disk-cac
 
 ```bash
 ./cluster-server \
-  --rpcx-port 9000 \           # rpcx 服务端口，C端 通过此端口连接
-  --http-port 18080 \          # HTTP API + Web UI 端口
-  --models-dir /tmp/models \   # 模型文件目录（S端 扫描此目录发现模型）
-  --models-file /root/cascade/models.json  # 模型列表 JSON 文件
+  --rpcx-port 9000 \
+  --http-port 18080 \
+  --models-dir /mnt/models \
+  --public-url http://<server-data-ip>:18080/models/ \
+  --state-dir /var/lib/cascade/control-plane
 ```
 
 ### 参数说明
@@ -83,6 +84,11 @@ cd engine && GOOS=linux GOARCH=amd64 go build -o disk-cache-linux ./cmd/disk-cac
 | `--http-port` | `18080` | HTTP API + 嵌入式 Web UI |
 | `--models-dir` | - | S端 扫描此目录自动发现模型（读取 config.json 检测量化类型） |
 | `--models-file` | - | 模型列表 JSON 文件路径，格式见下方 |
+| `--public-url` | - | C端可访问的 S端 `/models/` URL；使用本地模型分发时必填 |
+| `--state-dir` | `/var/lib/cascade/control-plane` | 命令历史与未完成命令的持久化目录；生产环境必须落在持久磁盘 |
+| `--gateway-max-inflight-per-node` | `16` | 网关对单节点同时转发的最大请求数 |
+
+> 仅设置 `--models-dir` 只能让 S端看到模型，不能让 C端下载。要走“后台下发模型”的真实流程，必须同时设置 Agent 可访问的 `--public-url`；S端会生成逐文件 SHA-256 manifest，C端校验完成后才把模型标记为 `ready`。
 
 ### models.json 格式
 
@@ -97,6 +103,8 @@ cd engine && GOOS=linux GOARCH=amd64 go build -o disk-cache-linux ./cmd/disk-cac
   }
 ]
 ```
+
+外部模型条目必须提供 `manifest_url`，或使用受支持的 Hugging Face 仓库 URL。普通下载 URL 不会显示为可分发模型，避免把目录页、单个分片或未校验镜像误下发到节点。
 
 ### 启动日志示例
 
@@ -116,15 +124,20 @@ cd engine && GOOS=linux GOARCH=amd64 go build -o disk-cache-linux ./cmd/disk-cac
 
 ```bash
 ./c-agent \
-  --server 127.0.0.1:9000 \          # S端 rpcx 地址
-  --node-id a100-test \               # 节点 ID（唯一标识）
-  --cache-mode local_nvme \           # 缓存模式
-  --gpu-type A100-PCIE-40GB \         # GPU 型号
-  --gpu-mem 40960 \                   # GPU 显存 MB
-  --gpu-count 1 \                     # GPU 数量
-  --disks /root/cache:100 \           # 磁盘列表：路径:总容量GB
-  --work-dir /root/cascade/agent \    # 工作目录
-  --rpcx-port 9001                    # 本地 rpcx 端口（可选，用于 C端 服务注册）
+  --server 127.0.0.1:9000 \
+  --node-id a100-test \
+  --cache-mode local_nvme \
+  --gpu-type A100-PCIE-40GB \
+  --gpu-mem 40960 \
+  --gpu-count 1 \
+  --disks /root/cache \
+  --work-dir /root/cascade/agent \
+  --vllm-host 0.0.0.0 \
+  --vllm-port 8000 \
+  --advertise-host 192.168.56.29 \
+  --vllm-path /root/cascade/.venv-cascade/bin/vllm \
+  --diagnostics-port 9002 \
+  --rpcx-port 9001
 ```
 
 ### 参数说明
@@ -137,9 +150,16 @@ cd engine && GOOS=linux GOARCH=amd64 go build -o disk-cache-linux ./cmd/disk-cac
 | `--gpu-type` | - | GPU 型号，用于 S端 展示 |
 | `--gpu-mem` | - | 单卡显存（MB） |
 | `--gpu-count` | `1` | GPU 数量 |
-| `--disks` | - | 磁盘列表，格式 `路径:总容量GB`，逗号分隔 |
+| `--disks` | - | 监控的磁盘挂载点，逗号分隔；旧的 `路径:总容量GB` 后缀仍兼容但不作为实时容量来源 |
 | `--work-dir` | - | 工作目录，包含子目录：`models/` `logs/` `cache/` |
+| `--vllm-host` | `0.0.0.0` | Agent 启动 vLLM 时的监听地址 |
+| `--vllm-port` | `8000` | Agent 启动并向 S端发布的 vLLM HTTP 端口 |
+| `--advertise-host` | 自动探测 | S端网关访问 vLLM 的主机/IP；多网卡或容器场景必须显式设置 |
+| `--vllm-path` | 自动探测 | vLLM 可执行文件路径；默认依次检查 Cascade venv 与 `PATH` |
+| `--diagnostics-port` | `9002` | Agent 只读日志诊断端口；设置为 `0` 可禁用 |
 | `--rpcx-port` | `9001` | 本地 rpcx 端口（C端 注册的服务端口） |
+
+> `--vllm-host` 仅决定进程监听位置，`--advertise-host` 决定 S端网关实际访问的地址。两者在单网卡机器上通常相同语义，但在管理网、存储网和推理网分离时必须分别配置。启动 Agent 后先执行 `GET /api/v1/nodes/<node-id>`，确认 `info.ip` 和 `vllm_port` 与网关可达地址一致，再下发 `start_vllm`。
 
 ### 工作目录结构
 

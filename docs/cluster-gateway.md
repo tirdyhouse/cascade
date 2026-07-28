@@ -53,7 +53,10 @@ Start the control plane and gateway once:
 ```
 
 Every GPU node must advertise an endpoint the cluster server can reach. The
-controlled `start_vllm` path now passes `--host` and `--port` to vLLM:
+controlled `start_vllm` path passes `--host` and `--port` to vLLM. Set
+`--advertise-host` explicitly whenever management, storage, and inference
+traffic use different network interfaces; it is the address the gateway will
+actually dial.
 
 ```bash
 ./bin/c-agent \
@@ -61,14 +64,31 @@ controlled `start_vllm` path now passes `--host` and `--port` to vLLM:
   --node-id gpu-node-01 \
   --vllm-host 0.0.0.0 \
   --vllm-port 8000 \
+  --advertise-host <gpu-node-data-ip> \
+  --vllm-path /root/cascade/.venv-cascade/bin/vllm \
+  --diagnostics-host 0.0.0.0 \
+  --diagnostics-port 9002 \
   --cache-mode shared_pool \
   --cache-path http://<metadata-host>:9100 \
   --shared-cache-root /mnt/nvfile/cascade/kv-v2 \
   --shared-cache-id nvfile-cascade-prod-1
 ```
 
-For `raw_args` launches, the agent appends `--host` and `--port` unless those
-flags are already present.
+The control plane accepts only structured lifecycle parameters. It does not
+accept arbitrary `raw_args`; this prevents one Agent from receiving a launch
+configuration that cannot be diagnosed or reproduced by the rest of the
+cluster.
+
+From the control-plane host, verify the advertised data address before issuing
+the first model start:
+
+```bash
+curl -fsS http://<cluster-server-host>:8080/api/v1/nodes/gpu-node-01
+```
+
+The response must show `info.ip` as `<gpu-node-data-ip>` and `vllm_port` as
+`8000`. The Agent diagnostics endpoint must also be reachable from the control
+plane if operators need remote vLLM logs.
 
 ## Client Check
 

@@ -52,7 +52,7 @@
               <span class="metric-detail" id="metric-serving-detail">Waiting for data</span>
             </div>
             <div class="metric">
-              <span class="metric-label">Cache blocks</span>
+              <span class="metric-label">Cache objects</span>
               <strong class="metric-value" id="metric-cache">-</strong>
               <span class="metric-detail" id="metric-cache-detail">Waiting for data</span>
             </div>
@@ -175,7 +175,7 @@
                     <th scope="col">Size</th>
                     <th scope="col">Prefix cache</th>
                     <th scope="col">Disk cache</th>
-                    <th scope="col">Source</th>
+                    <th scope="col">Distribution</th>
                   </tr>
                 </thead>
                 <tbody id="models-table-body"></tbody>
@@ -214,6 +214,24 @@
     </form>
   </dialog>
 
+  <dialog id="logs-dialog" aria-labelledby="logs-title">
+    <section class="logs-dialog-shell">
+      <header class="dialog-header">
+        <div>
+          <h2 id="logs-title">Agent log</h2>
+          <p id="logs-subtitle">Loading remote diagnostics</p>
+        </div>
+        <button class="icon-button" type="button" data-action="close-logs" aria-label="Close log viewer" title="Close">x</button>
+      </header>
+      <pre class="log-output" id="logs-output" aria-live="polite"></pre>
+      <footer class="dialog-footer logs-footer">
+        <button class="button" type="button" data-action="close-logs">Close</button>
+        <button class="button" type="button" data-action="load-more-logs" id="logs-more">Load more</button>
+        <button class="button primary" type="button" data-action="refresh-logs">Refresh</button>
+      </footer>
+    </section>
+  </dialog>
+
   <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
 
   <script>
@@ -236,6 +254,15 @@
       refreshedAt: null,
       commandBusy: false,
       modal: null,
+      logs: {
+        nodeID: null,
+        offset: 0,
+        filename: "",
+        lines: "",
+        eof: true,
+        loading: false,
+        error: "",
+      },
     };
 
     const elements = {
@@ -258,6 +285,11 @@
       dialogSubtitle: document.getElementById("operation-subtitle"),
       dialogContent: document.getElementById("operation-content"),
       dialogSubmit: document.getElementById("operation-submit"),
+      logsDialog: document.getElementById("logs-dialog"),
+      logsTitle: document.getElementById("logs-title"),
+      logsSubtitle: document.getElementById("logs-subtitle"),
+      logsOutput: document.getElementById("logs-output"),
+      logsMore: document.getElementById("logs-more"),
       toastRegion: document.getElementById("toast-region"),
     };
 
@@ -372,16 +404,66 @@
       return event.error || event.output || "No agent output reported";
     }
 
+    function activeCommand(nodeID) {
+      const active = latestCommandEvents(state.commands)
+        .filter((event) => event.node_id === nodeID && ["queued", "running"].includes(safeStatus(event.status, "")))
+        .sort(sortEvents);
+      return active[0] || null;
+    }
+
+    // Command history intentionally retains every lifecycle update for audit.
+    // Availability decisions, however, must look only at the newest update for
+    // each command: an earlier "running" event must never keep an operation
+    // disabled after the same command has already reached success or failure.
+    function latestCommandEvents(events) {
+      const latest = new Map();
+      for (const event of events || []) {
+        if (!event) continue;
+        const key = String(event.cmd_id || `${event.node_id || ""}:${event.action || ""}:${event.created_at || event.timestamp || ""}`);
+        const current = latest.get(key);
+        if (!current || compareCommandEvents(event, current) > 0) latest.set(key, event);
+      }
+      return Array.from(latest.values());
+    }
+
+    function compareCommandEvents(left, right) {
+      const leftTime = Number(left?.timestamp || 0);
+      const rightTime = Number(right?.timestamp || 0);
+      if (leftTime !== rightTime) return leftTime - rightTime;
+      return commandStatusOrder(left?.status) - commandStatusOrder(right?.status);
+    }
+
+    function commandStatusOrder(status) {
+      return {
+        queued: 1,
+        running: 2,
+        success: 3,
+        failed: 3,
+        timeout: 3,
+      }[safeStatus(status, "")] || 0;
+    }
+
+    function commandProgress(event) {
+      const progress = Number(event?.progress);
+      return Number.isFinite(progress) && progress > 0 ? `${Math.min(100, Math.max(0, Math.round(progress)))}%` : "";
+    }
+
+    function commandElapsed(event) {
+      const createdAt = Number(event?.created_at || event?.timestamp || 0);
+      if (!Number.isFinite(createdAt) || createdAt <= 0) return "";
+      const seconds = Math.max(0, Math.floor((Date.now() - Math.floor(createdAt / 1000000)) / 1000));
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+      return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+    }
+
     function actionLabel(action) {
       return {
         start_vllm: "Start vLLM",
         stop_vllm: "Stop vLLM",
         restart_vllm: "Restart vLLM",
         download_model: "Download model",
-        load_model: "Load model",
-        unload_model: "Unload model",
-        update_config: "Update configuration",
-        exec_shell: "Run shell command",
       }[action] || titleCase(action || "command");
     }
 
@@ -454,6 +536,9 @@
               state.nodeDetailError = error.message;
             }
           }
+        }
+        if (elements.logsDialog.open && state.logs.nodeID) {
+          loadLogs({ tail: true });
         }
         state.refreshedAt = new Date();
       } catch (error) {
@@ -532,8 +617,8 @@
       const serving = nodeList.filter((node) => safeStatus(node.vllm_status, "stopped") === "running").length;
       setMetric("online", `${cluster.online_nodes ?? 0}/${cluster.total_nodes ?? nodeList.length}`, `${nodeList.length} registered agent${nodeList.length === 1 ? "" : "s"}`);
       setMetric("serving", formatInteger(serving), `${nodeList.filter((node) => safeStatus(node.vllm_status, "stopped") === "loading").length} loading`);
-      setMetric("cache", formatInteger(cluster.total_blocks ?? 0), formatBytes(cluster.total_bytes ?? 0));
-      setMetric("hit-rate", formatPercent(cluster.hit_rate ?? 0), `${cluster.cache_mode || "No cache mode reported"}`);
+      setMetric("cache", formatInteger(cluster.total_blocks ?? 0), `${formatBytes(cluster.total_bytes ?? 0)} metadata inventory`);
+      setMetric("hit-rate", formatPercent(cluster.hit_rate ?? 0), `${cluster.cache_mode || "No cache mode reported"}; counters reset with metadata service`);
       if (gateway) {
         setMetric("gateway", formatInteger(gateway.eligible_nodes ?? 0), `${Array.isArray(gateway.models) ? gateway.models.length : 0} routed model${gateway.models?.length === 1 ? "" : "s"}`);
       } else {
@@ -570,7 +655,7 @@
           const isSelected = node.node_id === state.selectedNodeID;
           const selected = isSelected ? " selected" : "";
           const endpoint = node.ip ? `${node.ip}:${node.vllm_port || 8000}` : "Endpoint not reported";
-          const cache = `${formatInteger(node.cache_blocks ?? 0)} blocks`;
+          const cache = `${formatInteger(node.cache_blocks ?? 0)} objects`;
           return `<tr class="${selected}" data-node-id="${escapeHTML(node.node_id)}" tabindex="0" aria-selected="${isSelected}">
             <td><div class="node-name">${escapeHTML(node.node_id)}</div><div class="subvalue">${escapeHTML(endpoint)}</div></td>
             <td><span class="state-label"><span class="status-dot ${nodeState}"></span>${escapeHTML(titleCase(nodeState))}</span></td>
@@ -611,6 +696,8 @@
       const runtime = detail.status || {};
       const disks = Array.isArray(runtime.disks) ? runtime.disks : Array.isArray(node.disks) ? node.disks : [];
       const events = Array.isArray(detail.recent) ? detail.recent.slice().sort(sortEvents).slice(0, 5) : [];
+      const localModels = Array.isArray(runtime.available_models) ? runtime.available_models : Array.isArray(node.available_models) ? node.available_models : [];
+      const operation = activeCommand(node.node_id);
       const vllmEndpoint = info.ip ? `${info.ip}:${info.vllm_port || 8000}` : "Not reported";
       const cacheIdentity = info.shared_cache_id || "Local node storage";
       elements.inspectorContent.innerHTML = `
@@ -629,22 +716,35 @@
             ${detailRow("vLLM", runtime.vllm_status || node.vllm_status || "Not reported")}
             ${detailRow("Model", runtime.model_name || node.model_name || "No model")}
             ${detailRow("GPU", info.gpu_type ? `${info.gpu_count || 1} x ${info.gpu_type}` : "Not reported")}
-            ${detailRow("GPU memory", gpuMemory(runtime, info))}
+            ${detailRow("Device GPU memory", gpuMemory(runtime, info))}
+            ${detailRow("Host memory", formatMemoryMB(runtime.mem_used_mb))}
+            ${detailRow("Host CPU", formatGPUPercent(runtime.cpu_load))}
             ${detailRow("Queue", formatInteger(runtime.queue_len ?? node.queue_len ?? 0))}
           </div>
         </section>
         <section class="inspector-section">
           <span class="section-kicker">Cache state</span>
           <div class="detail-list">
-            ${detailRow("Blocks", formatInteger(runtime.cache_blocks ?? node.cache_blocks ?? 0))}
+            ${detailRow("Objects", formatInteger(runtime.cache_blocks ?? node.cache_blocks ?? 0))}
             ${detailRow("Stored bytes", formatBytes(runtime.cache_bytes ?? 0))}
             ${detailRow("Hit rate", formatPercent(runtime.cache_hit_rate ?? node.hit_rate ?? 0))}
             ${detailRow("Retrieved", formatInteger(runtime.cache_retrieved ?? node.cache_retrieved ?? 0))}
+            ${detailRow("Metadata matches", `${formatInteger(runtime.cache_match_hits ?? 0)} / ${formatInteger(runtime.cache_match_requests ?? 0)}`)}
+            ${detailRow("Matched tokens", formatInteger(runtime.cache_matched_tokens ?? 0))}
           </div>
         </section>
         <section class="inspector-section">
           <span class="section-kicker">Storage</span>
           ${renderDisks(disks)}
+        </section>
+        <section class="inspector-section">
+          <span class="section-kicker">Local model readiness</span>
+          ${renderLocalModels(localModels)}
+        </section>
+        <section class="inspector-section">
+          <span class="section-kicker">Operation and diagnostics</span>
+          ${operation ? `<div class="operation-state ${escapeHTML(safeStatus(operation.status, "queued"))}"><strong>${escapeHTML(actionLabel(operation.action))}</strong><span>${escapeHTML([commandProgress(operation), commandElapsed(operation)].filter(Boolean).join(" - ") || "In progress")}</span><span title="${escapeHTML(eventMessage(operation))}">${escapeHTML(eventMessage(operation))}</span></div>` : `<div class="detail-list">${detailRow("Operation", "No command in progress")}</div>`}
+          <div class="inspector-actions"><button class="button" type="button" data-action="logs">View vLLM log</button></div>
         </section>
         <section class="inspector-section">
           <span class="section-kicker">Recent command events</span>
@@ -682,7 +782,7 @@
           <span class="section-kicker">Shared cache</span>
           <div class="detail-list">
             ${detailRow("Mode", state.cluster?.cache_mode || "Not reported")}
-            ${detailRow("Total blocks", formatInteger(state.cluster?.total_blocks ?? 0))}
+            ${detailRow("Total objects", formatInteger(state.cluster?.total_blocks ?? 0))}
             ${detailRow("Stored bytes", formatBytes(state.cluster?.total_bytes ?? 0))}
             ${detailRow("Average hit rate", formatPercent(state.cluster?.hit_rate ?? 0))}
           </div>
@@ -717,6 +817,17 @@
       }).join("")}</div>`;
     }
 
+    function renderLocalModels(models) {
+      if (!models.length) {
+        return `<div class="detail-list">${detailRow("Models", "No model state reported")}</div>`;
+      }
+      return `<div class="model-readiness-list">${models.slice().sort((left, right) => String(left.name).localeCompare(String(right.name))).map((model) => {
+        const status = String(model.status || "legacy_unverified").replaceAll("_", " ");
+        const size = Number(model.size_gb) > 0 ? formatGB(model.size_gb) : "Size not reported";
+        return `<div class="model-readiness"><span title="${escapeHTML(model.name || "Unnamed model")}">${escapeHTML(model.name || "Unnamed model")}</span><span>${escapeHTML(titleCase(status))} - ${escapeHTML(size)}</span></div>`;
+      }).join("")}</div>`;
+    }
+
     function sortEvents(left, right) {
       return Number(right.timestamp || 0) - Number(left.timestamp || 0);
     }
@@ -727,9 +838,10 @@
       }
       return `<div class="command-events">${events.map((event) => {
         const status = safeStatus(event.status, "queued");
+        const timing = [commandProgress(event), commandElapsed(event)].filter(Boolean).join(" - ");
         return `<div class="command-event ${status}">
           <div class="event-main" title="${escapeHTML(actionLabel(event.action))}">${escapeHTML(actionLabel(event.action))} - ${escapeHTML(titleCase(status))}</div>
-          <div class="event-meta" title="${escapeHTML(eventMessage(event))}">${escapeHTML(formatTime(event.timestamp))} - ${escapeHTML(eventMessage(event))}</div>
+          <div class="event-meta" title="${escapeHTML(eventMessage(event))}">${escapeHTML(formatTime(event.timestamp))}${timing ? ` - ${escapeHTML(timing)}` : ""} - ${escapeHTML(eventMessage(event))}</div>
         </div>`;
       }).join("")}</div>`;
     }
@@ -753,13 +865,14 @@
       }
       elements.tasksBody.innerHTML = events.map((event) => {
         const status = safeStatus(event.status, "queued");
+        const lifecycle = [commandProgress(event), commandElapsed(event)].filter(Boolean).join(" - ");
         return `<tr>
           <td><span class="number">${escapeHTML(formatTime(event.timestamp))}</span></td>
           <td><span class="number">${escapeHTML(event.cmd_id || "Not reported")}</span></td>
           <td><span class="number">${escapeHTML(actionLabel(event.action))}</span></td>
           <td><span class="number">${escapeHTML(event.node_id || "Not reported")}</span></td>
           <td><span class="status-chip ${status}">${escapeHTML(titleCase(status))}</span></td>
-          <td><div class="message-cell" title="${escapeHTML(eventMessage(event))}">${escapeHTML(eventMessage(event))}</div></td>
+          <td><div class="message-cell" title="${escapeHTML(eventMessage(event))}">${escapeHTML(lifecycle ? `${lifecycle} - ${eventMessage(event)}` : eventMessage(event))}</div></td>
         </tr>`;
       }).join("");
     }
@@ -779,14 +892,16 @@
         elements.modelsSummary.textContent = "No models published by the control server";
         elements.modelsBody.innerHTML = tableState("No registered models", "Configure a models directory or models metadata file on the control server.", 6, "empty");
       } else {
-        elements.modelsSummary.textContent = `${models.length} model${models.length === 1 ? "" : "s"} published for distribution.`;
+        const ready = models.filter((model) => model.distribution_ready).length;
+        const unavailable = models.length - ready;
+        elements.modelsSummary.textContent = unavailable ? `${ready} model${ready === 1 ? "" : "s"} ready for distribution; ${unavailable} require source configuration.` : `${ready} model${ready === 1 ? "" : "s"} ready for distribution.`;
         elements.modelsBody.innerHTML = models.map((model) => `<tr>
           <td><div class="node-name">${escapeHTML(model.name)}</div><div class="subvalue">${escapeHTML(model.path || "Path not reported")}</div></td>
           <td><span class="number">${escapeHTML(model.quantization || "Not reported")}</span></td>
           <td><span class="number">${escapeHTML(Number(model.size_gb) > 0 ? formatGB(model.size_gb) : "Not reported")}</span></td>
           <td><span class="number">${escapeHTML(model.supports_prefix ? "Supported" : "Not reported")}</span></td>
           <td><span class="number">${escapeHTML(model.supports_disk_cache ? "Supported" : "Not reported")}</span></td>
-          <td><span class="number">${escapeHTML(model.download_url ? "Available" : "Not reported")}</span></td>
+          <td><span class="status-chip ${model.distribution_ready ? "success" : "failed"}" title="${escapeHTML(model.download_url || "No catalog source configured")}">${escapeHTML(distributionLabel(model))}</span></td>
         </tr>`).join("");
       }
       renderGateway();
@@ -823,10 +938,49 @@
     }
 
     function renderOperationAvailability() {
-      const enabled = Boolean(selectedNode()) && !state.commandBusy;
-      document.querySelectorAll("[data-requires-node]").forEach((button) => {
-        button.disabled = !enabled;
+      const node = selectedNode();
+      const actions = {
+        start: "start_vllm",
+        restart: "restart_vllm",
+        stop: "stop_vllm",
+        download: "download_model",
+      };
+      Object.entries(actions).forEach(([buttonAction, commandAction]) => {
+        const button = document.querySelector(`[data-action="${buttonAction}"]`);
+        if (!button) return;
+        const availability = operationAvailability(commandAction, node);
+        button.disabled = !availability.enabled;
+        button.title = availability.reason;
       });
+    }
+
+    function operationAvailability(action, node) {
+      if (!node) return { enabled: false, reason: "Select an Agent first" };
+      if (state.commandBusy) return { enabled: false, reason: "Submitting an operation" };
+      if (safeStatus(node.status, "offline") !== "online") return { enabled: false, reason: "Agent is offline" };
+      const active = activeCommand(node.node_id);
+      if (active) return { enabled: false, reason: `${actionLabel(active.action)} is ${active.status}` };
+      const service = safeStatus(node.vllm_status, "stopped");
+      if (action === "start_vllm") {
+        const ready = readyModelsForNode(node);
+        if (!ready.length) return { enabled: false, reason: "No verified local model is ready" };
+        if (service === "stopped" || (service === "error" && !node.model_name)) return { enabled: true, reason: "Start a verified local model" };
+        if (service === "error") return { enabled: false, reason: "The managed vLLM process is unhealthy; restart or stop it first" };
+        return { enabled: false, reason: `vLLM is ${service}` };
+      }
+      if (action === "restart_vllm") {
+        const recoverable = ["running", "loading"].includes(service) || (service === "error" && Boolean(node.model_name));
+        return { enabled: recoverable, reason: recoverable ? "Restart the managed vLLM process" : "Start is available when vLLM is stopped or has exited" };
+      }
+      if (action === "stop_vllm") {
+        const stoppable = ["running", "loading"].includes(service) || (service === "error" && Boolean(node.model_name));
+        return { enabled: stoppable, reason: stoppable ? "Stop the managed vLLM process" : "vLLM is not running" };
+      }
+      if (action === "download_model") {
+        const distributable = distributableModelsForNode(node);
+        return distributable.length ? { enabled: true, reason: "Distribute a verified catalog model to this Agent" } : { enabled: false, reason: "No verified catalog model is pending on this Agent" };
+      }
+      return { enabled: false, reason: "Operation is unavailable" };
     }
 
     function selectNode(nodeID) {
@@ -855,34 +1009,52 @@
     }
 
     function targetOptions(selectedTarget) {
-      const options = [`<option value="*"${selectedTarget === "*" ? " selected" : ""}>All registered agents</option>`];
-      nodes().slice().sort((left, right) => String(left.node_id).localeCompare(String(right.node_id))).forEach((node) => {
-        options.push(`<option value="${escapeHTML(node.node_id)}"${node.node_id === selectedTarget ? " selected" : ""}>${escapeHTML(node.node_id)} (${escapeHTML(node.ip || "IP not reported")})</option>`);
-      });
-      return options.join("");
+      const node = nodes().find((candidate) => candidate.node_id === selectedTarget);
+      if (!node) return "";
+      return `<option value="${escapeHTML(node.node_id)}" selected>${escapeHTML(node.node_id)} (${escapeHTML(node.ip || "IP not reported")})</option>`;
     }
 
     function modelOptions() {
-      const current = selectedNode()?.model_name;
-      const names = new Set(state.models.map((model) => model.name).filter(Boolean));
-      if (current) names.add(current);
-      return Array.from(names).sort().map((name) => `<option value="${escapeHTML(name)}"></option>`).join("");
+      return readyModelsForNode(selectedNode()).map((model) => `<option value="${escapeHTML(model.name)}">${escapeHTML(model.name)} (${escapeHTML(Number(model.size_gb) > 0 ? formatGB(model.size_gb) : "size not reported")})</option>`).join("");
+    }
+
+    function readyModelsForNode(node) {
+      const local = Array.isArray(node?.available_models) ? node.available_models : [];
+      return local.filter((model) => model?.name && model.status === "ready").slice().sort((left, right) => String(left.name).localeCompare(String(right.name)));
+    }
+
+    function distributableModelsForNode(node) {
+      const ready = new Set(readyModelsForNode(node).map((model) => model.name));
+      return state.models
+        .filter((model) => model?.name && model.distribution_ready && !ready.has(model.name))
+        .slice()
+        .sort((left, right) => String(left.name).localeCompare(String(right.name)));
+    }
+
+    function distributionLabel(model) {
+      if (!model?.distribution_ready) return model?.download_url ? "Needs manifest" : "Not configured";
+      return model.manifest_url ? "Manifest-backed" : "Hugging Face snapshot";
     }
 
     function openServeDialog(action) {
       const node = selectedNode();
       if (!node) return;
+      const readyModels = readyModelsForNode(node);
+      if (!readyModels.length) {
+        showToast("No verified model is ready on this Agent.", "error");
+        return;
+      }
       const currentModel = node.model_name || "";
       const matched = state.models.find((model) => model.name === currentModel);
       state.modal = { kind: "serve", action };
       elements.dialogTitle.textContent = action === "restart_vllm" ? "Restart vLLM" : "Start vLLM";
-      elements.dialogSubtitle.textContent = "The command is queued to the selected Agent and executed on its next command poll.";
+      elements.dialogSubtitle.textContent = "The Agent starts only a model it has verified locally, then waits for vLLM health before reporting success.";
       elements.dialogSubmit.textContent = action === "restart_vllm" ? "Queue restart" : "Queue start";
       elements.dialogSubmit.className = "button primary";
       elements.dialogContent.innerHTML = `
         <div class="form-grid">
-          <div class="form-field"><label for="command-target">Target</label><select id="command-target" name="target">${targetOptions(node.node_id)}</select></div>
-          <div class="form-field"><label for="command-model">Model</label><input id="command-model" name="model" list="available-models" required value="${escapeHTML(currentModel)}" placeholder="Model path or registered model name"><datalist id="available-models">${modelOptions()}</datalist><p class="help-text">A model is required by the Agent to start vLLM.</p></div>
+          <div class="form-field"><label for="command-target">Target Agent</label><select id="command-target" name="target">${targetOptions(node.node_id)}</select></div>
+          <div class="form-field"><label for="command-model">Verified local model</label><select id="command-model" name="model" required>${readyModels.map((model) => `<option value="${escapeHTML(model.name)}"${model.name === currentModel ? " selected" : ""}>${escapeHTML(model.name)}${Number(model.size_gb) > 0 ? ` (${escapeHTML(formatGB(model.size_gb))})` : ""}</option>`).join("")}</select><p class="help-text">Only models with a completed Agent-side integrity manifest can be started.</p></div>
           <div class="form-field"><label for="command-gpu-util">GPU memory utilization</label><input id="command-gpu-util" name="gpu_util" type="number" min="0.1" max="1" step="0.01" required value="0.9"></div>
           <div class="form-field"><label for="command-quantization">Quantization</label><input id="command-quantization" name="quantization" value="${escapeHTML(matched?.quantization || "")}" placeholder="Optional, for example awq"></div>
           <label class="check-field"><input type="checkbox" name="enable_disk_cache" checked> Enable Cascade disk cache</label>
@@ -900,7 +1072,7 @@
       elements.dialogSubmit.className = "button danger";
       elements.dialogContent.innerHTML = `
         <div class="form-grid">
-          <div class="form-field"><label for="command-target">Target</label><select id="command-target" name="target">${targetOptions(node.node_id)}</select></div>
+          <div class="form-field"><label for="command-target">Target Agent</label><select id="command-target" name="target">${targetOptions(node.node_id)}</select></div>
           <div class="confirmation-copy">The selected Agent will stop its managed vLLM process. The operation will appear in command history as soon as it is queued.</div>
         </div>`;
       openDialog();
@@ -909,16 +1081,20 @@
     function openDownloadDialog() {
       const node = selectedNode();
       if (!node) return;
+      const distributable = distributableModelsForNode(node);
+      if (!distributable.length) {
+        showToast("No verified catalog model is pending on this Agent.", "error");
+        return;
+      }
       state.modal = { kind: "download", action: "download_model" };
       elements.dialogTitle.textContent = "Download model";
-      elements.dialogSubtitle.textContent = "The Agent downloads the specified source into its configured model directory.";
+      elements.dialogSubtitle.textContent = "The Agent verifies the catalog manifest before the model becomes available for serving.";
       elements.dialogSubmit.textContent = "Queue download";
       elements.dialogSubmit.className = "button primary";
       elements.dialogContent.innerHTML = `
         <div class="form-grid">
-          <div class="form-field"><label for="command-target">Target</label><select id="command-target" name="target">${targetOptions(node.node_id)}</select></div>
-          <div class="form-field"><label for="command-model">Model name</label><input id="command-model" name="model" list="available-models" required placeholder="Registered model name"><datalist id="available-models">${modelOptions()}</datalist></div>
-          <div class="form-field"><label for="download-url">Download URL</label><input id="download-url" name="download_url" type="url" required placeholder="https://host.example/models/model/"><p class="help-text">The Agent requires both a model name and a source URL.</p></div>
+          <div class="form-field"><label for="command-target">Target Agent</label><select id="command-target" name="target">${targetOptions(node.node_id)}</select></div>
+          <div class="form-field"><label for="command-model">Catalog model</label><select id="command-model" name="model" required>${distributable.map((model) => `<option value="${escapeHTML(model.name)}">${escapeHTML(model.name)}${Number(model.size_gb) > 0 ? ` (${escapeHTML(formatGB(model.size_gb))})` : ""}</option>`).join("")}</select><p class="help-text">The control server locks the source. Manifest-backed models are verified file by file before serving.</p></div>
         </div>`;
       openDialog();
     }
@@ -932,6 +1108,68 @@
     function closeDialog() {
       state.modal = null;
       if (elements.dialog.open) elements.dialog.close();
+    }
+
+    function openLogs() {
+      const node = selectedNode();
+      if (!node) return;
+      state.logs = { nodeID: node.node_id, offset: 0, filename: "", lines: "", eof: false, loading: false, error: "" };
+      elements.logsTitle.textContent = `${node.node_id} vLLM log`;
+      elements.logsSubtitle.textContent = "Reading the Agent-owned diagnostics endpoint";
+      renderLogs();
+      if (!elements.logsDialog.open) elements.logsDialog.showModal();
+      loadLogs({ reset: true });
+    }
+
+    function closeLogs() {
+      if (elements.logsDialog.open) elements.logsDialog.close();
+      state.logs.loading = false;
+    }
+
+    function renderLogs() {
+      const logs = state.logs;
+      elements.logsMore.disabled = logs.loading || logs.eof || Boolean(logs.error);
+      if (logs.error) {
+        elements.logsSubtitle.textContent = logs.error;
+        elements.logsOutput.textContent = "";
+        return;
+      }
+      const source = logs.filename ? `File: ${logs.filename}` : "Waiting for Agent log metadata";
+      const position = logs.loading ? "Loading" : logs.eof ? "End of current log" : `Offset ${logs.offset}`;
+      elements.logsSubtitle.textContent = `${source} - ${position}`;
+      elements.logsOutput.textContent = logs.lines || (logs.loading ? "" : "No log content is available yet.");
+      elements.logsOutput.scrollTop = elements.logsOutput.scrollHeight;
+    }
+
+    async function loadLogs({ reset = false, tail = false } = {}) {
+      const logs = state.logs;
+      if (!logs.nodeID || logs.loading) return;
+      if (!reset && !tail && logs.eof) return;
+      if (reset) {
+        logs.offset = 0;
+        logs.filename = "";
+        logs.lines = "";
+        logs.eof = false;
+        logs.error = "";
+      }
+      logs.loading = true;
+      renderLogs();
+      try {
+        const query = new URLSearchParams({ offset: String(logs.offset), lines: "300" });
+        if (logs.filename) query.set("filename", logs.filename);
+        const chunk = await api(`/api/v1/nodes/${encodeURIComponent(logs.nodeID)}/logs?${query.toString()}`);
+        if (state.logs.nodeID !== logs.nodeID) return;
+        const nextLines = String(chunk.lines || "");
+        if (nextLines) logs.lines = logs.lines ? `${logs.lines}\n${nextLines}` : nextLines;
+        logs.offset = Number(chunk.offset || logs.offset);
+        logs.filename = String(chunk.filename || logs.filename || "");
+        logs.eof = Boolean(chunk.eof);
+      } catch (error) {
+        logs.error = error.message || "Agent diagnostics are unavailable";
+      } finally {
+        logs.loading = false;
+        renderLogs();
+      }
     }
 
     async function submitOperation(event) {
@@ -955,13 +1193,11 @@
         if (quantization) params.quantization = quantization;
       } else if (modal.kind === "download") {
         const model = String(formData.get("model") || "").trim();
-        const downloadURL = String(formData.get("download_url") || "").trim();
-        if (!model || !downloadURL) {
-          showToast("Model name and download URL are required.", "error");
+        if (!model) {
+          showToast("Choose a catalog model.", "error");
           return;
         }
         params.model = model;
-        params.download_url = downloadURL;
       }
       if (!target) {
         showToast("Choose a command target.", "error");
@@ -996,17 +1232,6 @@
       window.setTimeout(() => toast.remove(), 5000);
     }
 
-    function hydrateDownloadURL() {
-      if (state.modal?.kind !== "download") return;
-      const modelInput = document.getElementById("command-model");
-      const urlInput = document.getElementById("download-url");
-      if (!modelInput || !urlInput) return;
-      const match = state.models.find((model) => model.name === modelInput.value.trim());
-      if (match?.download_url && !urlInput.dataset.userEdited) {
-        urlInput.value = match.download_url;
-      }
-    }
-
     document.addEventListener("click", (event) => {
       const viewButton = event.target.closest("button[data-view]");
       if (viewButton) {
@@ -1022,7 +1247,11 @@
         if (action === "restart") openServeDialog("restart_vllm");
         if (action === "stop") openStopDialog();
         if (action === "download") openDownloadDialog();
+        if (action === "logs") openLogs();
         if (action === "close-dialog") closeDialog();
+        if (action === "close-logs") closeLogs();
+        if (action === "refresh-logs") loadLogs({ reset: true });
+        if (action === "load-more-logs") loadLogs();
         return;
       }
       const row = event.target.closest("tr[data-node-id]");
@@ -1038,10 +1267,6 @@
     });
 
     elements.dialogForm.addEventListener("submit", submitOperation);
-    elements.dialog.addEventListener("input", (event) => {
-      if (event.target.id === "download-url") event.target.dataset.userEdited = "true";
-      if (event.target.id === "command-model") hydrateDownloadURL();
-    });
     elements.dialog.addEventListener("close", () => {
       state.modal = null;
     });

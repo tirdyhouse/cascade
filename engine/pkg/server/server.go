@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -59,6 +61,7 @@ type Config struct {
 	ModelsFile  string // path to models.json (optional)
 	ModelsDir   string // directory to auto-scan for models (optional)
 	PublicURL   string // public URL for model download links (optional)
+	StateDir    string // durable command history and pending command state (optional)
 
 	// GatewayMaxInFlightPerNode bounds requests accepted by the global OpenAI
 	// gateway before the agent heartbeat has observed them.
@@ -81,7 +84,11 @@ func New(cfg *Config) *Server {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
-	reg := NewRegistry()
+	reg, err := NewPersistentRegistry(cfg.StateDir)
+	if err != nil {
+		log.Printf("[server] command persistence unavailable (%v); starting with empty in-memory state", err)
+		reg = NewRegistry()
+	}
 	dt := NewDiskTracker()
 	gatewayTransport := http.DefaultTransport.(*http.Transport).Clone()
 
@@ -100,9 +107,9 @@ func New(cfg *Config) *Server {
 	// Router with nil meta backend for now — will be connected to disk-cache engine later
 	srv.router = NewRouter(reg, dt, nil)
 	// Initialize model registry with directory scanning
-	baseURL := cfg.PublicURL
-	if baseURL == "" && cfg.HTTPPort > 0 {
-		baseURL = fmt.Sprintf("http://localhost:%d/models/", cfg.HTTPPort)
+	baseURL := strings.TrimSpace(cfg.PublicURL)
+	if baseURL == "" && cfg.ModelsDir != "" {
+		log.Printf("[server] model distribution disabled: --public-url must be an Agent-reachable /models/ URL")
 	}
 	srv.models = NewModelRegistry(cfg.ModelsDir, baseURL)
 	if cfg.ModelsFile != "" {
@@ -168,7 +175,7 @@ func (s *Server) startRPCX(ctx context.Context) error {
 	s.rpcxServer.RegisterName("ClusterService", &clusterSvc{s.registry}, "")
 	s.rpcxServer.RegisterName("CommandService", &cmdSvc{s.registry}, "")
 	s.rpcxServer.RegisterName("QueryService", &querySvc{s.registry, s.router}, "")
-	s.rpcxServer.RegisterName("AdminService", &adminSvc{s.dispatcher, s.registry}, "")
+	s.rpcxServer.RegisterName("AdminService", &adminSvc{disp: s.dispatcher, reg: s.registry, enrich: s.enrichDispatchRequest}, "")
 
 	log.Printf("[server] rpcx listening on %s", addr)
 	go func() {
@@ -303,6 +310,7 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/command", s.apiDispatchCommand)
 	mux.HandleFunc("GET /api/v1/commands", s.apiCommandHistory)
 	mux.HandleFunc("GET /api/v1/models", s.apiModels)
+	mux.HandleFunc("GET /api/v1/models/{name}/manifest", s.apiModelManifest)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/vllm/chat", s.apiNodeVLLMChat)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/vllm/models", s.apiNodeVLLMModels)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/cache/stats", s.apiNodeCacheStats)
@@ -349,6 +357,10 @@ func (s *Server) apiDispatchCommand(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	if err := s.enrichDispatchRequest(&req); err != nil {
+		jsonRespStatus(w, http.StatusBadRequest, &cluster.OK{OK: false, Err: err.Error()})
+		return
+	}
 	ok := s.dispatcher.Dispatch(&req)
 	if !ok.OK {
 		jsonRespStatus(w, http.StatusBadRequest, ok)
@@ -363,6 +375,59 @@ func (s *Server) apiCommandHistory(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiModels(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, s.models.List())
+}
+
+func (s *Server) apiModelManifest(w http.ResponseWriter, r *http.Request) {
+	if s.models == nil {
+		http.Error(w, `{"error":"model registry unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	manifest, err := s.models.Manifest(r.PathValue("name"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, `{"error":"published model not found"}`, http.StatusNotFound)
+			return
+		}
+		jsonRespStatus(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResp(w, manifest)
+}
+
+// enrichDispatchRequest resolves model distribution through the server's
+// catalog. The browser does not get to supply an arbitrary URL for an Agent to
+// fetch; that would be both unsafe and impossible to verify operationally.
+func (s *Server) enrichDispatchRequest(req *cluster.DispatchReq) error {
+	if req == nil || req.Action != cluster.CmdDownloadModel {
+		return nil
+	}
+	if s.models == nil {
+		return errors.New("model registry is unavailable")
+	}
+	modelName := strings.TrimSpace(req.Params["model"])
+	model := s.models.Find(modelName)
+	if model == nil {
+		return fmt.Errorf("model %q is not published by this control server", modelName)
+	}
+	if !model.DistributionReady {
+		return fmt.Errorf("model %q is not ready for distribution; configure a matching manifest or a Hugging Face repository source", modelName)
+	}
+	if supplied := strings.TrimSpace(req.Params["download_url"]); supplied != "" && supplied != model.DownloadURL {
+		return fmt.Errorf("model distribution source is controlled by the catalog and cannot be overridden")
+	}
+	if supplied := strings.TrimSpace(req.Params["manifest_url"]); supplied != "" && supplied != model.ManifestURL {
+		return fmt.Errorf("model manifest is controlled by the catalog and cannot be overridden")
+	}
+	params := cloneParams(req.Params)
+	if params == nil {
+		params = make(map[string]string)
+	}
+	params["download_url"] = model.DownloadURL
+	if model.ManifestURL != "" {
+		params["manifest_url"] = model.ManifestURL
+	}
+	req.Params = params
+	return nil
 }
 
 // fetchVLLMMetric parses a single float64 value from vLLM's Prometheus /metrics.
@@ -397,38 +462,64 @@ func (s *Server) fetchVLLMMetric(nodeIP string, vllmPort int, metricName string)
 	return 0
 }
 
-// fetchGoEngineBlocksRetrieved queries the node's Go disk-cache engine /stats for BlocksRetrieved.
-func (s *Server) fetchGoEngineBlocksRetrieved(nodeIP string) int64 {
-	target := fmt.Sprintf("http://%s:9100/stats", nodeIP)
-	resp, err := s.httpClient.Get(target)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-	var stats struct {
-		BlocksRetrieved int64 `json:"BlocksRetrieved"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
-		return 0
-	}
-	return stats.BlocksRetrieved
+// cacheStatsSnapshot mirrors the metadata service's legacy and v2 counters.
+// It stays local to the control server so the server does not import the Agent
+// package (which would blur the control-plane ownership boundary).
+type cacheStatsSnapshot struct {
+	BlocksStored    int64 `json:"BlocksStored"`
+	BlocksRetrieved int64 `json:"BlocksRetrieved"`
+	BlocksEvicted   int64 `json:"BlocksEvicted"`
+	DiskUsedBytes   int64 `json:"DiskUsedBytes"`
+	ChunksStored    int64 `json:"ChunksStored"`
+	ChunksRetrieved int64 `json:"ChunksRetrieved"`
+	MatchRequests   int64 `json:"MatchRequests"`
+	MatchHits       int64 `json:"MatchHits"`
+	MatchedTokens   int64 `json:"MatchedTokens"`
 }
 
-// fetchGoEngineBlocksStored queries the node's Go disk-cache engine /stats for BlocksStored.
-func (s *Server) fetchGoEngineBlocksStored(nodeIP string) int64 {
-	target := fmt.Sprintf("http://%s:9100/stats", nodeIP)
-	resp, err := s.httpClient.Get(target)
+func (stats cacheStatsSnapshot) entryCount() int64 {
+	return stats.BlocksStored + stats.ChunksStored
+}
+
+func (stats cacheStatsSnapshot) retrievedCount() int64 {
+	return stats.BlocksRetrieved + stats.ChunksRetrieved
+}
+
+// fetchCacheStats follows the cache metadata endpoint explicitly advertised by
+// an Agent. Shared-pool deployments have one central service, which is often
+// not on the Agent IP or the historical hard-coded port 9100.
+func (s *Server) fetchCacheStats(metadataURL string) (cacheStatsSnapshot, error) {
+	target, err := cacheStatsURL(metadataURL)
 	if err != nil {
-		return 0
+		return cacheStatsSnapshot{}, err
 	}
-	defer resp.Body.Close()
-	var stats struct {
-		BlocksStored int64 `json:"BlocksStored"`
+	client := s.httpClient
+	if client == nil {
+		client = http.DefaultClient
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
-		return 0
+	response, err := client.Get(target)
+	if err != nil {
+		return cacheStatsSnapshot{}, err
 	}
-	return stats.BlocksStored
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return cacheStatsSnapshot{}, fmt.Errorf("cache metadata status %d", response.StatusCode)
+	}
+	var stats cacheStatsSnapshot
+	if err := json.NewDecoder(response.Body).Decode(&stats); err != nil {
+		return cacheStatsSnapshot{}, err
+	}
+	return stats, nil
+}
+
+func cacheStatsURL(raw string) (string, error) {
+	endpoint, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || endpoint.Host == "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") {
+		return "", fmt.Errorf("invalid cache metadata URL %q", raw)
+	}
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/stats"
+	endpoint.RawQuery = ""
+	return endpoint.String(), nil
 }
 
 // apiNodeVLLMChat proxies a chat completion request to the node's vLLM instance,
@@ -440,8 +531,10 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read stats BEFORE the request
-	diskRetrievedBefore := s.fetchGoEngineBlocksRetrieved(detail.Info.IP)
+	// Read cache metadata before the request. This is best-effort diagnostics;
+	// the inference request itself must not fail merely because telemetry is
+	// temporarily unavailable.
+	cacheBefore, _ := s.fetchCacheStats(detail.Info.CacheMetadataURL)
 
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
@@ -477,12 +570,12 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read stats AFTER the request
-	diskRetrievedAfter := s.fetchGoEngineBlocksRetrieved(detail.Info.IP)
-	diskStored := s.fetchGoEngineBlocksStored(detail.Info.IP)
-	diskBlocks := diskRetrievedAfter - diskRetrievedBefore
-	if diskBlocks < 0 {
-		diskBlocks = 0
+	// Read stats after the request. v2 chunks are the active cache objects, so
+	// include them alongside legacy blocks in every diagnostic total.
+	cacheAfter, _ := s.fetchCacheStats(detail.Info.CacheMetadataURL)
+	retrievedObjects := cacheAfter.retrievedCount() - cacheBefore.retrievedCount()
+	if retrievedObjects < 0 {
+		retrievedObjects = 0
 	}
 
 	// Only inject _cache for successful responses
@@ -497,10 +590,16 @@ func (s *Server) apiNodeVLLMChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		responseMap["_cache"] = map[string]interface{}{
-			"hit_tokens":         hitTokens,
-			"disk_blocks":        diskBlocks,
-			"disk_blocks_total":  diskRetrievedAfter,
-			"disk_blocks_stored": diskStored,
+			"hit_tokens":              hitTokens,
+			"retrieved_objects":       retrievedObjects,
+			"retrieved_objects_total": cacheAfter.retrievedCount(),
+			"stored_objects":          cacheAfter.entryCount(),
+			"match_requests_total":    cacheAfter.MatchRequests,
+			"match_hits_total":        cacheAfter.MatchHits,
+			"matched_tokens_total":    cacheAfter.MatchedTokens,
+			"disk_blocks":             retrievedObjects, // legacy compatibility
+			"disk_blocks_total":       cacheAfter.retrievedCount(),
+			"disk_blocks_stored":      cacheAfter.entryCount(),
 		}
 		respBody, _ = json.Marshal(responseMap)
 	}
@@ -550,11 +649,15 @@ func (s *Server) apiNodeCacheStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResp(w, map[string]interface{}{
-		"cache_blocks":    detail.Status.CacheBlocks,
-		"cache_bytes":     detail.Status.CacheBytes,
-		"cache_retrieved": detail.Status.CacheRetrieved,
-		"cache_evicted":   detail.Status.CacheEvicted,
-		"cache_hit_rate":  detail.Status.CacheHitRate,
+		"cache_objects":        detail.Status.CacheBlocks,
+		"cache_blocks":         detail.Status.CacheBlocks,
+		"cache_bytes":          detail.Status.CacheBytes,
+		"cache_retrieved":      detail.Status.CacheRetrieved,
+		"cache_evicted":        detail.Status.CacheEvicted,
+		"cache_hit_rate":       detail.Status.CacheHitRate,
+		"cache_match_requests": detail.Status.CacheMatchRequests,
+		"cache_match_hits":     detail.Status.CacheMatchHits,
+		"cache_matched_tokens": detail.Status.CacheMatchedTokens,
 	})
 }
 
@@ -616,71 +719,48 @@ func (s *Server) apiNodeVLLMMetrics(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiNodeLogs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	offsetStr := r.URL.Query().Get("offset")
-	linesStr := r.URL.Query().Get("lines")
-	offset, _ := strconv.Atoi(offsetStr)
-	maxLines, _ := strconv.Atoi(linesStr)
-	if maxLines <= 0 {
-		maxLines = 50
+	detail := s.registry.NodeDetail(id)
+	if detail == nil || detail.Info == nil {
+		http.Error(w, `{"error":"node not found"}`, http.StatusNotFound)
+		return
 	}
-
-	// Try to find the latest vLLM log file for this node
-	logDir := fmt.Sprintf("/root/cascade/agent/logs")
-	entries, err := os.ReadDir(logDir)
+	target, err := diagnosticsLogURL(detail.Info.DiagnosticsURL, r.URL.Query())
 	if err != nil {
-		jsonResp(w, cluster.LogChunk{NodeID: id, Lines: "", EOF: true})
+		jsonRespStatus(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
-
-	// Find the most recent vllm-*.log file
-	var latest string
-	var latestMod time.Time
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasPrefix(e.Name(), "vllm-") && strings.HasSuffix(e.Name(), ".log") {
-			fi, err := e.Info()
-			if err == nil && fi.ModTime().After(latestMod) {
-				latest = filepath.Join(logDir, e.Name())
-				latestMod = fi.ModTime()
-			}
-		}
+	client := s.httpClient
+	if client == nil {
+		client = http.DefaultClient
 	}
-	if latest == "" {
-		jsonResp(w, cluster.LogChunk{NodeID: id, Lines: "", EOF: true})
-		return
-	}
-
-	// Read from offset, return lines after offset
-	data, err := os.ReadFile(latest)
+	response, err := client.Get(target)
 	if err != nil {
-		http.Error(w, "read log: "+err.Error(), 500)
+		jsonRespStatus(w, http.StatusBadGateway, map[string]string{"error": "agent diagnostics unavailable: " + err.Error()})
 		return
 	}
-	total := len(data)
-	if offset >= total {
-		jsonResp(w, cluster.LogChunk{NodeID: id, Lines: "", Offset: int64(total), EOF: true})
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		jsonRespStatus(w, http.StatusBadGateway, map[string]string{"error": "read agent diagnostics: " + err.Error()})
 		return
 	}
-	// Return content from offset (max maxLines lines)
-	chunk := data[offset:]
-	lines := strings.Split(string(chunk), "\n")
-	end := len(lines)
-	if end > maxLines {
-		end = maxLines
+	contentType := response.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/json"
 	}
-	out := strings.Join(lines[:end], "\n")
-	newOffset := offset
-	for i := 0; i < end; i++ {
-		newOffset += len(lines[i]) + 1
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(response.StatusCode)
+	_, _ = w.Write(body)
+}
+
+func diagnosticsLogURL(raw string, query url.Values) (string, error) {
+	endpoint, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || endpoint.Host == "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") {
+		return "", errors.New("Agent does not advertise a usable diagnostics endpoint")
 	}
-	if newOffset > total {
-		newOffset = total
-	}
-	jsonResp(w, cluster.LogChunk{
-		NodeID: id,
-		Lines:  out,
-		Offset: int64(newOffset),
-		EOF:    newOffset >= total,
-	})
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/v1/logs"
+	endpoint.RawQuery = query.Encode()
+	return endpoint.String(), nil
 }
 
 // ============================================================================
@@ -746,12 +826,25 @@ func (s *querySvc) NodeDetail(ctx context.Context, nodeID string, reply *cluster
 
 // adminSvc implements cluster.AdminService.
 type adminSvc struct {
-	disp *Dispatcher
-	reg  *Registry
+	disp   *Dispatcher
+	reg    *Registry
+	enrich func(*cluster.DispatchReq) error
 }
 
 func (s *adminSvc) DispatchCommand(ctx context.Context, args *cluster.DispatchReq, reply *cluster.OK) error {
-	*reply = *s.disp.Dispatch(args)
+	if args == nil {
+		*reply = cluster.OK{OK: false, Err: "dispatch request is required"}
+		return nil
+	}
+	request := *args
+	request.Params = cloneParams(args.Params)
+	if s.enrich != nil {
+		if err := s.enrich(&request); err != nil {
+			*reply = cluster.OK{OK: false, Err: err.Error()}
+			return nil
+		}
+	}
+	*reply = *s.disp.Dispatch(&request)
 	return nil
 }
 

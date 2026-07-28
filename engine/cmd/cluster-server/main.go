@@ -17,6 +17,7 @@ var (
 	modelsFile             = flag.String("models-file", "", "Path to models.json (optional)")
 	modelsDir              = flag.String("models-dir", "", "Directory to auto-scan for models (optional)")
 	publicURL              = flag.String("public-url", "", "Public URL for model download links (optional)")
+	stateDir               = flag.String("state-dir", "/var/lib/cascade/control-plane", "Directory for durable command history and pending command state")
 	gatewayMaxInFlight     = flag.Int("gateway-max-inflight-per-node", 16, "Maximum active gateway requests per vLLM node")
 	gatewayMaxRequestBytes = flag.Int64("gateway-max-request-bytes", 64<<20, "Maximum OpenAI gateway request body size in bytes")
 )
@@ -30,6 +31,7 @@ func main() {
 	cfg.ModelsFile = *modelsFile
 	cfg.ModelsDir = *modelsDir
 	cfg.PublicURL = *publicURL
+	cfg.StateDir = *stateDir
 	cfg.GatewayMaxInFlightPerNode = *gatewayMaxInFlight
 	cfg.GatewayMaxRequestBytes = *gatewayMaxRequestBytes
 	if cfg.GatewayMaxInFlightPerNode <= 0 {

@@ -45,12 +45,13 @@ const (
 
 // NodeInfo is the static information a C端 agent reports when registering.
 type NodeInfo struct {
-	NodeID    string    `json:"node_id"`
-	Hostname  string    `json:"hostname"`
-	IP        string    `json:"ip"`         // management / data IP
-	RPCPort   int       `json:"rpc_port"`   // port this agent listens on for rpcx bidirectional
-	VLLMPort  int       `json:"vllm_port"`  // HTTP port exposed by the local vLLM server
-	CacheMode CacheMode `json:"cache_mode"` // "local_nvme" | "shared_pool"
+	NodeID         string    `json:"node_id"`
+	Hostname       string    `json:"hostname"`
+	IP             string    `json:"ip"`                        // management / data IP
+	RPCPort        int       `json:"rpc_port"`                  // reserved for rpcx bidirectional compatibility
+	VLLMPort       int       `json:"vllm_port"`                 // HTTP port exposed by the local vLLM server
+	DiagnosticsURL string    `json:"diagnostics_url,omitempty"` // agent-owned diagnostics endpoint
+	CacheMode      CacheMode `json:"cache_mode"`                // "local_nvme" | "shared_pool"
 	// SharedCacheID identifies one logical shared cache pool. It must match
 	// across every shared_pool node, while their mount paths may differ.
 	SharedCacheID    string `json:"shared_cache_id,omitempty"`
@@ -97,11 +98,17 @@ type MachineStatus struct {
 	LoadingPct int32  `json:"loading_pct"` // 0-100
 
 	// KV Cache stats (from local disk-cache engine)
-	CacheBlocks    int64   `json:"cache_blocks"`
-	CacheBytes     int64   `json:"cache_bytes"`
-	CacheHitRate   float64 `json:"cache_hit_rate"`
-	CacheRetrieved int64   `json:"cache_retrieved"`
-	CacheEvicted   int64   `json:"cache_evicted"`
+	// CacheBlocks is retained as the wire name for compatibility. It represents
+	// all cache metadata objects (legacy blocks plus current v2 chunks), not
+	// solely legacy blocks.
+	CacheBlocks        int64   `json:"cache_blocks"`
+	CacheBytes         int64   `json:"cache_bytes"`
+	CacheHitRate       float64 `json:"cache_hit_rate"`
+	CacheRetrieved     int64   `json:"cache_retrieved"`
+	CacheEvicted       int64   `json:"cache_evicted"`
+	CacheMatchRequests int64   `json:"cache_match_requests"`
+	CacheMatchHits     int64   `json:"cache_match_hits"`
+	CacheMatchedTokens int64   `json:"cache_matched_tokens"`
 
 	// Models available locally (from scanning <work-dir>/models/)
 	AvailableModels []LocalModel `json:"available_models,omitempty"`
@@ -147,8 +154,10 @@ type Command struct {
 
 // LocalModel represents a model found on a C端 node's disk.
 type LocalModel struct {
-	Name   string  `json:"name"`
-	SizeGB float64 `json:"size_gb"` // directory size in GB, 0 if unknown
+	Name      string  `json:"name"`
+	SizeGB    float64 `json:"size_gb"` // directory size in GB, 0 if unknown
+	Status    string  `json:"status"`  // ready | legacy_unverified | partial | invalid
+	SourceURL string  `json:"source_url,omitempty"`
 }
 
 // ============================================================================
@@ -159,6 +168,8 @@ type ModelInfo struct {
 	Path string `json:"path"` // full filesystem path on S端
 
 	DownloadURL       string `json:"download_url"`
+	ManifestURL       string `json:"manifest_url,omitempty"`
+	DistributionReady bool   `json:"distribution_ready"`
 	DefaultGPUMem     string `json:"default_gpu_mem"`
 	SupportsPrefix    bool   `json:"supports_prefix"`
 	SupportsDiskCache bool   `json:"supports_disk_cache"`
@@ -181,12 +192,30 @@ type LogChunk struct {
 	EOF      bool   `json:"eof"`
 }
 
+// ModelManifest describes an immutable, file-level model distribution. The
+// control server computes hashes from its published model directory and the
+// agent verifies every file before making the model available for serving.
+type ModelManifest struct {
+	Name       string      `json:"name"`
+	Files      []ModelFile `json:"files"`
+	TotalBytes int64       `json:"total_bytes"`
+	CreatedAt  int64       `json:"created_at"`
+}
+
+// ModelFile is one verified file in a ModelManifest.
+type ModelFile struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
 // CmdResult is the execution result reported back to S端.
 type CmdResult struct {
 	CmdID     string        `json:"cmd_id"`
 	NodeID    string        `json:"node_id"`
 	Action    CommandAction `json:"action,omitempty"`
-	Status    string        `json:"status"` // "queued"|"running"|"success"|"failed"|"timeout"
+	CreatedAt int64         `json:"created_at"` // original command creation time
+	Status    string        `json:"status"`     // "queued"|"running"|"success"|"failed"|"timeout"
 	Output    string        `json:"output"`
 	Error     string        `json:"error"`
 	Progress  int32         `json:"progress"` // 0-100

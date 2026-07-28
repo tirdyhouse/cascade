@@ -1,44 +1,36 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+# Build and stage Cascade control-plane binaries on a remote host.
+#
+# This script deliberately does not stop, restart, or delete any remote
+# service. It is safe to run beside an existing LMCache/vLLM benchmark. Start
+# only the staged Cascade components with the explicit commands in
+# docs/BUILD_AND_DEPLOY.md after inspecting the target configuration.
 
-REMOTE_HOST="192.168.56.29"
-REMOTE_DIR="/opt/cascade"
-PASSWORD="123456"
-SSH_OPTS="-o StrictHostKeyChecking=no"
+set -euo pipefail
 
-echo "🚀 Deploying Cascade to $REMOTE_HOST ..."
+: "${REMOTE_HOST:?set REMOTE_HOST to the target hostname or IP}"
+REMOTE_USER=${REMOTE_USER:-root}
+REMOTE_DIR=${REMOTE_DIR:-/opt/cascade}
+TARGET="${REMOTE_USER}@${REMOTE_HOST}"
 
-# 1. rsync 源码
-echo "📦 Syncing source code..."
-rsync -az -e "sshpass -p '$PASSWORD' ssh $SSH_OPTS" \
-  go.mod go.sum root@$REMOTE_HOST:$REMOTE_DIR/
+echo "Staging Cascade control-plane source on ${TARGET}:${REMOTE_DIR}"
+ssh "$TARGET" "mkdir -p '$REMOTE_DIR/bin' '$REMOTE_DIR/state'"
 
-rsync -az --delete -e "sshpass -p '$PASSWORD' ssh $SSH_OPTS" \
-  --include='*.go' --include='static/' --include='static/*' --include='*/' --exclude='*' \
-  engine/ root@$REMOTE_HOST:$REMOTE_DIR/engine/
+# Do not use --delete: the destination can contain operator-managed models,
+# metadata, logs, or benchmark artifacts that this source checkout does not
+# own.
+rsync -az go.mod go.sum "$TARGET:$REMOTE_DIR/"
+rsync -az engine/ "$TARGET:$REMOTE_DIR/engine/"
+rsync -az adapter/ "$TARGET:$REMOTE_DIR/adapter/"
 
-# 2. 远程编译
-echo "🔨 Building on remote..."
-sshpass -p "$PASSWORD" ssh $SSH_OPTS root@$REMOTE_HOST "
-export PATH=\$PATH:/usr/local/go/bin
-cd $REMOTE_DIR
-go build -o disk-cache ./engine/cmd/disk-cache/
+ssh "$TARGET" "
+  set -e
+  cd '$REMOTE_DIR'
+  go build -o bin/cluster-server ./engine/cmd/cluster-server
+  go build -o bin/c-agent ./engine/cmd/c-agent
+  go build -o bin/disk-cache ./engine/cmd/disk-cache
+  sha256sum bin/cluster-server bin/c-agent bin/disk-cache
 "
 
-# 3. 重启服务
-echo "🔄 Restarting service..."
-sshpass -p "$PASSWORD" ssh $SSH_OPTS root@$REMOTE_HOST "pkill -f disk-cache 2>/dev/null; sleep 1"
-sshpass -p "$PASSWORD" ssh $SSH_OPTS root@$REMOTE_HOST "nohup $REMOTE_DIR/disk-cache -cache-path $REMOTE_DIR/data/storage -metadata-path $REMOTE_DIR/data/meta -max-size 10GB > $REMOTE_DIR/cascade.log 2>&1 &"
-
-sleep 2
-
-# 4. 验证
-echo "✅ Verifying..."
-sshpass -p "$PASSWORD" ssh $SSH_OPTS root@$REMOTE_HOST "
-echo \"  Process: \$(ps aux | grep disk-cache | grep -v grep | awk '{print \$2}')\"
-echo \"  Port:    \$(ss -tlnp | grep 9100 | awk '{print \$4}')\"
-echo \"  API:     \$(curl -s http://localhost:9100/stats | head -c 100)\"
-"
-
-echo ""
-echo "✨ Done! Cascade is running on $REMOTE_HOST:9100"
+echo "Staged binaries successfully. No remote process was stopped or started."
+echo "Next: inspect docs/BUILD_AND_DEPLOY.md and start only the intended Cascade components with dedicated ports and state paths."

@@ -441,7 +441,9 @@ scp /tmp/c-agent-linux root@A100:/root/cascade/bin/c-agent
 # 3. 启动 S端
 ssh root@A100 "cd /root/cascade && nohup ./bin/cluster-server \
   --rpcx-port 9000 --http-port 18080 \
-  --models-dir /tmp/models --models-file /root/cascade/models.json \
+  --models-dir /mnt/models \
+  --public-url http://<server-data-ip>:18080/models/ \
+  --state-dir /var/lib/cascade/control-plane \
   > /tmp/cluster-server.log 2>&1 &"
 
 # 4. 启动 C端
@@ -449,8 +451,12 @@ ssh root@A100 "cd /root/cascade && nohup ./bin/c-agent \
   --server 127.0.0.1:9000 --node-id a100-test \
   --cache-mode local_nvme \
   --gpu-type A100-PCIE-40GB --gpu-mem 40960 --gpu-count 1 \
-  --disks /root/cache:100 \
+  --disks /root/cache \
   --work-dir /root/cascade/agent \
+  --vllm-host 0.0.0.0 --vllm-port 8000 \
+  --advertise-host <gpu-node-data-ip> \
+  --vllm-path /root/cascade/.venv-cascade/bin/vllm \
+  --diagnostics-port 9002 \
   > /tmp/c-agent.log 2>&1 &"
 
 # 5. 验证

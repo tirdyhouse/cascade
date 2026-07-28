@@ -30,6 +30,13 @@ type CacheStats struct {
 	HitRate float64 `json:"-"`
 }
 
+// EntryCount is the total number of cache objects known to the metadata
+// engine. v1 block entries and v2 chunk objects share the same capacity but
+// are tracked by separate counters for backwards compatibility.
+func (s CacheStats) EntryCount() int64 {
+	return s.BlocksStored + s.ChunksStored
+}
+
 // NewCacheProxy creates a CacheProxy.
 func NewCacheProxy(cfg *Config) *CacheProxy {
 	return &CacheProxy{
@@ -63,7 +70,15 @@ func (cp *CacheProxy) Stats() *CacheStats {
 	if err := json.Unmarshal(body, &stats); err != nil {
 		return nil
 	}
-	// Compute hit rate
+	// v2 is the active connector protocol. MatchHits/MatchRequests reflects
+	// prefix lookup outcomes directly, unlike retrieved/stored counters which
+	// mix cache publication and data-plane transfers.
+	if stats.MatchRequests > 0 {
+		stats.HitRate = float64(stats.MatchHits) / float64(stats.MatchRequests) * 100.0
+		return &stats
+	}
+
+	// Retain the legacy estimate for older block-based connectors.
 	total := stats.BlocksRetrieved + stats.BlocksStored
 	if total > 0 {
 		if stats.BlocksRetrieved >= stats.BlocksStored {

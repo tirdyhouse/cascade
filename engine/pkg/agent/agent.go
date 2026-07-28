@@ -177,7 +177,7 @@ func (a *Agent) heartbeat(cmdCh chan<- *cluster.Command) error {
 
 	// Add KV cache stats from local disk-cache
 	if cacheStats := a.cache.Stats(); cacheStats != nil {
-		status.CacheBlocks = cacheStats.BlocksStored
+		status.CacheBlocks = cacheStats.EntryCount()
 		status.CacheBytes = cacheStats.DiskUsedBytes
 		status.CacheHitRate = cacheStats.HitRate
 		status.CacheRetrieved = cacheStats.BlocksRetrieved

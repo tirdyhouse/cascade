@@ -48,5 +48,6 @@ test/results/
 
 # Build output
 bin/
+disk-cache
 disk-cache-linux
 disk-cache-linux-inmem
